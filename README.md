@@ -42,7 +42,8 @@ all. See [Start](#start) for the PC side and
   the editor: F5 compiles and runs, F2/F3 save and load on the drives,
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
   Ctrl+R runs a `.MER` from a drive,
-  Ctrl+T switches between 65C816 and SCHUB code.
+  Ctrl+T switches between 65C816 and SCHUB code, Ctrl+K turns the syntax
+  colours on or off.
 
 ## Start
 

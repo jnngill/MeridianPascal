@@ -7,7 +7,7 @@
 
   Keys:  F1 help   F2 save   F3 load   F4 new   F5 compile + run
          F6 drive  F7 standalone .MER  F8 directory   F9 compile   F10 quit to BASIC
-         Ctrl+Y delete line   Ctrl+F find   Ctrl+L find again
+         Ctrl+Y delete line   Ctrl+F find   Ctrl+L find again   Ctrl+K colours
          Ctrl+Home / Ctrl+End  start / end of the text
          PgUp PgDn Home End and the cursor keys move }
 program PascalIDE;
@@ -44,6 +44,15 @@ var
   lastRow: integer;
   lastMsg: string;
   lastCur: longint;
+  colours: boolean;                  { syntax colours on (Ctrl+K) }
+  ckState: array[0..255] of byte;    { scanner state at every 256 bytes of text }
+  ckValid: longint;                  { checkpoints up to here are valid }
+  rowSt, rowEnd: array[0..31] of byte;   { state at the start / after each screen row }
+  rowPos: array[0..31] of longint;   { text position of each row at the last redraw }
+  rowsValid: boolean;                { rowPos still holds (no edit since) }
+  cls: array[0..255] of byte;        { character classes for the colours }
+  lineAttr: array[0..511] of byte;   { colour of each column of the line being drawn }
+  attrKw, attrComment, attrString, attrNumber: byte;
 
 { ------------------------------------------------------------- text }
 function TC(p: longint): char;
@@ -77,6 +86,13 @@ begin
   CountLines := n;
 end;
 
+{ the text changed at p: the colour checkpoints after p no longer hold }
+procedure TextChanged(p: longint);
+begin
+  if p < ckValid then ckValid := p;
+  rowsValid := false;
+end;
+
 procedure InsertChars(const s: string);
 var n: integer;
     i: integer;
@@ -86,6 +102,7 @@ begin
   if len > cur then Blit(TB + cur, TB + cur + n, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
   BlitWait;
   for i := 1 to n do Mem[TB + cur + i - 1] := ord(s[i]);
+  TextChanged(cur);
   len := len + n;
   cur := cur + n;
   modified := true;
@@ -100,6 +117,7 @@ begin
     BlitWait;
   end;
   len := len - n;
+  TextChanged(p);
   modified := true;
 end;
 
@@ -115,24 +133,223 @@ begin
     else Scr[o + i - 1] := w or 32;
 end;
 
-procedure DrawLine(row: integer; p: longint);
-{ draw the text line starting at p on screen row (2..28) }
-var o, c: integer;
-    w: word;
-    ch: byte;
+(* ------------------------------------------------------------- colours
+  The scanner's state between characters: normal text, inside a brace
+  comment or a paren-star comment, a brace-dollar directive, a string, a //
+  comment, and the two halves of the paren-star brackets (so that every step
+  takes one character). Comments and directives can run over several lines.
+  The state at the start of the screen comes from the rows of the last
+  redraw when it can (paging down), otherwise from checkpoints every 256
+  bytes of text, which an edit makes invalid from its position on. *)
+const
+  stNormal = 0; stBrace = 1; stParen = 2; stString = 3; stLine = 4; stDirective = 5;
+  stOpening = 6; stClosing = 7;
+  CkStep = 256;
+  colKeyword = 1; colComment = 13; colString = 7; colNumber = 3; colDirective = 8;
+  cLetter = 1; cDigit = 2; cHex = 4;
+
+function IsKeyword(const s: string): boolean;
 begin
-  o := (row - 1) * Cols;
-  w := word(aText) shl 8;
-  { skip the hidden columns }
-  c := 0;
-  while (c < left) and (p < len) and (Mem[TB + p] <> 10) do begin p := p + 1; c := c + 1; end;
-  for c := 0 to Cols - 1 do begin
-    if (p < len) and (Mem[TB + p] <> 10) then begin
-      ch := Mem[TB + p]; p := p + 1;
-      Scr[o + c] := w or ch;
-    end else Scr[o + c] := w or 32;
+  case s[1] of
+    'a': IsKeyword := (s = 'and') or (s = 'array') or (s = 'absolute');
+    'b': IsKeyword := s = 'begin';
+    'c': IsKeyword := (s = 'case') or (s = 'const');
+    'd': IsKeyword := (s = 'do') or (s = 'div') or (s = 'downto');
+    'e': IsKeyword := (s = 'end') or (s = 'else') or (s = 'external');
+    'f': IsKeyword := (s = 'for') or (s = 'function') or (s = 'file') or (s = 'forward');
+    'g': IsKeyword := s = 'goto';
+    'i': IsKeyword := (s = 'if') or (s = 'in') or (s = 'interface') or (s = 'implementation') or (s = 'initialization');
+    'l': IsKeyword := s = 'label';
+    'm': IsKeyword := s = 'mod';
+    'n': IsKeyword := (s = 'not') or (s = 'nil');
+    'o': IsKeyword := (s = 'of') or (s = 'or');
+    'p': IsKeyword := (s = 'procedure') or (s = 'program') or (s = 'packed');
+    'r': IsKeyword := (s = 'repeat') or (s = 'record');
+    's': IsKeyword := (s = 'set') or (s = 'shl') or (s = 'shr') or (s = 'string');
+    't': IsKeyword := (s = 'then') or (s = 'to') or (s = 'type');
+    'u': IsKeyword := (s = 'until') or (s = 'uses') or (s = 'unit');
+    'v': IsKeyword := s = 'var';
+    'w': IsKeyword := (s = 'while') or (s = 'with');
+    'x': IsKeyword := s = 'xor';
+  else
+    IsKeyword := false;
   end;
 end;
+
+{ colour of the characters in a state (low nibble: text, high: background) }
+function StateAttr(st: byte): byte;
+begin
+  case st of
+    stBrace, stParen, stLine, stOpening, stClosing: StateAttr := (aText and $F0) or colComment;
+    stDirective: StateAttr := (aText and $F0) or colDirective;
+    stString: StateAttr := (aText and $F0) or colString;
+  else
+    StateAttr := aText;
+  end;
+end;
+
+{ Scan the text from q up to (not including) upto, from state st. With paint,
+  the colour of each character goes to lineAttr[col] (one line: upto is its
+  end). Every loop takes whole runs (a word, a comment) where it can. }
+procedure Scan(var q: longint; upto: longint; var st: byte; paint: boolean; var col: integer);
+var c, n, a: byte;
+    e: longint;
+    i: integer;
+    w: string[15];
+begin
+  while q < upto do begin
+    c := Mem[TB + q];
+    case st of
+      stNormal:
+        if (cls[c] and cLetter) <> 0 then begin
+          { a word: keyword or name (state unchanged) }
+          e := q; i := 0;
+          while (e < upto) and ((cls[Mem[TB + e]] and (cLetter or cDigit)) <> 0) do begin
+            if i < 15 then begin i := i + 1; w[i] := chr(Mem[TB + e] or 32); end;
+            e := e + 1;
+          end;
+          if paint then begin
+            w[0] := chr(i);
+            a := aText;
+            if (i >= 2) and (i <= 14) then if IsKeyword(w) then a := attrKw;
+            while q < e do begin
+              if col < 512 then lineAttr[col] := a;
+              col := col + 1; q := q + 1;
+            end;
+          end else q := e;
+        end
+        else begin
+          if q + 1 < len then n := Mem[TB + q + 1] else n := 0;
+          a := aText;
+          if c = 123 then begin                                   { brace }
+            if n = 36 then st := stDirective else st := stBrace;
+            a := StateAttr(st);
+          end
+          else if (c = 40) and (n = 42) then begin st := stOpening; a := attrComment; end
+          else if (c = 47) and (n = 47) then begin st := stLine; a := attrComment; end
+          else if c = 39 then begin st := stString; a := attrString; end
+          else if paint and (((cls[c] and cDigit) <> 0) or ((c = 36) and ((cls[n] and cHex) <> 0))
+                  or ((c = 35) and (((cls[n] and cDigit) <> 0) or (n = 36)))) then begin
+            { a number, $hex, or a character code #13 #$0D (coloured like strings) }
+            if c = 35 then a := attrString else a := attrNumber;
+            e := q + 1;
+            while (e < upto) and (((cls[Mem[TB + e]] and cHex) <> 0) or (Mem[TB + e] = 36) or
+                  ((Mem[TB + e] = 46) and (e + 1 < upto) and ((cls[Mem[TB + e + 1]] and cDigit) <> 0))) do e := e + 1;
+            while q + 1 < e do begin
+              if col < 512 then lineAttr[col] := a;
+              col := col + 1; q := q + 1;
+            end;
+          end;
+          if paint then begin
+            if col < 512 then lineAttr[col] := a;
+            col := col + 1;
+          end;
+          q := q + 1;
+        end;
+      stBrace, stDirective: begin
+        { to the closing brace }
+        a := StateAttr(st);
+        while (q < upto) and (Mem[TB + q] <> 125) do begin
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1; st := stNormal;
+        end;
+      end;
+      stOpening, stClosing: begin
+        { the second character of a paren-star bracket }
+        if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+        q := q + 1;
+        if st = stOpening then st := stParen else st := stNormal;
+      end;
+      stParen: begin
+        { to the closing star-paren }
+        while (q < upto) and not ((Mem[TB + q] = 42) and (q + 1 < len) and (Mem[TB + q + 1] = 41)) do begin
+          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin
+          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          q := q + 1; st := stClosing;
+        end;
+      end;
+      stString: begin
+        { to the closing quote or the end of the line }
+        while (q < upto) and (Mem[TB + q] <> 39) and (Mem[TB + q] <> 10) do begin
+          if paint then begin if col < 512 then lineAttr[col] := attrString; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin
+          if paint then begin if col < 512 then lineAttr[col] := attrString; col := col + 1; end;
+          q := q + 1; st := stNormal;
+        end;
+      end;
+      stLine: begin
+        while (q < upto) and (Mem[TB + q] <> 10) do begin
+          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin q := q + 1; st := stNormal; end;
+      end;
+    end;
+  end;
+end;
+
+function StateAt(p: longint): byte;
+{ the state at text position p (the start of a line) }
+var k, col: integer;
+    q, e: longint;
+    st: byte;
+begin
+  { a row of the last redraw (paging down: the line after the screen) }
+  if rowsValid then
+    for k := 2 to Rows + 2 do
+      if rowPos[k] = p then begin StateAt := rowSt[k]; exit; end;
+  k := p div CkStep;
+  if longint(k) * CkStep > ckValid then k := ckValid div CkStep;
+  q := longint(k) * CkStep;
+  st := ckState[k];
+  col := 0;
+  while q < p do begin
+    e := (q div CkStep + 1) * CkStep;
+    if e > p then e := p;
+    Scan(q, e, st, false, col);
+    if q mod CkStep = 0 then begin
+      ckState[q div CkStep] := st;
+      if q > ckValid then ckValid := q;
+    end;
+  end;
+  StateAt := st;
+end;
+
+function DrawLine(row: integer; p: longint; st: byte): byte;
+{ draw the text line starting at p on screen row (2..28); st is the state at
+  p, the result the state at the start of the next line }
+var o, c, col: integer;
+    e, q: longint;
+begin
+  o := (row - 1) * Cols;
+  e := LineEnd(p);
+  if colours then begin
+    q := p; col := 0;
+    Scan(q, e, st, true, col);
+    { a line ends strings and // comments }
+    if (st = stString) or (st = stLine) then st := stNormal;
+  end;
+  { skip the hidden columns }
+  p := p + left;
+  for c := 0 to Cols - 1 do
+    if p < e then begin
+      if colours and (left + c < 512) then Scr[o + c] := (word(lineAttr[left + c]) shl 8) or Mem[TB + p]
+      else Scr[o + c] := (word(aText) shl 8) or Mem[TB + p];
+      p := p + 1;
+    end else Scr[o + c] := (word(aText) shl 8) or 32;
+  if not colours then st := stNormal;
+  DrawLine := st;
+end;
+
 
 function TargetName: string;
 begin
@@ -172,10 +389,16 @@ end;
 procedure Redraw;
 var r: integer;
     p: longint;
+    st: byte;
 begin
   p := top;
+  if colours then st := StateAt(top) else st := stNormal;
+  for r := 2 to Rows + 2 do rowPos[r] := -1;
   for r := 2 to Rows + 1 do begin
-    DrawLine(r, p);
+    rowPos[r] := p;
+    rowSt[r] := st;
+    st := DrawLine(r, p, st);
+    rowEnd[r] := st;
     p := LineEnd(p);
     if p < len then p := p + 1 else p := len + 1;
     if p > len then begin
@@ -184,6 +407,9 @@ begin
       break;
     end;
   end;
+  { the line after the screen: paging down starts there }
+  if p <= len then begin rowPos[Rows + 2] := p; rowSt[Rows + 2] := st; end;
+  rowsValid := true;
 end;
 
 { make the cursor visible: adjust top and left }
@@ -220,14 +446,16 @@ var row: integer;
 begin
   Track;
   row := curLine - topLine + 2;
-  if redrawAll then Redraw
-  else begin
+  if not redrawAll then begin
     if (lastRow <> row) and (lastRow >= 2) and (lastRow <= Rows + 1) then begin
       p := RowStart(lastRow);
-      if p <= len then DrawLine(lastRow, p) else PutStr(1, lastRow, '', aText, Cols);
+      if p <= len then rowEnd[lastRow] := DrawLine(lastRow, p, rowSt[lastRow])
+      else PutStr(1, lastRow, '', aText, Cols);
     end;
-    DrawLine(row, LineStart(cur));
+    { a change that opens or closes a comment colours the rows below anew }
+    if DrawLine(row, LineStart(cur), rowSt[row]) <> rowEnd[row] then redrawAll := true;
   end;
+  if redrawAll then Redraw;
   redrawAll := false;
   lastRow := row;
   lastMsg := msg;
@@ -429,7 +657,7 @@ begin
   got := LoadFile(n, Stage, MaxText);
   if got < 0 then begin msg := 'LOAD FAILED: ' + DosErrorText(DosError); exit; end;
   { line ends: CR LF, CR or LF -> LF; tabs -> two spaces }
-  len := 0;
+  len := 0; TextChanged(0);
   lastCR := false;
   for i := 0 to got - 1 do begin
     b := Mem[Stage + i];
@@ -477,7 +705,7 @@ const T1 = 'program Hello;';
       T5 = '  WriteLn(''HELLO FROM THE MERIDIAN!'');';
       T6 = 'end.';
 begin
-  len := 0; cur := 0;
+  len := 0; cur := 0; TextChanged(0);
   InsertChars(T1 + #10 + T2 + #10 + #10 + T3 + #10 + T4 + #10 + T5 + #10 + T6 + #10);
   fileName := '';
   modified := false;
@@ -603,7 +831,7 @@ begin
   L('CTRL+Y DELETE LINE     CTRL+F FIND           CTRL+L FIND AGAIN');
   L('CTRL+T TARGET 65C816 / SCHUB (OR {$SCHUB} AT THE TOP OF THE TEXT)');
   L('CTRL+R RUN A PROGRAM FILE (.MER) FROM THE DRIVE (ALSO F3 WITH NAME.MER)');
-  L('CTRL+HOME/END  START/END OF THE TEXT         PGUP PGDN HOME END');
+  L('CTRL+HOME/END START/END OF TEXT   CTRL+K COLOURS ON/OFF   PGUP PGDN HOME END');
   L('');
   L('THE LANGUAGE: PROGRAM, USES, CONST, TYPE, VAR, PROCEDURE, FUNCTION (NESTED),');
   L('INTEGER WORD BYTE SHORTINT LONGINT REAL CHAR BOOLEAN STRING[N] ARRAYS RECORDS');
@@ -611,7 +839,7 @@ begin
   L('WITH, EXIT BREAK CONTINUE, WRITE(LN) READ(LN) INC DEC NEW DISPOSE HALT STR');
   L('INCLUDE EXCLUDE TRUNC ROUND SQRT, MEM[] MEMW[] MEML[], ABSOLUTE, TYPED CONSTS.');
   L('FUNCTIONS CAN RETURN RECORDS, ARRAYS AND SETS. AND/OR STOP EARLY.');
-  L('ALL LIBRARY UNITS ARE BUILT IN: CRT GRAPH SPRITES AUDIO');
+  L('ALL LIBRARY UNITS ARE BUILT IN: CRT GRAPH SPRITES AUDIO BASIC');
   L('INPUT DOS BLITTER COPPER SCHUB AND SYSTEM (COPY POS SIN COS RANDOM ...).');
   L('');
   L('YOUR OWN UNITS: USES MYUNIT READS MYUNIT.PAS FROM THE CURRENT DRIVE');
@@ -717,6 +945,11 @@ begin
       else if SchubDirective(len) then msg := 'TARGET: SCHUB ($SCHUB AT THE TOP OF THE TEXT)'
       else msg := 'TARGET: 65C816';
     end;
+    if Pressed(scK) then begin                                     { Ctrl+K }
+      colours := not colours;
+      if colours then msg := 'COLOURS ON' else msg := 'COLOURS OFF';
+      redrawAll := true;
+    end;
     if Pressed($80 + $6C) then JumpTo(0);                             { Ctrl+Home }
   end;
 end;
@@ -747,6 +980,19 @@ begin
   aText := $6E;        { light blue on blue, like BASIC }
   aBar := $16;         { blue on white }
   aStat := $61;
+  colours := true;
+  ckValid := 0; ckState[0] := stNormal; rowsValid := false;
+  attrKw := (aText and $F0) or colKeyword;
+  attrComment := (aText and $F0) or colComment;
+  attrString := (aText and $F0) or colString;
+  attrNumber := (aText and $F0) or colNumber;
+  for i := 0 to 255 do cls[i] := 0;
+  for i := ord('a') to ord('z') do cls[i] := cLetter;
+  for i := ord('A') to ord('Z') do cls[i] := cLetter;
+  cls[ord('_')] := cLetter;
+  for i := ord('0') to ord('9') do cls[i] := cDigit + cHex;
+  for i := ord('a') to ord('f') do cls[i] := cLetter + cHex;
+  for i := ord('A') to ord('F') do cls[i] := cLetter + cHex;
   r := KernelMode(80);
   for i := 0 to 255 do keyWas[i] := false;
   SetDrive(1);
