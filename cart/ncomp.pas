@@ -49,6 +49,8 @@ var
 
 function CartPresent: boolean;
 function CompileSource(srcLen: longint): boolean;
+{ the text (srcLen bytes at SrcBase) starts with $SCHUB: compiled for SCHUB }
+function SchubDirective(n: longint): boolean;
 { after a successful CompileSource: save the program as a .MER that runs
   without the cartridge (it carries the library and a loader) }
 function SaveStandalone(const name: string): boolean;

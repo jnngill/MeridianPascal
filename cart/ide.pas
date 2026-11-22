@@ -136,7 +136,8 @@ end;
 
 function TargetName: string;
 begin
-  if WantSchub then TargetName := 'SCHUB' else TargetName := '65C816';
+  { what F5/F7 will make: Ctrl+T, or $SCHUB at the top of the text }
+  if WantSchub or SchubDirective(len) then TargetName := 'SCHUB' else TargetName := '65C816';
 end;
 
 procedure DrawStatus;
@@ -712,7 +713,9 @@ begin
     if Pressed($2D) then RunFile;                                  { Ctrl+R }
     if Pressed(scT) then begin
       WantSchub := not WantSchub;
-      if WantSchub then msg := 'TARGET: SCHUB (RISC-V CO-PROCESSOR)' else msg := 'TARGET: 65C816';
+      if WantSchub then msg := 'TARGET: SCHUB (RISC-V CO-PROCESSOR)'
+      else if SchubDirective(len) then msg := 'TARGET: SCHUB ($SCHUB AT THE TOP OF THE TEXT)'
+      else msg := 'TARGET: 65C816';
     end;
     if Pressed($80 + $6C) then JumpTo(0);                             { Ctrl+Home }
   end;

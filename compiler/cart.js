@@ -67,7 +67,7 @@ function stampLibrary(bytes, sym) {
   const B = 0x400000;
   let h = 0x811c9dc5;
   const add = (from, to) => { for (let i = from; i < to; i++) h = Math.imul(h ^ bytes[i], 0x01000193) >>> 0; };
-  add(sym.get('cart_start') - B, sym.get('LIBCODE_END') - B);
+  add(sym.get('LIBCODE_START') - B, sym.get('LIBCODE_END') - B);
   add(sym.get('DATAROM') - B, sym.get('DATAROM') - B + sym.get('LIBEND') - 0x2000);
   if (h === 0) h = 1;
   const at = sym.get('LIBSTAMP') - B;
@@ -301,6 +301,35 @@ LIBSTAMP
 	.word RVSTUBIMG_END-RVSTUBIMG
 	.al
 	.xl
+; the library block: $40:0000..LIBCODE_END, stamped from here on
+LIBCODE_START
+rt_exit
+	rep #$30
+	lda @w rt_savesp
+	tcs
+	plp
+	pld
+	plb
+	rtl
+; library re-initialisation for programs compiled on the MERIDIAN
+rt_libinit
+	php
+	rep #$30
+	phb
+	ldx #(DATAROM+LIBDATA-$2000) & $ffff
+	ldy #LIBDATA
+	lda #LIBEND-LIBDATA-1
+	mvn #^DATAROM,#$00
+	plb
+${libInits.map(l => `\tjsl ${l}`).join('\n')}
+	plp
+	rtl
+`;
+    // the cartridge's start code, after the program (it names the program,
+    // so it stays out of the library block)
+    const boot = `
+	.al
+	.xl
 cart_start
 	phb
 	phd
@@ -329,29 +358,9 @@ cart_start
 ${libInits.map(l => `\tjsl ${l}`).join('\n')}
 ${progInits.map(l => `\tjsl ${l}`).join('\n')}
 	jsl ${prog.main}
-rt_exit
-	rep #$30
-	lda @w rt_savesp
-	tcs
-	plp
-	pld
-	plb
-	rtl
-; library re-initialisation for programs compiled on the MERIDIAN
-rt_libinit
-	php
-	rep #$30
-	phb
-	ldx #(DATAROM+LIBDATA-$2000) & $ffff
-	ldy #LIBDATA
-	lda #LIBEND-LIBDATA-1
-	mvn #^DATAROM,#$00
-	plb
-${libInits.map(l => `\tjsl ${l}`).join('\n')}
-	plp
-	rtl
+	jml rt_exit
 `;
-    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: exp.asm + rvAsm + MER_STUB } });
+    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + exp.asm + rvAsm + MER_STUB } });
     res.asm = asm;
     const a = assemble816(asm, { listing: !!opts.listing });
     res.symbols = a.symbols;

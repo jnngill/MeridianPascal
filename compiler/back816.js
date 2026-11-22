@@ -84,7 +84,9 @@ export function gen816(prog, opts = {}) {
     out.push(runtime816(far, true));
     if (cart.extraAsm) out.push(cart.extraAsm);
     LBL('LIBCODE_END');
-    for (const p of prog.procs) if (!cart.libModules.has(p.module)) genProc(p);
+    // then the data image (library data first), then the other procedures:
+    // the library and its data stay at the same addresses when only the
+    // program part of the cartridge changes (see the library stamp)
   } else {
     for (const p of prog.procs) genProc(p);
     if (far) E('.bankfit');
@@ -112,6 +114,8 @@ export function gen816(prog, opts = {}) {
     LBL('PAS_HEAP');
     E('.here');
     LBL('DATAROM_END');
+    E('.bankfit');
+    for (const p of prog.procs) if (!cart.libModules.has(p.module)) genProc(p);
     if (cart.tailAsm) out.push(cart.tailAsm);
     return out.join('\n') + '\n';
   }

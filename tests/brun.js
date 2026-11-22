@@ -72,6 +72,8 @@ for (const [n, s] of sources)
     const base = `C${n}${t}`;
     m.drives[1].set(base + '.PAS', Buffer.from(pre + s, 'latin1'));
     hold(0x04); frames(20); type(base.toLowerCase() + '\n'); frames(60);        // F3
+    const status = m.screenText().split('\n')[28] || '';
+    check(`status line of ${base}.PAS says ${t === 'S' ? 'SCHUB' : '65C816'}`, new RegExp(`${t === 'S' ? 'SCHUB' : '65C816'}\\s*$`).test(status), status);
     hold(0x02); frames(300); type('\n'); frames(200);                            // F7, keep the name
     const mer = m.drives[1].get(base + '.MER');
     check(`cartridge F7 saved ${base}.MER`, !!mer, m.screenText());
@@ -122,6 +124,9 @@ function brun(name, drive) {
 }
 
 const kinds = [['PC', 'ends normally'], ['HALT', 'Halt inside 21 nested calls'], ['DIVZ', 'runtime error (div by 0)'], ['GFX', 'ends in graphics mode']];
+// MER_OUT=dir: also write the programs there (8.3 names), to try them on a MiSTer
+if (process.env.MER_OUT) for (const [n, b] of Object.entries(files))
+  fs.writeFileSync(path.join(process.env.MER_OUT, n.replace('M816', 'M').replace('SCHUB', 'S')), b);
 const builds = [['', 'M816', '65C816'], ['', 'SCHUB', 'SCHUB'], ['C', 'M', 'cartridge 65C816'], ['C', 'S', 'cartridge SCHUB']];
 for (const [k, how] of kinds) for (const [p, t, tn] of builds) {
   const name = p + k + t, what = `${tn}, ${how},`;
