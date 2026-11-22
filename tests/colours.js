@@ -111,5 +111,40 @@ check('long line scrolled sideways: string, comment and keyword coloured in plac
   colourOf("'far right'") === STRING && colourOf('{ comment }') === COMMENT && colourOf('WriteLn(', 'WriteLn') === NAME,
   rowText(rowOf('far right')) + '\n' + rowCol(rowOf('far right')).join(','));
 
+// ---- scrolling by moving screen rows, and several keys handled at once:
+// after each step the screen must be exactly what a full redraw gives
+// (Ctrl+K twice redraws everything)
+const screenBytes = () => Array.from(m.mem.subarray(0x400 + 160, 0x400 + 160 * 28));
+const cursorCell = () => { const b = screenBytes(); for (let i = 1; i < b.length; i += 2) if ((b[i] >> 4) !== 6) return i; return -1; };
+function sameAsFullRedraw(what) {
+  frames(20);
+  const a = screenBytes();
+  ctrl(0x42); ctrl(0x42); frames(20);
+  const b = screenBytes();
+  const diff = []; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
+  check(`${what}: screen equals a full redraw`, diff.length === 0,
+    diff.slice(0, 6).map(i => `row ${2 + Math.floor(i / 160)} col ${(i % 160) >> 1}: ${a[i]} vs ${b[i]}`).join('\n'));
+}
+const lines = ['program Scroll;', '(* a comment', '   over lines *)', 'var i: integer;'];
+for (let i = 0; i < 70; i++) lines.push(i % 9 === 4 ? `  { comment ${i} }` : i % 9 === 6 ? `  (* opens ${i}` : i % 9 === 7 ? `     closes ${i} *)` : `  i := ${i}; WriteLn('line ${i}');`);
+lines.push('end.', '');
+load('SCROLL.PAS', lines.join('\n'));
+const push = (code, n) => { for (let i = 0; i < n; i++) m.pushKey(code); frames(30); };
+for (let i = 0; i < 26; i++) { m.pushKey(31); frames(3); }                         // to the bottom row
+push(31, 1);  sameAsFullRedraw('scroll down 1 line');
+push(31, 7);  sameAsFullRedraw('7 cursor-downs at once (scroll 7)');
+push(30, 30); sameAsFullRedraw('30 cursor-ups at once (scroll up)');
+push(30, 1);  sameAsFullRedraw('scroll up 1 line');
+push(31, 40); sameAsFullRedraw('40 cursor-downs at once (more than a screen)');
+// edits on three lines in one batch: a, down, b, down, c
+for (const c of 'a') m.pushKey(c.charCodeAt(0)); m.pushKey(31); m.pushKey(98); m.pushKey(31); m.pushKey(99);
+frames(30);
+sameAsFullRedraw('edits on three lines handled at once');
+// { typed and the cursor moved down in the same batch: the rows below turn green
+m.pushKey(1); m.pushKey(123); m.pushKey(31); m.pushKey(31); frames(30);
+sameAsFullRedraw('{ typed, then two cursor-downs at once');
+m.pushKey(30); m.pushKey(30); m.pushKey(1); m.pushKey(127); m.pushKey(31); frames(30);   // delete it again
+sameAsFullRedraw('{ deleted, then a cursor-down at once');
+
 console.log(fail ? `${fail} failed` : 'all ok');
 process.exit(fail ? 1 : 0);

@@ -11,7 +11,8 @@ const
   bmFill = 1;          { fill with value }
   bmTransparent = 2;   { copy, skip bytes equal to value }
   bmTransparent4 = 3;  { copy, skip nibbles equal to value (16-colour bitmaps) }
-  bmBackwards = 4;     { add: each row right to left }
+  bmBackwards = 4;     { add: each row right to left; src and dst are then the
+                         RIGHT end of the row (the last byte), as KRAN counts down }
   bmColumn = 8;        { add (SCHUB core): repeat one source byte across the row }
   bmLast = $80;        { in job lists: last job }
 

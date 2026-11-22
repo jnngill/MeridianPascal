@@ -211,9 +211,11 @@ export class Meridian {
     let src = g24(0), dst = g24(3);
     const w = g16(6), hgt = g16(8), qa = s16(10), za = s16(12), val = j[o + 14], mode = j[o + 15];
     const kind = mode & 3, back = mode & 4, column = (mode & 8) && this.schub.enabled && kind === 0;
+    // like rtl/kran.sv: backwards, the addresses are the right end of the
+    // row and every byte steps one lower
     for (let y = 0; y < hgt; y++) {
       for (let x = 0; x < w; x++) {
-        const xi = back ? w - 1 - x : x;
+        const xi = back ? -x : x;
         const d = (dst + xi) & 0xffffff;
         if (kind === 1) { this.write(d, val); continue; }
         const b = this.read((src + (column ? 0 : xi)) & 0xffffff);

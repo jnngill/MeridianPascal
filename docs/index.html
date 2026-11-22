@@ -324,7 +324,7 @@ end.</pre>
 
 <h3 id="l-blitter">Blitter <small>&mdash; KRAN</small></h3>
 <table>
-<tr><td><code>Blit(src, dst, w, h, srcStride, dstStride, mode, value)</code></td><td><code>bmCopy bmFill bmTransparent bmTransparent4</code> + <code>bmBackwards</code>, <code>bmColumn</code> (SCHUB core)</td></tr>
+<tr><td><code>Blit(src, dst, w, h, srcStride, dstStride, mode, value)</code></td><td><code>bmCopy bmFill bmTransparent bmTransparent4</code> + <code>bmBackwards</code>, <code>bmColumn</code> (SCHUB core). With <code>bmBackwards</code> each row is copied right to left and <code>src</code>/<code>dst</code> are the <b>last</b> byte of the row: to move a block up in memory (overlapping), pass <code>src + w - 1</code> and <code>dst + w - 1</code>.</td></tr>
 <tr><td><code>BlitCopy BlitFill BlitTransparent BlitWait BlitBusy</code></td><td></td></tr>
 <tr><td><code>MakeJob(var j: TBlitJob; ...) RunJobList(addr)</code></td><td>job lists (mark the last with <code>bmLast</code>)</td></tr>
 <tr><td><code>CopyMem FillMem</code></td><td>memory blocks</td></tr>

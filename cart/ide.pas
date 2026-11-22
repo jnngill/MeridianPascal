@@ -53,6 +53,8 @@ var
   cls: array[0..255] of byte;        { character classes for the colours }
   lineAttr: array[0..511] of byte;   { colour of each column of the line being drawn }
   attrKw, attrComment, attrString, attrNumber: byte;
+  scrollBy: integer;                 { lines the screen must scroll (Track) }
+  startLine, editLine: integer;      { cursor line at the last Refresh; a line edited since, -1 none }
 
 { ------------------------------------------------------------- text }
 function TC(p: longint): char;
@@ -99,7 +101,9 @@ var n: integer;
 begin
   n := length(s);
   if len + n > MaxText then begin msg := 'TEXT FULL'; exit; end;
-  if len > cur then Blit(TB + cur, TB + cur + n, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
+  { make room: KRAN copies backwards from the last byte (it takes the right
+    end of the row as the address) }
+  if len > cur then Blit(TB + len - 1, TB + len - 1 + n, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
   BlitWait;
   for i := 1 to n do Mem[TB + cur + i - 1] := ord(s[i]);
   TextChanged(cur);
@@ -409,22 +413,24 @@ begin
   end;
   { the line after the screen: paging down starts there }
   if p <= len then begin rowPos[Rows + 2] := p; rowSt[Rows + 2] := st; end;
-  rowsValid := true;
+  { the row states only mean something when they were worked out }
+  rowsValid := colours;
 end;
 
 { make the cursor visible: adjust top and left }
 procedure Track;
 var c: integer;
 begin
+  { vertical scrolling: Refresh moves the rows on the screen (ScrollRows) }
   while curLine < topLine do begin
     top := LineStart(top - 1);
     topLine := topLine - 1;
-    redrawAll := true;
+    scrollBy := scrollBy - 1;
   end;
   while curLine > topLine + Rows - 1 do begin
     top := LineEnd(top) + 1;
     topLine := topLine + 1;
-    redrawAll := true;
+    scrollBy := scrollBy + 1;
   end;
   c := ColOf(cur);
   if c < left then begin left := (c div 20) * 20; redrawAll := true; end;
@@ -440,23 +446,81 @@ begin
   RowStart := p;
 end;
 
+{ the text moved by d lines on the screen (d > 0: down the text): move the
+  rows that stay with the blitter and draw only the new ones }
+procedure ScrollRows(d: integer);
+var r, n: integer;
+    p: longint;
+    st: byte;
+begin
+  if d > 0 then begin
+    n := Rows - d;
+    Blit($0400 + longint(1 + d) * Cols * 2, $0400 + Cols * 2, n * Cols * 2, 1, 0, 0, bmCopy, 0);
+    for r := 2 to 1 + n do begin rowSt[r] := rowSt[r + d]; rowEnd[r] := rowEnd[r + d]; end;
+    BlitWait;
+    st := rowEnd[1 + n];
+    p := RowStart(2 + n);
+    for r := 2 + n to Rows + 1 do begin
+      rowSt[r] := st;
+      if p <= len then begin
+        st := DrawLine(r, p, st);
+        p := LineEnd(p) + 1;
+      end else PutStr(1, r, '', aText, Cols);
+      rowEnd[r] := st;
+    end;
+  end else begin
+    d := -d;
+    n := Rows - d;
+    { backwards from the last byte (KRAN takes the right end as the address) }
+    Blit($0400 + longint(1 + n) * Cols * 2 - 1, $0400 + longint(1 + n + d) * Cols * 2 - 1, n * Cols * 2, 1, 0, 0,
+         bmCopy + bmBackwards, 0);
+    for r := Rows + 1 downto 2 + d do begin rowSt[r] := rowSt[r - d]; rowEnd[r] := rowEnd[r - d]; end;
+    BlitWait;
+    if colours then st := StateAt(top) else st := stNormal;
+    p := top;
+    for r := 2 to 1 + d do begin
+      rowSt[r] := st;
+      st := DrawLine(r, p, st);
+      rowEnd[r] := st;
+      p := LineEnd(p) + 1;
+    end;
+    { the rows below begin as they did }
+    if st <> rowSt[2 + d] then redrawAll := true;
+  end;
+  rowsValid := false;
+end;
+
 procedure Refresh;
 var row: integer;
     p: longint;
 begin
   Track;
+  { an edit on a row that is neither the old nor the new cursor row }
+  if (editLine <> -1) and (editLine <> curLine) then redrawAll := true;
+  if (scrollBy <> 0) and not redrawAll then begin
+    if abs(scrollBy) < Rows - 2 then begin
+      ScrollRows(scrollBy);
+      lastRow := lastRow - scrollBy;
+    end else redrawAll := true;
+  end;
+  scrollBy := 0;
   row := curLine - topLine + 2;
   if not redrawAll then begin
+    { the old cursor row (it may have changed) and the new one; a change that
+      opens or closes a comment colours the rows below anew }
     if (lastRow <> row) and (lastRow >= 2) and (lastRow <= Rows + 1) then begin
       p := RowStart(lastRow);
-      if p <= len then rowEnd[lastRow] := DrawLine(lastRow, p, rowSt[lastRow])
-      else PutStr(1, lastRow, '', aText, Cols);
+      if p <= len then begin
+        if DrawLine(lastRow, p, rowSt[lastRow]) <> rowEnd[lastRow] then redrawAll := true;
+      end else PutStr(1, lastRow, '', aText, Cols);
     end;
-    { a change that opens or closes a comment colours the rows below anew }
-    if DrawLine(row, LineStart(cur), rowSt[row]) <> rowEnd[row] then redrawAll := true;
+    if not redrawAll then
+      if DrawLine(row, LineStart(cur), rowSt[row]) <> rowEnd[row] then redrawAll := true;
   end;
   if redrawAll then Redraw;
   redrawAll := false;
+  startLine := curLine;
+  editLine := -1;
   lastRow := row;
   lastMsg := msg;
   lastCur := cur;
@@ -947,6 +1011,7 @@ begin
     end;
     if Pressed(scK) then begin                                     { Ctrl+K }
       colours := not colours;
+      rowsValid := false;
       if colours then msg := 'COLOURS ON' else msg := 'COLOURS OFF';
       redrawAll := true;
     end;
@@ -954,8 +1019,18 @@ begin
   end;
 end;
 
+{ an edit on another line than the one Refresh last drew the cursor on }
+procedure NoteEdit;
+begin
+  if curLine <> startLine then begin
+    if (editLine <> -1) and (editLine <> curLine) then redrawAll := true;
+    editLine := curLine;
+  end;
+end;
+
 procedure TypedKey(k: char);
 begin
+  if (k = #8) or (k = #127) or (k = #9) or (k >= ' ') then NoteEdit;
   case k of
     #13: NewLine;
     #8: Backspace;
@@ -981,6 +1056,7 @@ begin
   aBar := $16;         { blue on white }
   aStat := $61;
   colours := true;
+  scrollBy := 0; startLine := 1; editLine := -1;
   ckValid := 0; ckState[0] := stNormal; rowsValid := false;
   attrKw := (aText and $F0) or colKeyword;
   attrComment := (aText and $F0) or colComment;
@@ -1007,8 +1083,15 @@ begin
   Refresh;
   repeat
     if KeyPressed then begin
-      k := ReadKey;
-      if not Ctrl then TypedKey(k);
+      { all keys that are waiting first, then one screen update: holding a
+        cursor key scrolls as fast as the screen can follow and stops when
+        the key is let go }
+      i := 0;
+      repeat
+        k := ReadKey;
+        if not Ctrl then TypedKey(k);
+        i := i + 1;
+      until not KeyPressed or (i >= 64);
       Refresh;
     end else begin
       CommandKeys;
