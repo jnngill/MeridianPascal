@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MERIDIAN Pascal</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231f3fa8'/%3E%3Ctext x='16' y='23' font-family='monospace' font-size='20' font-weight='bold' fill='%2399c8ff' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">P</span><span>MERIDIAN <b>Pascal</b></span></div>
+  <nav class="tools">
+    <button id="bNew" title="New file (Ctrl+N)">New</button>
+    <button id="bSave" title="Save (Ctrl+S)">Save</button>
+    <span class="sep"></span>
+    <button id="bBuild" class="accent" title="Compile to a .MER file (F9)">Build <kbd>F9</kbd></button>
+    <button id="bRun" class="go" title="Build and run in the emulator (F5)">&#9654; Run <kbd>F5</kbd></button>
+    <button id="bStop" title="Stop the emulator (Shift+F5)">&#9632; Stop</button>
+    <button id="bSend" title="Build and send to the MiSTer with tools/senden.py (F8)">Send to MiSTer <kbd>F8</kbd></button>
+    <span class="sep"></span>
+    <label class="target">Target
+      <select id="target">
+        <option value="m816">65C816 &mdash; MERIDIAN 816</option>
+        <option value="schub">SCHUB &mdash; RV32IM co-processor</option>
+      </select>
+    </label>
+  </nav>
+  <div class="tools right">
+    <a class="btn" href="/docs/" target="_blank" title="Language and library reference">Help</a>
+    <button id="bSettings" title="Settings">Settings</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="side">
+    <section class="panel grow">
+      <h3>Project <span class="hbtns"><button id="bNewFile" title="New file">+</button><button id="bNewDir" title="New folder">&#128193;</button><button id="bRefresh" title="Refresh">&#8635;</button></span></h3>
+      <div id="tree" class="tree"></div>
+    </section>
+    <section class="panel">
+      <h3>Libraries</h3>
+      <div id="libs" class="tree"></div>
+    </section>
+    <section class="panel">
+      <h3>Examples</h3>
+      <div id="examples" class="tree"></div>
+    </section>
+  </aside>
+
+  <section class="center">
+    <div id="tabs" class="tabs"></div>
+    <div id="findbar" class="findbar hidden">
+      <input id="findText" placeholder="Find" spellcheck="false">
+      <input id="replText" placeholder="Replace" spellcheck="false">
+      <button id="bFindPrev" title="Previous (Shift+Enter)">&uarr;</button>
+      <button id="bFindNext" title="Next (Enter)">&darr;</button>
+      <button id="bReplace">Replace</button>
+      <button id="bReplaceAll">All</button>
+      <button id="bFindClose" title="Close (Esc)">&times;</button>
+    </div>
+    <div id="editor" class="editor-host"></div>
+    <div id="welcome" class="welcome">
+      <h1>MERIDIAN <b>Pascal</b></h1>
+      <p>A Pascal compiler, libraries and emulator for the MERIDIAN&nbsp;816 and its SCHUB RISC-V co-processor.</p>
+      <p>Open a file from the project, or start from an example.</p>
+      <p class="keys"><kbd>F9</kbd> build &nbsp; <kbd>F5</kbd> run &nbsp; <kbd>F8</kbd> send to MiSTer &nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> save &nbsp; <kbd>Ctrl</kbd>+<kbd>F</kbd> find</p>
+    </div>
+    <div class="statusbar"><span id="sbPos"></span><span id="sbFile"></span><span id="sbTarget"></span></div>
+  </section>
+
+  <section class="bottom">
+    <div class="btabs" id="btabs">
+      <button data-p="msgs" class="on">Messages</button>
+      <button data-p="out">Output</button>
+      <button data-p="asm">Assembly</button>
+      <button data-p="lst">Listing</button>
+      <button data-p="map">Memory</button>
+      <span class="grow"></span>
+      <button id="bClearMsgs" title="Clear messages">Clear</button>
+    </div>
+    <div class="bpanes">
+      <div id="p-msgs" class="bpane on"></div>
+      <pre id="p-out" class="bpane"></pre>
+      <pre id="p-asm" class="bpane"></pre>
+      <pre id="p-lst" class="bpane"></pre>
+      <div id="p-map" class="bpane"></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="emu-head">
+      <span class="emu-title">MERIDIAN 816 <small id="emuTarget"></small></span>
+      <span id="emuState" class="pill">idle</span>
+      <span class="grow"></span>
+      <button id="bCart" title="Build PASCAL.MOD - the IDE and compiler that run on the MERIDIAN itself - and start it in the emulator">PASCAL cartridge</button>
+      <button id="bPause" title="Pause">&#10074;&#10074;</button>
+      <button id="bReset" title="Reset the emulator">Reset</button>
+      <button id="bMute" title="Sound on/off">&#128266;</button>
+      <button id="bShot" title="Save a screenshot (PNG)">&#128247;</button>
+    </div>
+    <div class="screen-wrap"><canvas id="screen" width="640" height="240"></canvas></div>
+    <div class="emu-help">Click the screen to type. Cursor keys + Ctrl/Space act as joystick 1, the mouse is the MERIDIAN mouse. <kbd>Esc</kbd> stops a program.</div>
+    <div id="emuInfo" class="emu-info"></div>
+    <section class="panel drive">
+      <h3>Disk <small>drives 1 and 3 = project folder <code>disk/</code></small>
+        <span class="hbtns"><label class="filebtn" title="Add files to the disk">+<input id="diskUpload" type="file" multiple hidden></label><button id="bDiskRefresh" title="Refresh">&#8635;</button></span></h3>
+      <ul id="diskFiles" class="disk"></ul>
+    </section>
+  </aside>
+</main>
+
+<dialog id="dlgSettings">
+  <form method="dialog">
+    <h2>Settings</h2>
+    <label>MiSTer address (IP or ssh name)<input name="misterHost" placeholder="192.168.1.50" spellcheck="false"></label>
+    <label>MERIDIAN repository folder (for <code>tools/senden.py</code>)<input name="meridianRoot" spellcheck="false"></label>
+    <label>Python command<input name="python" spellcheck="false"></label>
+    <label>Editor font size<input name="fontSize" type="number" min="10" max="24"></label>
+    <p class="hint">Sending uses ssh as <code>root</code> on the MiSTer. Set up an ssh key so no password prompt is needed. Workspace: <code id="wsPath"></code></p>
+    <menu><button value="cancel">Cancel</button><button value="ok" class="accent">Save</button></menu>
+  </form>
+</dialog>
+
+<dialog id="dlgPrompt">
+  <form method="dialog">
+    <h2 id="prTitle"></h2>
+    <p id="prText"></p>
+    <input id="prInput" spellcheck="false">
+    <div id="prChoices" class="choices"></div>
+    <menu><button value="cancel">Cancel</button><button value="ok" class="accent" id="prOk">OK</button></menu>
+  </form>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

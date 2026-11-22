@@ -1,0 +1,8 @@
+# personal IDE settings (MiSTer address, local paths) - the server uses defaults without it
+ide/config.json
+# the IDE's workspace (filled from examples/ on the first start)
+projects/
+# build output
+PASCAL.MOD
+*.mer
+node_modules/

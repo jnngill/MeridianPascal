@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MERIDIAN Pascal Reference</title>
+<style>
+:root { --bg:#0e1424; --bg2:#141c31; --line:#26324f; --fg:#d6def0; --dim:#8592b0; --accent:#5aa2ff; --mono: "Cascadia Mono", Consolas, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+nav { position: fixed; top: 0; bottom: 0; left: 0; width: 250px; overflow-y: auto; background: var(--bg2); border-right: 1px solid var(--line); padding: 18px 0; }
+nav a { display: block; padding: 3px 20px; color: var(--dim); text-decoration: none; font-size: 14px; }
+nav a:hover { color: var(--fg); }
+nav a.h { color: var(--fg); font-weight: 600; margin-top: 10px; }
+nav .brand { padding: 0 20px 10px; font-size: 18px; color: var(--fg); }
+nav .brand b { color: var(--accent); }
+main { margin-left: 250px; padding: 30px 48px 80px; max-width: 1000px; }
+h1 { font-weight: 300; font-size: 32px; margin: 0 0 8px; }
+h1 b { color: var(--accent); font-weight: 600; }
+h2 { margin-top: 48px; padding-top: 12px; border-top: 1px solid var(--line); font-weight: 500; }
+h3 { margin-top: 28px; color: #bcd3ff; font-weight: 600; }
+code, pre { font-family: var(--mono); font-size: 13.5px; }
+code { background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+pre { background: #0a0f1d; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; line-height: 1.45; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; font-size: 14px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--dim); font-weight: 500; }
+td code { white-space: nowrap; }
+.note { border-left: 3px solid var(--accent); background: rgba(90,162,255,.07); padding: 8px 14px; border-radius: 0 6px 6px 0; }
+.warn { border-left-color: #ffb347; background: rgba(255,179,71,.07); }
+a { color: var(--accent); }
+.lead { color: var(--dim); font-size: 17px; }
+@media (max-width: 800px) { nav { position: static; width: auto; } main { margin: 0; padding: 20px 16px; } }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand">MERIDIAN <b>Pascal</b></div>
+  <a class="h" href="#start">Getting started</a>
+  <a href="#ide">The IDE</a>
+  <a href="#cli">Command-line compiler</a>
+  <a href="#cart">On the MERIDIAN: PASCAL.MOD</a>
+  <a class="h" href="#lang">Language</a>
+  <a href="#types">Types and sizes</a>
+  <a href="#decl">Declarations</a>
+  <a href="#stmt">Statements</a>
+  <a href="#expr">Expressions</a>
+  <a href="#builtins">Built-in routines</a>
+  <a href="#mem">Memory and hardware access</a>
+  <a href="#cond">Conditional compilation</a>
+  <a href="#units">Units</a>
+  <a href="#diff">Differences from Turbo Pascal</a>
+  <a class="h" href="#targets">Targets</a>
+  <a href="#t816">65C816</a>
+  <a href="#tschub">SCHUB (RV32IM)</a>
+  <a class="h" href="#libs">Libraries</a>
+  <a href="#l-system">System</a>
+  <a href="#l-crt">Crt</a>
+  <a href="#l-graph">Graph</a>
+  <a href="#l-sprites">Sprites</a>
+  <a href="#l-audio">Audio</a>
+  <a href="#l-input">Input</a>
+  <a href="#l-dos">Dos</a>
+  <a href="#l-blitter">Blitter</a>
+  <a href="#l-copper">Copper</a>
+  <a href="#l-schub">Schub</a>
+  <a class="h" href="#errors">Runtime errors</a>
+  <a class="h" href="#inside">How it works</a>
+</nav>
+<main>
+<h1>MERIDIAN <b>Pascal</b></h1>
+<p class="lead">A Turbo Pascal-style compiler, libraries, emulator and IDE for the MERIDIAN&nbsp;816 home computer and its SCHUB RISC-V co-processor.</p>
+
+<h2 id="start">Getting started</h2>
+<p>You need Node.js 18 or newer. Nothing else has to be installed.</p>
+<pre>node ide/server.js</pre>
+<p>Then open <a href="http://127.0.0.1:8165/">http://127.0.0.1:8165/</a>. On the first start the examples are copied into the project folder <code>projects/</code>. Open <code>hello.pas</code> and press <b>F5</b>: the program is compiled to <code>hello.mer</code> and runs in the built-in MERIDIAN emulator.</p>
+<pre>program Hello;
+uses Crt;
+var i: integer;
+begin
+  ClrScr;
+  TextColor(Yellow);
+  WriteLn('HELLO FROM PASCAL!');
+  for i := 1 to 5 do WriteLn(i, ' * ', i, ' = ', i * i);
+end.</pre>
+<p>To run it on the real machine, copy the <code>.MER</code> file to <code>/media/fat/games/MERIDIAN/</code> and use <i>Load program</i> in the MiSTer menu, or press <b>F8</b> in the IDE to send it over the network with the MERIDIAN repository's <code>tools/senden.py</code>. The program starts at once; when it ends, the MERIDIAN is back at <code>READY.</code></p>
+
+<h3 id="ide">The IDE</h3>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td><code>F9</code></td><td>Build: compile the active program to a <code>.mer</code> next to it</td></tr>
+<tr><td><code>F5</code></td><td>Build and run in the emulator</td></tr>
+<tr><td><code>Shift+F5</code></td><td>Stop the emulator</td></tr>
+<tr><td><code>F8</code></td><td>Build and send to the MiSTer (needs the MiSTer address and the MERIDIAN repository folder in <i>Settings</i>, and an ssh key for <code>root</code>)</td></tr>
+<tr><td><code>Ctrl+S</code></td><td>Save</td></tr>
+<tr><td><code>Ctrl+F</code> / <code>Ctrl+G</code></td><td>Find and replace / go to line</td></tr>
+<tr><td><code>Ctrl+/</code></td><td>Comment or uncomment the selected lines</td></tr>
+<tr><td><code>Tab</code> / <code>Shift+Tab</code></td><td>Indent / outdent the selected lines</td></tr>
+</table>
+<ul>
+<li><b>Target</b> chooses the processor: the 65C816 or the SCHUB RISC-V co-processor. The same source compiles for both.</li>
+<li><b>Messages</b> lists errors; click one to jump to the line. <b>Assembly</b> shows the generated code (64tass syntax for the 65C816), <b>Listing</b> the addresses and bytes, <b>Memory</b> the memory map of the program, <b>Output</b> everything the program printed.</li>
+<li>The <b>emulator</b> runs the real MERIDIAN kernel ROM. Click the screen to give it the keyboard. The cursor keys plus Ctrl or Space are joystick&nbsp;1; the mouse is the MERIDIAN mouse. <code>Esc</code> stops most programs.</li>
+<li>The folder <code>disk/</code> in the project is drive 1 and drive 3 of the emulated MERIDIAN. Files that programs save with the <a href="#l-dos">Dos</a> unit appear there; use <b>+</b> to add files.</li>
+<li><b>Libraries</b> opens the unit sources (read-only); <b>Examples</b> copies an example into the project.</li>
+</ul>
+
+<h3 id="cli">Command-line compiler</h3>
+<pre>node compiler/mpc.js program.pas [-t m816|schub] [-o out.mer] [-S] [-l] [-I dir] [-D SYMBOL]</pre>
+<table>
+<tr><td><code>-t</code></td><td><code>m816</code> (default) or <code>schub</code></td></tr>
+<tr><td><code>-o</code></td><td>output file (default: the program name with <code>.mer</code>)</td></tr>
+<tr><td><code>-S</code> / <code>-l</code></td><td>also write the assembly (<code>.asm</code>) / a listing (<code>.lst</code>)</td></tr>
+<tr><td><code>-I</code></td><td>another folder to search for units</td></tr>
+<tr><td><code>-D</code></td><td>define a symbol for <code>{$IFDEF}</code></td></tr>
+</table>
+<p>The 65C816 assembly is plain 64tass syntax: <code>64tass --long-branch -b -o x.bin x.asm</code> gives the same bytes as the built-in assembler. Tests: <code>node tests/run.js</code> (language tests on both targets) and <code>node tests/examples.js</code>.</p>
+
+<h3 id="cart">On the MERIDIAN itself: the PASCAL cartridge</h3>
+<p><code>PASCAL.MOD</code> is a cartridge with an editor and a compiler that run on the MERIDIAN&nbsp;816 itself, like Turbo Pascal on an old home computer. Build it with</p>
+<pre>node compiler/mkcart.js            # -> PASCAL.MOD</pre>
+<p>or with the <b>PASCAL cartridge</b> button above the emulator screen in the IDE (it starts the cartridge in the emulator and saves <code>PASCAL.MOD</code> in the project). On the MiSTer, copy it to <code>/media/fat/games/MERIDIAN/</code> and choose it under <i>Insert cartridge</i>: the MERIDIAN then starts into the editor (OSD <i>Cartridge start: Off</i> or F10 goes to BASIC). It needs the SDRAM module.</p>
+<table>
+<tr><th>Key</th><th>Action</th></tr>
+<tr><td><code>F1</code></td><td>help</td></tr>
+<tr><td><code>F2</code> / <code>F3</code></td><td>save / load (<code>.PAS</code> is added when the name has no ending; CR LF and tabs are converted on loading)</td></tr>
+<tr><td><code>F4</code></td><td>new text</td></tr>
+<tr><td><code>F5</code></td><td>compile and run (programs run in 40 columns; a key returns to the editor)</td></tr>
+<tr><td><code>F6</code> / <code>F8</code></td><td>next drive (1, 2, 3) / directory</td></tr>
+<tr><td><code>F7</code></td><td>compile and save as a standalone <code>NAME.MER</code> that runs without the cartridge</td></tr>
+<tr><td><code>F9</code></td><td>compile only; on an error the cursor goes to the line</td></tr>
+<tr><td><code>F10</code></td><td>back to BASIC</td></tr>
+<tr><td><code>Ctrl+Y</code> <code>Ctrl+F</code> <code>Ctrl+L</code></td><td>delete line, find, find again</td></tr>
+<tr><td><code>Ctrl+R</code></td><td>run a program file (<code>.MER</code>) from the current drive: one saved with <code>F7</code> or one from the PC compiler, for either target (<code>F3</code> with a name ending in <code>.MER</code> does the same)</td></tr>
+<tr><td><code>Ctrl+T</code></td><td>target: 65C816 or SCHUB (shown at the right of the status line)</td></tr>
+<tr><td><code>PgUp PgDn Home End Ctrl+Home Ctrl+End</code></td><td>move</td></tr>
+</table>
+<p>The cartridge holds all library units (System, Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub), compiled by the cross compiler in its far code model, plus a table of their routines. The on-device compiler (<code>cart/ncomp.pas</code>, written in Pascal) is a one-pass compiler that writes 65C816 code straight into bank <code>$30</code> and calls the library in ROM. While a program runs, bank 0 is saved in bank <code>$31</code> and the editor's state comes back afterwards; a runtime error or <code>Halt</code> also returns to the editor.</p>
+<p><b>Language on the MERIDIAN:</b> programs with <code>uses</code> of the built-in units, <code>const</code> (also typed constant arrays), <code>type</code>, <code>var</code>, nested procedures and functions with value, <code>var</code> and <code>const</code> parameters (string, array, record and set parameters too), <code>integer word byte shortint longint real char boolean string string[n]</code>, arrays (up to 4 dimensions), records with variant parts, sets (<code>set of</code>, constructors with expressions, <code>+ - * in = &lt;&gt; &lt;= &gt;=</code>, <code>Include</code>/<code>Exclude</code>), pointers with <code>New</code>/<code>Dispose</code>, enumerations, subranges, <code>if while repeat for case with</code>, <code>Exit Break Continue Halt</code>, <code>Write(Ln)</code> with widths (<code>r:w:d</code> for reals), <code>Read(Ln)</code>, <code>Inc Dec Str Ord Chr Succ Pred Odd Abs Sqr Sqrt Trunc Round Int Frac Length SizeOf Low High Lo Hi Assigned</code>, <code>Mem[] MemW[] MemL[]</code> and <code>@</code>. <code>and</code>/<code>or</code> stop as soon as the result is known. The library's <code>Sin Cos ArcTan Exp Ln Power</code> work as on the PC.</p>
+<p><b>Your own units:</b> <code>uses MyUnit</code> reads <code>MYUNIT.PAS</code> from the current drive and compiles it together with the program (file names are the first 8 letters of the unit name). A unit has <code>unit</code>, <code>interface</code> and <code>implementation</code> parts, may use other units (also in its implementation part) and may end with <code>begin</code> or <code>initialization</code> code, which runs before the program. Only what the interface declares is visible to the program. An error inside a unit shows as <code>ERROR IN MYUNIT.PAS LINE n</code>.</p>
+<p>Functions can return records, arrays and sets (up to 256 bytes), also as <code>F(a).x</code> or <code>F[i]</code>. <code>absolute</code> places a variable over another one or at an address; outside bank 0 (for example <code>absolute $310000</code>) it is for simple variables and records.</p>
+<p><b>Standalone programs:</b> <code>F7</code> saves the program as a <code>.MER</code> that runs without the cartridge: start it with <i>Load program</i> in the MiSTer menu, from ATLAS or over the network, like a program from the PC compiler, with <code>Ctrl+R</code> in the PASCAL editor, or from BASIC with <code>BRUN "NAME"</code> (drive optional: <code>BRUN "NAME",3</code>; needs a MERIDIAN core from 22 November 2026 on). <code>BRUN</code> keeps BASIC's memory while the program runs, so BASIC carries on afterwards, also with the next statement of a BASIC program. The file carries the program, the parts of the library it needs at run time (about 33&nbsp;KB) and a small loader; it loads at <code>$22:0000</code>, so it needs the SDRAM module. When no cartridge is inserted the loader puts the library at <code>$40:0000</code>, where the cartridge would be. With the PASCAL cartridge it was made with, it uses the cartridge's copy. If a different cartridge is inserted, or a different version of the PASCAL cartridge, it prints a message and returns.</p>
+<p><b>SCHUB programs:</b> press <code>Ctrl+T</code>, or put <code>{$SCHUB}</code> at the very top of the text (the PC compiler ignores it), and the MERIDIAN compiles the program to RV32IM code for the SCHUB co-processor instead of 65C816 code. The language is the same, the whole library is there (the cartridge carries an RV32 build of every unit), and <code>F5</code> runs the program on SCHUB: the 65C816 hands it over to SCHUB and serves its screen, keyboard and disk requests. <code>F7</code> saves it as a standalone <code>.MER</code> that runs without the cartridge, too. On SCHUB, pointers are 32 bits, record fields are aligned like the PC compiler lays them out, FOR and CASE take longints, and variables are no longer limited to bank 0: the program's variables (up to 320&nbsp;KB, 64&nbsp;KB per variable) start at <code>$0A:0000</code>, followed by the heap, which runs up to the stack below <code>$20:0000</code>. Code goes to <code>$08:0000</code> (up to 128&nbsp;KB), the RV32 library to <code>$04:0400</code>. SCHUB needs the SDRAM module; the host stub switches SCHUB on if it is off in the menu.</p>
+<p>Identifiers are significant to 15 characters.</p>
+<p>Memory used by the cartridge: source text <code>$20:0000</code>, loading area <code>$28:0000</code>, compiled code <code>$30:0000</code>, saved bank 0 <code>$31:0000</code>, program data image <code>$32:0000</code>. Compiled programs get bank 0 from about <code>$2670</code> (variables and heap), stack from <code>$A7FF</code> and string temporaries from <code>$B7FF</code>.</p>
+
+<h2 id="lang">Language</h2>
+<p>MERIDIAN Pascal follows Turbo Pascal 7 for the core language: programs and units, nested procedures and functions, value, <code>var</code> and <code>const</code> parameters, records (with variant parts), arrays, sets, pointers, enumerations, subranges, short strings, typed constants and a software <code>real</code>. Identifiers are not case sensitive.</p>
+
+<h3 id="types">Types and sizes</h3>
+<table>
+<tr><th>Type</th><th>Size</th><th>Range</th></tr>
+<tr><td><code>shortint</code> / <code>byte</code></td><td>1</td><td>-128..127 / 0..255</td></tr>
+<tr><td><code>integer</code> (<code>smallint</code>) / <code>word</code></td><td>2</td><td>-32768..32767 / 0..65535</td></tr>
+<tr><td><code>longint</code> / <code>longword</code> (<code>cardinal</code>, <code>dword</code>)</td><td>4</td><td>32 bit signed / unsigned</td></tr>
+<tr><td><code>char</code>, <code>boolean</code></td><td>1</td><td>MERIDIAN character set (Latin-1)</td></tr>
+<tr><td><code>real</code> (<code>single</code>)</td><td>4</td><td>IEEE single precision, about 7 digits, in software on both CPUs</td></tr>
+<tr><td><code>string</code>, <code>string[n]</code></td><td>n+1</td><td>length byte + up to 255 characters</td></tr>
+<tr><td><code>set of</code> ordinal</td><td>32</td><td>elements 0..255</td></tr>
+<tr><td>pointers</td><td>2 on 65C816, 4 on SCHUB</td><td><code>PtrUInt</code> is <code>word</code> / <code>longword</code> to match</td></tr>
+<tr><td>enumerations</td><td>1</td><td>up to 256 names</td></tr>
+</table>
+<p>On SCHUB, record fields and variables are aligned to their size (RV32 cannot read unaligned words), so a record may be larger there. Use <code>SizeOf</code> instead of fixed numbers.</p>
+
+<h3 id="decl">Declarations</h3>
+<pre>const
+  Max = 100;                                     { constant expression }
+  Primes: array[1..5] of integer = (2, 3, 5, 7, 11);   { typed constant (static data) }
+  Origin: TPoint = (x: 0; y: 0);
+type
+  TColor = (Red, Green, Blue);
+  TPoint = record x, y: integer; end;
+  PNode = ^TNode;                                { forward pointer type }
+  TNode = record value: integer; next: PNode; end;
+  TGrid = array[0..9, 0..9] of byte;
+var
+  count: integer = 0;                            { initialised variable }
+  Screen: array[0..1199] of word absolute $0400; { variable at a fixed address }
+
+procedure Swap(var a, b: integer);
+function Sum(const v: TGrid): longint;
+procedure Later(n: integer); forward;</pre>
+<p>Functions return scalars, reals, pointers and strings. Inside a function, assign the result to the function name or to <code>Result</code>; <code>Exit(value)</code> also works.</p>
+
+<h3 id="stmt">Statements</h3>
+<p><code>begin..end</code>, <code>if..then..else</code>, <code>case</code> (with ranges and <code>else</code>), <code>while</code>, <code>repeat..until</code>, <code>for..to/downto</code>, <code>with</code>, <code>Break</code>, <code>Continue</code>, <code>Exit</code>, <code>Halt</code>, and the compound assignments <code>+=</code> and <code>-=</code>. Boolean <code>and</code>/<code>or</code> short-circuit.</p>
+
+<h3 id="expr">Expressions</h3>
+<p>Operators in Pascal precedence: <code>not @ -</code>; <code>* / div mod and shl shr</code>; <code>+ - or xor</code>; <code>= &lt;&gt; &lt; &lt;= &gt; &gt;= in</code>. Integer arithmetic is done in 16 bits when both operands fit, otherwise in 32 bits (as in Turbo Pascal, <code>integer</code> with <code>word</code> becomes <code>longint</code>). <code>/</code> always gives a <code>real</code>. <code>shr</code> is a logical shift; use <code>div</code> to divide signed numbers. Numbers: <code>123</code>, <code>$7F</code>, <code>%1010</code>, <code>1.5e3</code>; characters <code>'a'</code>, <code>#13</code>, <code>#$0D</code>.</p>
+
+<h3 id="builtins">Built-in routines</h3>
+<table>
+<tr><td>Input/output</td><td><code>Write WriteLn Read ReadLn</code> with field widths <code>x:w</code>, <code>r:w:d</code></td></tr>
+<tr><td>Ordinals</td><td><code>Ord Chr Succ Pred Low High Inc Dec Odd Hi Lo Swap</code></td></tr>
+<tr><td>Arithmetic</td><td><code>Abs Sqr Sqrt Trunc Round Int Frac Sin Cos ArcTan Exp Ln Power Random Randomize Min Max</code></td></tr>
+<tr><td>Strings</td><td><code>Length Copy Pos Delete Insert Concat UpCase LoCase UpperCase LowerCase Str Val IntToStr IntToHex StrToInt Trim StringOfChar</code></td></tr>
+<tr><td>Memory</td><td><code>New Dispose GetMem FreeMem MemAvail MaxAvail SizeOf Addr Assigned Move FillChar</code></td></tr>
+<tr><td>Sets</td><td><code>Include Exclude</code>, operators <code>+ - * in = &lt;&gt; &lt;= &gt;=</code></td></tr>
+<tr><td>Program</td><td><code>Halt Exit Break Continue RunError EscPressed Target</code></td></tr>
+</table>
+
+<h3 id="mem">Memory and hardware access</h3>
+<p><code>Mem[a]</code>, <code>MemW[a]</code> and <code>MemL[a]</code> read and write bytes, words and longs at any 24-bit address: chip RAM, expansion RAM, chip registers. They work the same on both targets (on SCHUB through the uncached alias, as the chips need).</p>
+<pre>Mem[$C000] := 4;            { PINSEL layer A: bitmap with 256 colours }
+MemW[$C120] := 160;         { PFORTE: mouse x }
+x := MemL[$03F000];         { chip RAM bank 3 }</pre>
+<p><code>absolute</code> places a variable at an address. On the 65C816 such variables must be in bank 0; ordinary pointers also address bank 0 there (the program, its variables, heap and stack all live in bank 0).</p>
+<div class="note warn">On SCHUB, keep the 32-bit alignment rule in mind: <code>MemL</code> and <code>MemW</code> on odd addresses cause an exception. Write such registers byte by byte.</div>
+
+<h3 id="cond">Conditional compilation</h3>
+<p><code>{$IFDEF x}</code>, <code>{$IFNDEF x}</code>, <code>{$ELSE}</code>, <code>{$ENDIF}</code>, <code>{$DEFINE x}</code>, <code>{$UNDEF x}</code> and <code>{$I file}</code>. Predefined: <code>MERIDIAN</code>, and <code>M816</code> + <code>CPU65C816</code> or <code>SCHUB</code> + <code>CPURV32</code>. At run time, <code>Target</code> returns <code>TargetM816</code> or <code>TargetSchub</code>.</p>
+
+<h3 id="units">Units</h3>
+<pre>unit Tools;
+interface
+function Twice(x: integer): integer;
+implementation
+function Twice(x: integer): integer;
+begin Twice := 2 * x; end;
+begin                          { optional initialisation }
+end.</pre>
+<p>A unit is found as <code>name.pas</code> next to the program or in <code>lib/</code>. <code>System</code> is used automatically. Routines that a program never calls are left out of the output, so using a big unit costs only what you use.</p>
+
+<h3 id="diff">Differences from Turbo Pascal</h3>
+<ul>
+<li>No <code>goto</code>/<code>label</code>, no <code>asm</code> blocks, no procedural types, no objects/classes, no open array parameters (declare a named array type), no file types (use the <a href="#l-dos">Dos</a> unit), no dynamic arrays.</li>
+<li><code>real</code> is IEEE single precision (Turbo Pascal's is 6 bytes).</li>
+<li>Range and overflow checks are not generated; division by zero stops the program with runtime error 200.</li>
+<li><code>Read</code>/<code>ReadLn</code> read from the keyboard only, with a small line editor (Backspace, Return; Esc ends the program).</li>
+</ul>
+
+<h2 id="targets">Targets</h2>
+<h3 id="t816">65C816 (MERIDIAN 816)</h3>
+<p>The program is native 65C816 code in bank 0, loaded at <code>$2000</code> and started by the kernel with <code>JSL</code> (from the MiSTer menu, <code>tools/senden.py</code>, or the monitor's <code>G 2000</code>). It returns with <code>RTL</code>; the kernel then restarts BASIC with <code>READY.</code>.</p>
+<table>
+<tr><th>Address</th><th>Use</th></tr>
+<tr><td><code>$00:2000</code></td><td>code, constants, initialised data</td></tr>
+<tr><td>after it</td><td>variables (cleared at start), then the heap growing upwards</td></tr>
+<tr><td><code>$00:B7FF</code></td><td>top of the stack, growing down (BASIC's extension at <code>$B800</code> is left alone)</td></tr>
+<tr><td><code>$02:0000</code></td><td>Graph unit picture (76&nbsp;800 bytes)</td></tr>
+<tr><td><code>$03:8000</code></td><td>Copper unit list (default)</td></tr>
+</table>
+<p>Machine model while Pascal code runs: native mode, A and X/Y 16 bit, data bank 0, D = frame pointer of the current procedure (locals are direct-page variables). Kernel routines are called with D = 0 and an 8-bit accumulator, as the kernel expects; its interrupt handler saves D and the data bank itself, so the frame pointer is safe.</p>
+<p>Calling convention: arguments are pushed left to right (2 bytes for 16-bit values and pointers, 4 for 32-bit values); nested procedures get the frame of the enclosing procedure as a hidden last argument (static link); <code>JSR</code>/<code>RTS</code>; results in A, 32-bit results in A (low) and X (high); the caller removes the arguments.</p>
+
+<h3 id="tschub">SCHUB (RV32IM co-processor)</h3>
+<p>Needs the MERIDIAN&nbsp;816 + SCHUB core with an SDRAM module. The <code>.MER</code> file loads at <code>$04:0000</code> and holds two programs:</p>
+<table>
+<tr><th>Address</th><th>Use</th></tr>
+<tr><td><code>$04:0000</code></td><td>65C816 host stub, started by the kernel with <code>JSL</code></td></tr>
+<tr><td><code>$04:03F0</code></td><td>mailbox (SCHUB uses the uncached alias <code>$8004_03F0</code>)</td></tr>
+<tr><td><code>$04:0400</code></td><td>RV32IM code and data, then variables and heap</td></tr>
+<tr><td><code>$07:FFF0</code></td><td>top of the SCHUB stack</td></tr>
+</table>
+<p>The stub checks that SCHUB is there (<code>$CD00</code> = <code>SCHB</code>), sets the start address, switches SCHUB on (<code>$CD08</code> = 3) and then serves the RISC-V program: it prints characters, reads keys, switches the text mode, resets the display and calls the DOS for it, through the kernel's long entry points. Everything else &mdash; graphics, sprites, sound, blitter, copper, timers &mdash; the RISC-V program drives directly through the chip registers. <code>Esc</code> stops a SCHUB program even while it computes. If SCHUB is missing the stub prints <code>SCHUB NOT AVAILABLE</code>.</p>
+<p>Code generation: the expression stack lives in the callee-saved registers <code>s1</code>&ndash;<code>s11</code>, <code>s0</code> is the frame pointer, arguments are pushed in 4-byte slots, results come back in <code>a0</code>. 16-bit values are kept sign- or zero-extended in the 32-bit registers. Variables are cached; <code>Mem[]</code> and <code>absolute</code> variables use the uncached alias.</p>
+<div class="note warn">DOS calls on SCHUB: the 65C816 moves the file data, so read data that the DOS loaded into a Pascal variable may still be stale in SCHUB's data cache. Load into a free memory area and read it with <code>Mem[]</code>, which is uncached.</div>
+
+<h2 id="libs">Libraries</h2>
+<h3 id="l-system">System <small>(always used)</small></h3>
+<p>The runtime, the standard routines listed <a href="#builtins">above</a>, and: <code>Move(const src; var dst; count)</code>, <code>FillChar(var x; count; value)</code>, <code>Target</code>, <code>KernelMode(cols)</code>, <code>ResetDisplay</code>, <code>DosCall(cmd)</code>, <code>EscPressed</code>, <code>RunError(code)</code>, <code>RandSeed</code>, <code>HeapError</code> (set true to get <code>nil</code> from <code>New</code> instead of error 203). Types <code>PByte PWord PInteger PLongint PChar PString TByteArray PByteArray</code>.</p>
+
+<h3 id="l-crt">Crt <small>&mdash; text screen, keyboard, timing</small></h3>
+<table>
+<tr><td><code>ClrScr ClrEol GotoXY(x,y) WhereX WhereY</code></td><td>Turbo Pascal semantics, 1-based; 30 rows of 40 or 80 columns</td></tr>
+<tr><td><code>TextColor(c) TextBackground(c) TextAttr SetTextAttr(a)</code></td><td>colours 0..15 of the MERIDIAN-16 palette: <code>Black White Red Cyan Purple Green Blue Yellow Orange Brown LightRed DarkGray Gray LightGreen LightBlue LightGray</code></td></tr>
+<tr><td><code>TextMode(40|80) ScreenCols</code></td><td>switch columns (clears the screen)</td></tr>
+<tr><td><code>KeyPressed ReadKey FlushKeys</code></td><td>key codes as the kernel gives them; <code>kbEnter kbEsc kbBack kbUp kbDown kbLeft kbRight kbHome kbDelete kbInsert</code>. <code>CheckBreak</code> (default true): Esc in ReadKey ends the program</td></tr>
+<tr><td><code>Delay(ms) Micros Frames WaitVSync</code></td><td>PFORTE microsecond clock, frame counter, wait for the next frame</td></tr>
+<tr><td><code>PutCharAt(x,y,c,attr) GetCharAt(x,y) WriteAt(x,y,s,attr) FillRect(x,y,w,h,c,attr)</code></td><td>direct screen access (fast, no cursor); attr = background*16 + foreground</td></tr>
+<tr><td><code>Beep</code></td><td>the kernel's bell</td></tr>
+</table>
+
+<h3 id="l-graph">Graph <small>&mdash; 320&times;240, 256 colours (PINSEL)</small></h3>
+<table>
+<tr><td><code>InitGraph</code> / <code>InitGraphOverText</code> / <code>CloseGraph</code></td><td>bitmap on layer A, or on layer B over the text (colour 0 transparent); back to text</td></tr>
+<tr><td><code>ClearDevice(c) PutPixel(x,y,c) GetPixel(x,y)</code></td><td></td></tr>
+<tr><td><code>Line HLine VLine Rectangle Bar Circle FillCircle Ellipse</code></td><td><code>Bar</code>, lines and <code>ClearDevice</code> use the KRAN blitter</td></tr>
+<tr><td><code>OutTextXY(x,y,s,c) OutTextXYBg(x,y,s,c,bg)</code></td><td>text in the 8&times;8 MERIDIAN font</td></tr>
+<tr><td><code>SetRGB(i,r,g,b)</code> / <code>SetRGB8</code></td><td>palette entry, 4 bits per channel / 8 bits reduced</td></tr>
+<tr><td><code>ScrollUp(lines, fill) WaitVSync GetMaxX GetMaxY GraphBase</code></td><td></td></tr>
+</table>
+
+<h3 id="l-sprites">Sprites <small>&mdash; KOBOLD</small></h3>
+<table>
+<tr><td><code>SetPatternRow(n, row, '0123456789ABCDEF')</code></td><td>one of 16 rows of pattern n (0..127), one hex digit per pixel, 0 = transparent</td></tr>
+<tr><td><code>DefinePattern(n, p: TPattern) ClearPattern(n)</code></td><td>whole pattern, 128 bytes</td></tr>
+<tr><td><code>SetSprite(n, x, y, pattern, bank)</code></td><td>sprite 0..31 at screen position, colours bank*16+value, shown</td></tr>
+<tr><td><code>MoveSprite SetSpritePattern SetSpriteBank SetSpriteFlags ShowSprite HideSprite HideAllSprites</code></td><td>flags: <code>sfFlipX sfFlipY sfBehind sfDouble</code></td></tr>
+<tr><td><code>SpriteHit(n) ClearHits SpriteX SpriteY SpritesOn SpritesOff</code></td><td>collisions from KOBOLD</td></tr>
+</table>
+
+<h3 id="l-audio">Audio <small>&mdash; ORGEL</small></h3>
+<table>
+<tr><td><code>SetVoice(v, wave, a, d, s, r)</code></td><td>voice 0..3, <code>wTriangle wSaw wPulse wNoise</code>, SID-style envelope 0..15</td></tr>
+<tr><td><code>SetFreq(v, hz) SetNote(v, midi) NoteFreq(midi)</code></td><td>69 = A4 = 440 Hz</td></tr>
+<tr><td><code>NoteOn NoteOff PlayNote(v, note, ms)</code></td><td>gate</td></tr>
+<tr><td><code>SetVolume SetPan(v, l, r) SetPulse MasterVolume SetFilter(cutoff, res, voices, mode)</code></td><td></td></tr>
+<tr><td><code>PlaySample(ch, addr, len, rate, vol, loop) StopSample</code></td><td>8-bit signed samples from chip or expansion RAM, channels 0..7</td></tr>
+<tr><td><code>Sound(hz) NoSound Beep Silence</code></td><td>Turbo Pascal style on voice 0</td></tr>
+</table>
+
+<h3 id="l-input">Input <small>&mdash; PFORTE</small></h3>
+<table>
+<tr><td><code>Joy(n) JoyPressed(n, bits)</code></td><td><code>joyRight joyLeft joyDown joyUp joyFireA..D joyStart joySelect</code></td></tr>
+<tr><td><code>KeyDown(scan) AnyKeyDown</code></td><td>keys held down (for games): <code>scA..scZ sc0..sc9 scSpace scEnter scEsc scUp scDown scLeft scRight scShift scCtrl ...</code></td></tr>
+<tr><td><code>MouseX MouseY MouseButtons MouseWheel SetMouse SetMouseLimits</code></td><td></td></tr>
+<tr><td><code>Micros GetTime(h,m,s) GetDate(y,m,d,wd)</code></td><td>clock</td></tr>
+</table>
+
+<h3 id="l-dos">Dos <small>&mdash; files on the MERIDIAN drives</small></h3>
+<table>
+<tr><td><code>SetDrive(0..3) CurrentDrive</code></td><td>0 cartridge save, 1/2 disk images, 3 SD folder <code>games/MERIDIAN/files</code></td></tr>
+<tr><td><code>LoadFile(name, addr, max): longint</code></td><td>bytes loaded, -1 on error (see <code>DosError</code>, <code>DosErrorText</code>)</td></tr>
+<tr><td><code>SaveFile(name, addr, len) SaveMer(...)</code></td><td>plain or with MER header</td></tr>
+<tr><td><code>LoadMer(name) DeleteFile(name) FileExists(name) DirEntry(i, name, size) DiskFree</code></td><td></td></tr>
+<tr><td><code>VarAddr(@x)</code></td><td>the 24-bit address of a Pascal variable, for LoadFile/SaveFile</td></tr>
+</table>
+
+<h3 id="l-blitter">Blitter <small>&mdash; KRAN</small></h3>
+<table>
+<tr><td><code>Blit(src, dst, w, h, srcStride, dstStride, mode, value)</code></td><td><code>bmCopy bmFill bmTransparent bmTransparent4</code> + <code>bmBackwards</code>, <code>bmColumn</code> (SCHUB core)</td></tr>
+<tr><td><code>BlitCopy BlitFill BlitTransparent BlitWait BlitBusy</code></td><td></td></tr>
+<tr><td><code>MakeJob(var j: TBlitJob; ...) RunJobList(addr)</code></td><td>job lists (mark the last with <code>bmLast</code>)</td></tr>
+<tr><td><code>CopyMem FillMem</code></td><td>memory blocks</td></tr>
+</table>
+
+<h3 id="l-copper">Copper <small>&mdash; LOTSE</small></h3>
+<pre>CopBegin(CopperBase);
+for y := 0 to 239 do begin CopWait(y); CopColor(6, y div 16, 0, 15 - y div 16); end;
+CopEnd;
+CopperOn;</pre>
+<p><code>CopBegin(addr) CopWait(line) CopWaitX(line, x) CopSet(reg, value) CopColor(i, r, g, b) CopWaitBlitter CopEnd CopperOn CopperOff CopSize</code>. Lists must be in chip RAM (banks 0&ndash;3).</p>
+
+<h3 id="l-schub">Schub</h3>
+<p><code>SchubPresent SchubStatus SchubRunning SchubCycles OnSchub</code> on both targets. On the 65C816 also <code>SchubStart(addr) SchubStop SchubCall(n, a, b, c)</code>: start a RISC-V program loaded into memory and call it through the same mailbox that BASIC's <code>SCHUB()</code> uses (<code>$FE:1800</code>).</p>
+
+<h2 id="errors">Runtime errors</h2>
+<table>
+<tr><td>106</td><td>invalid number in Read</td></tr>
+<tr><td>200</td><td>division by zero</td></tr>
+<tr><td>203</td><td>heap full</td></tr>
+<tr><td>205</td><td>floating point overflow</td></tr>
+<tr><td>207</td><td>invalid floating point operation (sqrt/ln of a negative number, real too large for Trunc)</td></tr>
+</table>
+<p>The program prints <code>RUNTIME ERROR n</code> and returns to BASIC.</p>
+
+<h2 id="inside">How it works</h2>
+<ol>
+<li><code>compiler/lexer.js</code>, <code>front.js</code>: a one-pass Turbo Pascal-style front end. Declarations go into the symbol table, expressions become typed trees, statements become a small stack-machine IR.</li>
+<li><code>compiler/back816.js</code> turns the IR into 65C816 assembly (the top of the expression stack cached in A/X, constants kept pending), <code>asm816.js</code> assembles it (64tass-compatible, with branch relaxation).</li>
+<li><code>compiler/backrv.js</code> turns the same IR into RV32IM assembly with the expression stack in <code>s1</code>&ndash;<code>s11</code>, and builds the 65C816 host stub; <code>asmrv.js</code> assembles it.</li>
+<li>Unused routines are removed, the bytes get a 16-byte MER header.</li>
+<li><code>emu/</code> has a complete 65C816 core, an RV32IM core, and the MERIDIAN chips (PINSEL text/tiles/bitmaps, KOBOLD sprites, LOTSE copper, KRAN blitter, PFORTE input and clock, ORGEL voices through WebAudio, SCHUB registers, DOS on a virtual drive). It runs the real kernel ROM.</li>
+</ol>
+</main>
+</body>
+</html>
