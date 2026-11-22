@@ -60,6 +60,15 @@ var
   plainAttr: array[0..79] of byte;   { colours for a row without syntax colours }
   drawnEnd: longint;                 { end of the line DrawLine drew last }
   scrollBy: integer;                 { lines the screen must scroll (Track) }
+  { the mouse: pointer cell (-1 none), the word under it and the word shown }
+  ptrCell: integer;
+  ptrSaved, ptrWord: word;
+  mouseSeen, ptrMoved: boolean;
+  lastMX, lastMY: integer;
+  lastButtons, lastWheel: byte;
+  clickLatch: boolean;               { a left click seen while busy (SampleMouse) }
+  latchX, latchY: integer;
+  sampleB: byte;
   startLine, editLine: integer;      { cursor line at the last Refresh; a line edited since, -1 none }
 
 { ------------------------------------------------------------- text }
@@ -383,6 +392,53 @@ begin
   PutStr(1, 1, ' MERIDIAN PASCAL   F1 HELP  F2 SAVE  F3 LOAD  F4 NEW  F5 RUN  F9 COMPILE  F10 END', aBar, Cols);
 end;
 
+{ the mouse pointer: the cell under it in black on light grey. It is taken
+  away before the screen is drawn; a cell that was drawn anew meanwhile is
+  left as it is. Shown only once the mouse has been moved or clicked. }
+procedure HidePointer;
+begin
+  if ptrCell >= 0 then begin
+    if Scr[ptrCell] = ptrWord then Scr[ptrCell] := ptrSaved;
+    ptrCell := -1;
+  end;
+end;
+
+procedure ShowPointer;
+var c: integer;
+begin
+  HidePointer;
+  if not mouseSeen then exit;
+  c := (MouseY div 8) * Cols + MouseX div 8;
+  if (c < 0) or (c >= 2400) then exit;
+  ptrSaved := Scr[c];
+  ptrWord := (ptrSaved and $00FF) or $F000;
+  Scr[c] := ptrWord;
+  ptrCell := c;
+end;
+
+{ notice a left click even while the screen is being drawn: it is kept
+  until MouseKeys handles it }
+procedure SampleMouse;
+var b: byte;
+begin
+  b := MouseButtons and 1;
+  if (b <> 0) and (sampleB = 0) then begin
+    clickLatch := true;
+    latchX := MouseX; latchY := MouseY;
+  end;
+  sampleB := b;
+end;
+
+{ mouse range: 640 x 240 in the editor (8 x 8 pixels per character cell),
+  the default 320 x 240 while a program runs }
+procedure EditorMouse(on: boolean);
+begin
+  if on then SetMouseLimits(639, 239) else SetMouseLimits(319, 239);
+  lastMX := MouseX; lastMY := MouseY; lastButtons := MouseButtons; lastWheel := Mem[$C125];
+  sampleB := lastButtons and 1; clickLatch := false;
+  ptrCell := -1;
+end;
+
 procedure ShowCursor(on: boolean);
 var o, x: integer;
     w: word;
@@ -404,6 +460,7 @@ begin
   if colours then st := StateAt(top) else st := stNormal;
   for r := 2 to Rows + 2 do rowPos[r] := -1;
   for r := 2 to Rows + 1 do begin
+    SampleMouse;
     rowPos[r] := p;
     rowSt[r] := st;
     st := DrawLine(r, p, st);
@@ -511,6 +568,7 @@ procedure Refresh;
 var row: integer;
     p: longint;
 begin
+  HidePointer;
   Track;
   { an edit on a row that is neither the old nor the new cursor row }
   if (editLine <> -1) and (editLine <> curLine) then redrawAll := true;
@@ -543,6 +601,8 @@ begin
   lastCur := cur;
   DrawStatus;
   ShowCursor(true);
+  ShowPointer;
+  ptrMoved := false;
 end;
 
 { ------------------------------------------------------------- cursor }
@@ -693,9 +753,21 @@ end;
 
 procedure WaitAnyKey;
 var k: char;
+    b, b0: byte;
 begin
   FlushKeys;
-  k := ReadKey;
+  b0 := MouseButtons and 1;
+  repeat
+    if KeyPressed then begin k := ReadKey; exit; end;
+    b := MouseButtons and 1;
+    if (b <> 0) and (b0 = 0) then begin
+      { wait for the button to be let go, so the click does nothing else }
+      while (MouseButtons and 1) <> 0 do ;
+      sampleB := 0; clickLatch := false;
+      exit;
+    end;
+    b0 := b;
+  until false;
 end;
 
 { ------------------------------------------------------------- files }
@@ -851,6 +923,7 @@ begin
   for i := 1 to length(n) do Mem[$16C6 + i] := ord(n[i]);
   Mem[$16E4] := $FF; Mem[$16E5] := $FF; Mem[$16E6] := $FF;
   MemL[$16E8] := $7FFFFFFF;
+  EditorMouse(false);
   r := KernelMode(40);
   e := RunMerFile;
   if e = 0 then begin
@@ -860,6 +933,7 @@ begin
   end;
   ResetDisplay;
   r := KernelMode(80);
+  EditorMouse(true);
   DrawTitle;
   redrawAll := true;
   if e = 0 then msg := n + ' ENDED.' else msg := 'CANNOT RUN ' + n + ': ' + DosErrorText(e);
@@ -880,6 +954,7 @@ procedure RunProgram;
 var r: integer;
 begin
   if not Compile then exit;
+  EditorMouse(false);
   r := KernelMode(40);
   PrepareRun;
   RunUser(RunEntry);
@@ -888,6 +963,7 @@ begin
   WaitAnyKey;
   ResetDisplay;
   r := KernelMode(80);
+  EditorMouse(true);
   DrawTitle;
   redrawAll := true;
   msg := 'PROGRAM ENDED.';
@@ -913,7 +989,7 @@ begin
   L('CTRL+T TARGET 65C816 / SCHUB (OR {$SCHUB} AT THE TOP OF THE TEXT)');
   L('CTRL+R RUN A PROGRAM FILE (.MER) FROM THE DRIVE (ALSO F3 WITH NAME.MER)');
   L('CTRL+HOME/END START/END OF TEXT   CTRL+K COLOURS ON/OFF   PGUP PGDN HOME END');
-  L('');
+  L('MOUSE: CLICK PLACES THE CURSOR, WHEEL SCROLLS, CLICK F-KEYS ON THE TOP LINE');
   L('THE LANGUAGE: PROGRAM, USES, CONST, TYPE, VAR, PROCEDURE, FUNCTION (NESTED),');
   L('INTEGER WORD BYTE SHORTINT LONGINT REAL CHAR BOOLEAN STRING[N] ARRAYS RECORDS');
   L('(ALSO VARIANT), SETS, POINTERS, ENUMS, SUBRANGES, IF WHILE REPEAT FOR CASE');
@@ -988,28 +1064,42 @@ begin
   Ctrl := Held($14) or Held($94);
 end;
 
-procedure CommandKeys;
-var i, d: integer;
+{ what F1..F10 do (keys, and clicks on the top line) }
+procedure FKey(n: integer);
+var d, i: integer;
 begin
-  if Pressed($05) then Help;                                  { F1 }
-  if Pressed($06) then SaveText;                              { F2 }
-  if Pressed($04) then LoadText;                              { F3 }
-  if Pressed($0C) then begin                                  { F4 }
-    if not modified or YesNo('THE TEXT IS NOT SAVED. CLEAR IT?') then NewText;
+  case n of
+    1: Help;
+    2: SaveText;
+    3: LoadText;
+    4: if not modified or YesNo('THE TEXT IS NOT SAVED. CLEAR IT?') then NewText;
+    5: RunProgram;
+    6: begin
+         d := CurrentDrive + 1;
+         if d > 3 then d := 1;
+         SetDrive(d);
+         msg := 'DRIVE ' + IntToStr(d);
+       end;
+    7: MakeMer;
+    8: Directory;
+    9: i := ord(Compile);
+    10: if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then quit := true;
   end;
-  if Pressed($03) then RunProgram;                            { F5 }
-  if Pressed($0B) then begin                                  { F6 }
-    d := CurrentDrive + 1;
-    if d > 3 then d := 1;
-    SetDrive(d);
-    msg := 'DRIVE ' + IntToStr(d);
-  end;
-  if Pressed($02) then MakeMer;                               { F7 }
-  if Pressed($0A) then Directory;                             { F8 }
-  if Pressed($01) then i := ord(Compile);                     { F9 }
-  if Pressed($09) then begin                                  { F10 }
-    if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then quit := true;
-  end;
+end;
+
+procedure CommandKeys;
+var i: integer;
+begin
+  if Pressed($05) then FKey(1);
+  if Pressed($06) then FKey(2);
+  if Pressed($04) then FKey(3);
+  if Pressed($0C) then FKey(4);
+  if Pressed($03) then FKey(5);
+  if Pressed($0B) then FKey(6);
+  if Pressed($02) then FKey(7);
+  if Pressed($0A) then FKey(8);
+  if Pressed($01) then FKey(9);
+  if Pressed($09) then FKey(10);
   if Pressed($80 + $7D) then for i := 1 to Rows - 1 do CurUp;      { PgUp }
   if Pressed($80 + $7A) then for i := 1 to Rows - 1 do CurDown;    { PgDn }
   if Pressed($80 + $69) then begin                                  { End }
@@ -1034,6 +1124,99 @@ begin
     end;
     if Pressed($80 + $6C) then JumpTo(0);                             { Ctrl+Home }
   end;
+end;
+
+{ ------------------------------------------------------------- mouse }
+{ the view moves by n lines (n > 0: down the text); the cursor stays where
+  it is unless it would leave the screen }
+procedure ScrollView(n: integer);
+var i: integer;
+begin
+  if n > 0 then begin
+    for i := 1 to n do
+      if LineEnd(top) < len then begin
+        top := LineEnd(top) + 1;
+        topLine := topLine + 1;
+        scrollBy := scrollBy + 1;
+      end;
+    while curLine < topLine do CurDown;
+  end else begin
+    for i := 1 to -n do
+      if topLine > 1 then begin
+        top := LineStart(top - 1);
+        topLine := topLine - 1;
+        scrollBy := scrollBy - 1;
+      end;
+    while curLine > topLine + Rows - 1 do CurUp;
+  end;
+end;
+
+{ the cursor to screen row (2..28) and column (0..79), or as near as the
+  text allows }
+procedure PlaceCursor(row, col: integer);
+var p, e: longint;
+    line: integer;
+begin
+  p := top; line := topLine;
+  while (line < topLine + row - 2) and (LineEnd(p) < len) do begin
+    p := LineEnd(p) + 1;
+    line := line + 1;
+  end;
+  e := LineEnd(p);
+  if p + left + col < e then cur := p + left + col else cur := e;
+  curLine := line;
+  wantCol := ColOf(cur);
+end;
+
+{ a click on the top line: the F-key whose name is under it }
+procedure TitleClick(col: integer);
+const Title = ' MERIDIAN PASCAL   F1 HELP  F2 SAVE  F3 LOAD  F4 NEW  F5 RUN  F9 COMPILE  F10 END';
+var i, p: integer;
+    nm: string[12];
+begin
+  for i := 1 to 10 do begin
+    case i of
+      1: nm := 'F1 HELP'; 2: nm := 'F2 SAVE'; 3: nm := 'F3 LOAD'; 4: nm := 'F4 NEW';
+      5: nm := 'F5 RUN'; 9: nm := 'F9 COMPILE'; 10: nm := 'F10 END';
+    else
+      nm := '';
+    end;
+    if nm <> '' then begin
+      p := Pos(nm, Title);
+      if (p > 0) and (col >= p - 1) and (col < p - 1 + length(nm)) then begin FKey(i); exit; end;
+    end;
+  end;
+end;
+
+procedure MouseKeys;
+var x, y, row, col, d: integer;
+    b, w: byte;
+begin
+  SampleMouse;
+  x := MouseX; y := MouseY; b := MouseButtons; w := Mem[$C125];
+  if (x <> lastMX) or (y <> lastMY) or (b <> lastButtons) or (w <> lastWheel) or clickLatch then mouseSeen := true;
+  if not mouseSeen then exit;
+  col := x div 8; row := y div 8 + 1;
+  { the wheel: three lines a notch, forward = towards the start }
+  d := integer(w) - integer(lastWheel);
+  if d > 127 then d := d - 256;
+  if d < -128 then d := d + 256;
+  if d <> 0 then ScrollView(-3 * d);
+  if clickLatch then begin
+    { pressed (maybe let go again already): where it was pressed }
+    clickLatch := false;
+    lastButtons := b or 1;
+    col := latchX div 8; row := latchY div 8 + 1;
+      if row = 1 then TitleClick(col)
+      else if row = 30 then begin
+        if Copy(msg, 1, 11) = 'ERROR LINE ' then GoToLine(ErrLine, ErrCol);
+      end
+      else if (row >= 2) and (row <= Rows + 1) then PlaceCursor(row, col);
+  end
+  else if ((b and 1) <> 0) and (row >= 2) and (row <= Rows + 1) and ((x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8)) then
+    PlaceCursor(row, col);                       { dragged: the cursor follows }
+  if (x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8) then ptrMoved := true;
+  lastMX := x; lastMY := y; lastButtons := MouseButtons; lastWheel := w;
 end;
 
 { an edit on another line than the one Refresh last drew the cursor on }
@@ -1088,6 +1271,8 @@ begin
   for i := ord('a') to ord('f') do cls[i] := cLetter + cHex;
   for i := ord('A') to ord('F') do cls[i] := cLetter + cHex;
   r := KernelMode(80);
+  mouseSeen := false; ptrMoved := false; clickLatch := false;
+  EditorMouse(true);
   for i := 0 to 255 do keyWas[i] := false;
   SetDrive(1);
   findText := '';
@@ -1113,9 +1298,11 @@ begin
       Refresh;
     end else begin
       CommandKeys;
-      if redrawAll or (msg <> lastMsg) or (cur <> lastCur) then Refresh;
+      MouseKeys;
+      if redrawAll or (msg <> lastMsg) or (cur <> lastCur) or (scrollBy <> 0) or ptrMoved then Refresh;
     end;
   until quit;
+  EditorMouse(false);
   ResetDisplay;
   r := KernelMode(40);
 end.

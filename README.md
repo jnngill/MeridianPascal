@@ -43,7 +43,8 @@ all. See [Start](#start) for the PC side and
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
   Ctrl+R runs a `.MER` from a drive,
   Ctrl+T switches between 65C816 and SCHUB code, Ctrl+K turns the syntax
-  colours on or off.
+  colours on or off. With a mouse: click to place the cursor, the wheel
+  scrolls, and the F-key names on the top line can be clicked.
 
 ## Start
 
