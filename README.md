@@ -1,7 +1,27 @@
 # MERIDIAN Pascal
 
 A complete Pascal development system for the **MERIDIAN 816** home computer
-(65C816, MiSTer core) and its **SCHUB** RV32IM co-processor:
+(65C816, MiSTer core) and its **SCHUB** RV32IM co-processor.
+
+## Two ways to use it
+
+| | **On a PC: Node.js** | **On the MERIDIAN: PASCAL.MOD** |
+|---|---|---|
+| What runs | the cross compiler and the browser IDE, on Windows, macOS or Linux | an editor and a compiler in a cartridge, on the MiSTer itself |
+| You need | Node.js (no packages to install) | the MERIDIAN core with the SDRAM module |
+| Get it | clone this repository | download `PASCAL.MOD` from the [latest release](https://github.com/jnngill/MeridianPascal/releases/latest), or [build it](#building-pascalmod) |
+| Start | `node ide/server.js`, or `node compiler/mpc.js prog.pas` | copy it to `/media/fat/games/MERIDIAN/`, OSD → *Insert cartridge* |
+| Write and run | edit in the browser, F5 runs in the built-in emulator, F8 sends to the MiSTer | edit on the MERIDIAN, F5 compiles and runs at once |
+| Output | `.MER` files for 65C816 or SCHUB | the same: F7 saves a `.MER` that runs without the cartridge (`BRUN "NAME"` in BASIC) |
+
+Both compile the same language with the same library units (on the MERIDIAN,
+identifiers count to 15 characters), and both make code for either the
+65C816 or SCHUB. The Node.js compiler also gives
+assembly and listing views and error navigation; the cartridge needs no PC at
+all. See [Start](#start) for the PC side and
+[Building PASCAL.MOD](#building-pascalmod) for the cartridge.
+
+## What's in it
 
 - **Compiler**: a Turbo Pascal-style language (units, nested procedures,
   records, sets, pointers, strings, software reals) with two native back ends:
@@ -46,7 +66,7 @@ in the MiSTer menu.
 
 ## Building PASCAL.MOD
 
-`PASCAL.MOD` is not in the repository; it is built from the sources here.
+`PASCAL.MOD` is not in the repository. Each [release](https://github.com/jnngill/MeridianPascal/releases) has a ready-made one; to make your own from the sources here:
 You need Node.js (developed with v24); there are no packages to install.
 
 1. Get the sources:
