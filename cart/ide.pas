@@ -12,7 +12,7 @@
          PgUp PgDn Home End and the cursor keys move }
 program PascalIDE;
 
-uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, NComp;
+uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, NComp, NAsm;
 
 const
   TB = $200000;               { text buffer (= NComp.SrcBase) }
@@ -24,6 +24,10 @@ const
   AttrBar = $16;              { white on blue }
   AttrStat = $61;             { blue on white }
   AttrCur = $6E;
+  { tables in expansion RAM: bank 0 is short (the compiler's stack) }
+  KeyWas = $3C0000;           { a key's press was handled (1 byte a scan code) }
+  CkState = $3C0100;          { scanner state at every 256 bytes of text }
+  RowPos = $3C0200;           { text position of each row at the last redraw (4 bytes) }
 
 procedure RunUser(entry: longint); external 'runuser';
 function RunMerFile: integer; external 'runmer';
@@ -43,19 +47,19 @@ var
   msg: string;
   findText: string[40];
   aText, aBar, aStat: byte;
-  keyWas: array[0..255] of boolean;
   repT: longint;
   lastRow: integer;
   lastMsg: string;
   lastCur: longint;
   colours: boolean;                  { syntax colours on (Ctrl+K) }
-  ckState: array[0..255] of byte;    { scanner state at every 256 bytes of text }
+  asmMode: boolean;                  { the text is assembly: its own colours }
   ckValid: longint;                  { checkpoints up to here are valid }
   rowSt, rowEnd: array[0..31] of byte;   { state at the start / after each screen row }
-  rowPos: array[0..31] of longint;   { text position of each row at the last redraw }
   rowsValid: boolean;                { rowPos still holds (no edit since) }
   cls: array[0..255] of byte;        { character classes for the colours }
-  lineAttr: array[0..511] of byte;   { colour of each column of the line being drawn }
+  { colour of each column of the line being drawn; the assembler uses the
+    same 512 bytes for its buffers while it assembles (bank 0 is short) }
+  lineAttr: array[0..511] of byte;
   attrKw, attrComment, attrString, attrNumber: byte;
   plainAttr: array[0..79] of byte;   { colours for a row without syntax colours }
   drawnEnd: longint;                 { end of the line DrawLine drew last }
@@ -69,6 +73,7 @@ var
   clickLatch: boolean;               { a left click seen while busy (SampleMouse) }
   latchX, latchY: integer;
   sampleB: byte;
+  fLatch: word;                      { F1..F10 pressed while the screen was being drawn }
   startLine, editLine: integer;      { cursor line at the last Refresh; a line edited since, -1 none }
 
 { ------------------------------------------------------------- text }
@@ -315,27 +320,71 @@ begin
   end;
 end;
 
+{ assembly: one line at a time (comments end with the line) - ; comments,
+  "strings" and 'c' characters, numbers, mnemonics, .directives }
+procedure AsmPaint(q, upto: longint);
+var c: byte;
+    e: longint;
+    i, col: integer;
+    a: byte;
+    w: string[16];
+begin
+  col := 0;
+  while q < upto do begin
+    c := Mem[TB + q];
+    e := q + 1;
+    a := aText;
+    if c = 59 then begin e := upto; a := attrComment; end
+    else if c = 34 then begin
+      while (e < upto) and (Mem[TB + e] <> 34) do e := e + 1;
+      if e < upto then e := e + 1;
+      a := attrString;
+    end
+    else if (c = 39) and (q + 2 < upto) and (Mem[TB + q + 2] = 39) then begin e := q + 3; a := attrString; end
+    else if ((cls[c] and cDigit) <> 0) or (((c = 36) or (c = 37)) and (q + 1 < upto) and ((cls[Mem[TB + q + 1]] and cHex) <> 0)) then begin
+      while (e < upto) and ((cls[Mem[TB + e]] and cHex) <> 0) do e := e + 1;
+      a := attrNumber;
+    end
+    else if ((cls[c] and cLetter) <> 0) or ((c = 46) and (q + 1 < upto) and ((cls[Mem[TB + q + 1]] and cLetter) <> 0)) then begin
+      i := 0;
+      while (e < upto) and ((cls[Mem[TB + e]] and (cLetter or cDigit)) <> 0) do e := e + 1;
+      if c = 46 then a := (aText and $F0) or colDirective
+      else if e - q <= 6 then begin
+        w[0] := chr(e - q);
+        for i := 1 to e - q do w[i] := chr(Mem[TB + q + i - 1]);
+        if IsMnemonic(w) then a := attrKw;
+      end;
+    end;
+    while q < e do begin
+      if col < 512 then lineAttr[col] := a;
+      col := col + 1;
+      q := q + 1;
+    end;
+  end;
+end;
+
 function StateAt(p: longint): byte;
 { the state at text position p (the start of a line) }
 var k, col: integer;
     q, e: longint;
     st: byte;
 begin
+  if asmMode then begin StateAt := stNormal; exit; end;
   { a row of the last redraw (paging down: the line after the screen) }
   if rowsValid then
     for k := 2 to Rows + 2 do
-      if rowPos[k] = p then begin StateAt := rowSt[k]; exit; end;
+      if MemL[RowPos + k * 4] = p then begin StateAt := rowSt[k]; exit; end;
   k := p div CkStep;
   if longint(k) * CkStep > ckValid then k := ckValid div CkStep;
   q := longint(k) * CkStep;
-  st := ckState[k];
+  st := Mem[CkState + k];
   col := 0;
   while q < p do begin
     e := (q div CkStep + 1) * CkStep;
     if e > p then e := p;
     Scan(q, e, st, false, col);
     if q mod CkStep = 0 then begin
-      ckState[q div CkStep] := st;
+      Mem[CkState + q div CkStep] := st;
       if q > ckValid then ckValid := q;
     end;
   end;
@@ -350,7 +399,11 @@ var col: integer;
 begin
   e := LineEnd(p);
   drawnEnd := e;
-  if colours then begin
+  if colours and asmMode then begin
+    AsmPaint(p, e);
+    st := stNormal;
+  end
+  else if colours then begin
     q := p; col := 0;
     Scan(q, e, st, true, col);
     { a line ends strings and // comments }
@@ -369,10 +422,19 @@ begin
 end;
 
 
+{ the text is assembly: NAME.ASM, or ; as its first character }
+function IsAsm: boolean;
+begin
+  IsAsm := IsAsmText(len, fileName);
+end;
+
 function TargetName: string;
 begin
-  { what F5/F7 will make: Ctrl+T, or $SCHUB at the top of the text }
-  if WantSchub or SchubDirective(len) then TargetName := 'SCHUB' else TargetName := '65C816';
+  { what F5/F7 will make: Ctrl+T, or $SCHUB / .schub at the top of the text }
+  if IsAsm then begin
+    if WantSchub or IsAsmSchub(len) then TargetName := 'ASM SCHUB' else TargetName := 'ASM 65C816';
+  end
+  else if WantSchub or SchubDirective(len) then TargetName := 'SCHUB' else TargetName := '65C816';
 end;
 
 procedure DrawStatus;
@@ -418,9 +480,26 @@ end;
 
 { notice a left click even while the screen is being drawn: it is kept
   until MouseKeys handles it }
+{ the scan code of F1..F10 (i = 0..9) }
+function FKeySc(i: integer): integer;
+begin
+  case i of
+    0: FKeySc := $05; 1: FKeySc := $06; 2: FKeySc := $04; 3: FKeySc := $0C; 4: FKeySc := $03;
+    5: FKeySc := $0B; 6: FKeySc := $02; 7: FKeySc := $0A; 8: FKeySc := $01;
+  else
+    FKeySc := $09;
+  end;
+end;
+
 procedure SampleMouse;
 var b: byte;
+    i, sc: integer;
 begin
+  { a function key pressed now is kept until Pressed sees it }
+  for i := 0 to 9 do begin
+    sc := FKeySc(i);
+    if (Mem[$033E00 + sc] <> 0) and (Mem[KeyWas + sc] = 0) then fLatch := fLatch or (1 shl i);
+  end;
   b := MouseButtons and 1;
   if (b <> 0) and (sampleB = 0) then begin
     clickLatch := true;
@@ -458,21 +537,21 @@ var r, col: integer;
 begin
   p := top;
   if colours then st := StateAt(top) else st := stNormal;
-  for r := 2 to Rows + 2 do rowPos[r] := -1;
+  for r := 2 to Rows + 2 do MemL[RowPos + r * 4] := -1;
   for r := 2 to Rows + 1 do begin
     SampleMouse;
-    rowPos[r] := p;
+    MemL[RowPos + r * 4] := p;
     rowSt[r] := st;
     st := DrawLine(r, p, st);
     rowEnd[r] := st;
     { checkpoints inside this line, while they follow on from the valid
       ones: paging up then finds one close by }
-    if colours then begin
+    if colours and not asmMode then begin
       b := (ckValid div CkStep + 1) * CkStep;
       while (b >= p) and (b <= drawnEnd) and (b <= len) do begin
         q := p; cst := rowSt[r]; col := 0;
         Scan(q, b, cst, false, col);
-        ckState[b div CkStep] := cst;
+        Mem[CkState + b div CkStep] := cst;
         ckValid := b;
         b := b + CkStep;
       end;
@@ -486,7 +565,7 @@ begin
     end;
   end;
   { the line after the screen: paging down starts there }
-  if p <= len then begin rowPos[Rows + 2] := p; rowSt[Rows + 2] := st; end;
+  if p <= len then begin MemL[RowPos + (Rows + 2) * 4] := p; rowSt[Rows + 2] := st; end;
   { the row states only mean something when they were worked out }
   rowsValid := colours;
 end;
@@ -570,6 +649,7 @@ var row: integer;
 begin
   HidePointer;
   Track;
+  if IsAsm <> asmMode then begin asmMode := not asmMode; redrawAll := true; TextChanged(0); end;
   { an edit on a row that is neither the old nor the new cursor row }
   if (editLine <> -1) and (editLine <> curLine) then redrawAll := true;
   if (scrollBy <> 0) and not redrawAll then begin
@@ -867,22 +947,53 @@ begin
 end;
 
 { ------------------------------------------------------------- compiler }
+{ messages built a piece at a time: every string expression takes room
+  on the stack, which bank 0 has little of }
+procedure Add(const s: string);
+begin
+  msg := msg + s;
+end;
+
+procedure AddNum(v: longint);
+begin
+  msg := msg + IntToStr(v);
+end;
+
+procedure AddHex(v: longint);
+begin
+  msg := msg + IntToHex(v, 6);
+end;
+
 function Compile: boolean;
 var t: longint;
+    ok: boolean;
 begin
   Compile := false;
-  msg := 'COMPILING ...';
-  DrawStatus;
   t := Frames;
-  if CompileSource(len) then begin
-    msg := 'OK: ' + IntToStr(LinesDone) + ' LINES, ' + IntToStr(CodeSize) + ' BYTES CODE, ' +
-           IntToStr(DataSize) + ' BYTES DATA, ' + IntToStr((Frames - t) * 10 div 6) + '0 MS';
-    Compile := true;
+  if IsAsm then begin
+    msg := 'ASSEMBLING ...';
+    DrawStatus;
+    ok := AssembleSource(len, WantSchub or IsAsmSchub(len));
+    if ok then begin
+      msg := 'OK: '; AddNum(AsmLines); Add(' LINES, '); AddNum(AsmSize); Add(' BYTES AT $');
+      AddHex(AsmOrigin); Add(', '); AddNum((Frames - t) * 10 div 6); Add('0 MS');
+    end;
   end else begin
-    if ErrUnit <> '' then
-      msg := 'ERROR IN ' + ErrUnit + ' LINE ' + IntToStr(ErrLine) + ': ' + UpperCase(ErrMsg)
+    msg := 'COMPILING ...';
+    DrawStatus;
+    ok := CompileSource(len);
+    if ok then begin
+      msg := 'OK: '; AddNum(LinesDone); Add(' LINES, '); AddNum(CodeSize); Add(' BYTES CODE, ');
+      AddNum(DataSize); Add(' BYTES DATA, '); AddNum((Frames - t) * 10 div 6); Add('0 MS');
+    end;
+  end;
+  if ok then Compile := true
+  else begin
+    if ErrUnit <> '' then begin
+      msg := 'ERROR IN '; Add(ErrUnit); Add(' LINE '); AddNum(ErrLine); Add(': '); Add(UpperCase(ErrMsg));
+    end
     else begin
-      msg := 'ERROR LINE ' + IntToStr(ErrLine) + ': ' + UpperCase(ErrMsg);
+      msg := 'ERROR LINE '; AddNum(ErrLine); Add(': '); Add(UpperCase(ErrMsg));
       GoToLine(ErrLine, ErrCol);
     end;
   end;
@@ -892,6 +1003,7 @@ end;
 procedure MakeMer;
 var n: string;
     p: integer;
+    ok: boolean;
 begin
   if not Compile then exit;
   n := fileName;
@@ -904,8 +1016,12 @@ begin
   n := UpperCase(n) + '.MER';
   msg := 'SAVING ' + n + ' ...';
   DrawStatus;
-  if SaveStandalone(n) then
-    msg := 'SAVED ' + n + ' (' + IntToStr(MerSize) + ' BYTES) - IN BASIC: BRUN "' + Copy(n, 1, Pos('.', n) - 1) + '"'
+  if IsAsm then ok := SaveAsmMer(n) else ok := SaveStandalone(n);
+  if ok then begin
+    msg := 'SAVED '; Add(n);
+    if not IsAsm then begin Add(' ('); AddNum(MerSize); Add(' BYTES)'); end;
+    Add(' - IN BASIC: BRUN "'); Add(Copy(n, 1, Pos('.', n) - 1)); Add('"');
+  end
   else msg := UpperCase(ErrMsg);
 end;
 
@@ -952,12 +1068,18 @@ end;
 
 procedure RunProgram;
 var r: integer;
+    isA: boolean;
 begin
   if not Compile then exit;
+  isA := IsAsm;
+  if isA then if not AsmPrepareRun then begin msg := UpperCase(ErrMsg); exit; end;
   EditorMouse(false);
   r := KernelMode(40);
-  PrepareRun;
-  RunUser(RunEntry);
+  if isA then RunUser(RunAt)
+  else begin
+    PrepareRun;
+    RunUser(RunEntry);
+  end;
   WriteLn;
   Write('-- PRESS A KEY --');
   WaitAnyKey;
@@ -998,7 +1120,7 @@ begin
   L('FUNCTIONS CAN RETURN RECORDS, ARRAYS AND SETS. AND/OR STOP EARLY.');
   L('ALL LIBRARY UNITS ARE BUILT IN: CRT GRAPH SPRITES AUDIO BASIC');
   L('INPUT DOS BLITTER COPPER SCHUB AND SYSTEM (COPY POS SIN COS RANDOM ...).');
-  L('');
+  L('ASSEMBLER: NAME.ASM OR ; ON TOP. 65C816 (ENDS WITH RTL); .SCHUB: RISC-V');
   L('YOUR OWN UNITS: USES MYUNIT READS MYUNIT.PAS FROM THE CURRENT DRIVE');
   L('(UNIT, INTERFACE, IMPLEMENTATION, BEGIN OR INITIALIZATION ... END.).');
   L('SCHUB PROGRAMS RUN ON THE RISC-V CO-PROCESSOR (SDRAM MODULE, SCHUB ON):');
@@ -1046,17 +1168,24 @@ end;
 { true once per press, repeating while held }
 function Pressed(sc: integer): boolean;
 var now: boolean;
+    i: integer;
 begin
   Pressed := false;
   now := Held(sc);
-  if now and not keyWas[sc] then begin
-    keyWas[sc] := true;
+  if fLatch <> 0 then
+    for i := 0 to 9 do
+      if (FKeySc(i) = sc) and ((fLatch and (1 shl i)) <> 0) then begin
+        fLatch := fLatch and not (1 shl i);
+        if Mem[KeyWas + sc] = 0 then now := true;
+      end;
+  if now and (Mem[KeyWas + sc] = 0) then begin
+    Mem[KeyWas + sc] := 1;
     repT := Frames + 20;
     Pressed := true;
   end else if now and (Frames >= repT) then begin
     repT := Frames + 3;
     Pressed := true;
-  end else if not now then keyWas[sc] := false;
+  end else if not now then Mem[KeyWas + sc] := 0;
 end;
 
 function Ctrl: boolean;
@@ -1256,8 +1385,10 @@ begin
   aBar := $16;         { blue on white }
   aStat := $61;
   colours := true;
+  asmMode := false;
+  AsmWorkPtr := PAsmWork(@lineAttr);
   scrollBy := 0; startLine := 1; editLine := -1;
-  ckValid := 0; ckState[0] := stNormal; rowsValid := false;
+  ckValid := 0; Mem[CkState] := stNormal; rowsValid := false;
   attrKw := (aText and $F0) or colKeyword;
   attrComment := (aText and $F0) or colComment;
   attrString := (aText and $F0) or colString;
@@ -1271,9 +1402,9 @@ begin
   for i := ord('a') to ord('f') do cls[i] := cLetter + cHex;
   for i := ord('A') to ord('F') do cls[i] := cLetter + cHex;
   r := KernelMode(80);
-  mouseSeen := false; ptrMoved := false; clickLatch := false;
+  mouseSeen := false; ptrMoved := false; clickLatch := false; fLatch := 0;
   EditorMouse(true);
-  for i := 0 to 255 do keyWas[i] := false;
+  for i := 0 to 255 do Mem[KeyWas + i] := 0;
   SetDrive(1);
   findText := '';
   msg := 'WELCOME TO MERIDIAN PASCAL. F1 FOR HELP.';
