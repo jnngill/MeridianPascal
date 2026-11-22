@@ -136,6 +136,12 @@ push(31, 7);  sameAsFullRedraw('7 cursor-downs at once (scroll 7)');
 push(30, 30); sameAsFullRedraw('30 cursor-ups at once (scroll up)');
 push(30, 1);  sameAsFullRedraw('scroll up 1 line');
 push(31, 40); sameAsFullRedraw('40 cursor-downs at once (more than a screen)');
+ctrl(0x80 + 0x6c);                                                                  // Ctrl+Home
+hold(0x80 + 0x7a); frames(10); hold(0x80 + 0x7a); frames(10);                        // PgDn twice
+sameAsFullRedraw('page down twice');
+hold(0x80 + 0x7d); frames(10);                                                      // PgUp
+sameAsFullRedraw('page up (state at the top from the checkpoints)');
+hold(0x80 + 0x7a); frames(10); push(31, 3);
 // edits on three lines in one batch: a, down, b, down, c
 for (const c of 'a') m.pushKey(c.charCodeAt(0)); m.pushKey(31); m.pushKey(98); m.pushKey(31); m.pushKey(99);
 frames(30);

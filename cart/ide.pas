@@ -27,6 +27,10 @@ const
 
 procedure RunUser(entry: longint); external 'runuser';
 function RunMerFile: integer; external 'runmer';
+{ fast loops in assembler (compiler/cart.js); text offsets are below 64 KB }
+function FindLF(p, limit: word): word; external 'findlf';
+function LineStartAt(p: word): word; external 'linestart';
+procedure DrawRow(scr, text, n, attr, plain: word); external 'drawrow';
 
 var
   Scr: array[0..2399] of word absolute $0400;
@@ -53,6 +57,8 @@ var
   cls: array[0..255] of byte;        { character classes for the colours }
   lineAttr: array[0..511] of byte;   { colour of each column of the line being drawn }
   attrKw, attrComment, attrString, attrNumber: byte;
+  plainAttr: array[0..79] of byte;   { colours for a row without syntax colours }
+  drawnEnd: longint;                 { end of the line DrawLine drew last }
   scrollBy: integer;                 { lines the screen must scroll (Track) }
   startLine, editLine: integer;      { cursor line at the last Refresh; a line edited since, -1 none }
 
@@ -64,14 +70,13 @@ end;
 
 function LineStart(p: longint): longint;
 begin
-  while (p > 0) and (Mem[TB + p - 1] <> 10) do p := p - 1;
-  LineStart := p;
+  if p > len then p := len;
+  LineStart := LineStartAt(p);
 end;
 
 function LineEnd(p: longint): longint;
 begin
-  while (p < len) and (Mem[TB + p] <> 10) do p := p + 1;
-  LineEnd := p;
+  if p >= len then LineEnd := p else LineEnd := FindLF(p, len);
 end;
 
 function ColOf(p: longint): integer;
@@ -331,25 +336,25 @@ end;
 function DrawLine(row: integer; p: longint; st: byte): byte;
 { draw the text line starting at p on screen row (2..28); st is the state at
   p, the result the state at the start of the next line }
-var o, c, col: integer;
-    e, q: longint;
+var col: integer;
+    e, q, n: longint;
 begin
-  o := (row - 1) * Cols;
   e := LineEnd(p);
+  drawnEnd := e;
   if colours then begin
     q := p; col := 0;
     Scan(q, e, st, true, col);
     { a line ends strings and // comments }
     if (st = stString) or (st = stLine) then st := stNormal;
   end;
-  { skip the hidden columns }
-  p := p + left;
-  for c := 0 to Cols - 1 do
-    if p < e then begin
-      if colours and (left + c < 512) then Scr[o + c] := (word(lineAttr[left + c]) shl 8) or Mem[TB + p]
-      else Scr[o + c] := (word(aText) shl 8) or Mem[TB + p];
-      p := p + 1;
-    end else Scr[o + c] := (word(aText) shl 8) or 32;
+  { the visible part: from column left, at most 80 characters }
+  n := e - p - left;
+  if n < 0 then n := 0;
+  if n > Cols then n := Cols;
+  if colours and (left + Cols <= 512) then
+    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, word(@lineAttr[left]), (word(aText) shl 8) or 32)
+  else
+    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, word(@plainAttr[0]), (word(aText) shl 8) or 32);
   if not colours then st := stNormal;
   DrawLine := st;
 end;
@@ -391,9 +396,9 @@ begin
 end;
 
 procedure Redraw;
-var r: integer;
-    p: longint;
-    st: byte;
+var r, col: integer;
+    p, b, q: longint;
+    st, cst: byte;
 begin
   p := top;
   if colours then st := StateAt(top) else st := stNormal;
@@ -403,7 +408,19 @@ begin
     rowSt[r] := st;
     st := DrawLine(r, p, st);
     rowEnd[r] := st;
-    p := LineEnd(p);
+    { checkpoints inside this line, while they follow on from the valid
+      ones: paging up then finds one close by }
+    if colours then begin
+      b := (ckValid div CkStep + 1) * CkStep;
+      while (b >= p) and (b <= drawnEnd) and (b <= len) do begin
+        q := p; cst := rowSt[r]; col := 0;
+        Scan(q, b, cst, false, col);
+        ckState[b div CkStep] := cst;
+        ckValid := b;
+        b := b + CkStep;
+      end;
+    end;
+    p := drawnEnd;
     if p < len then p := p + 1 else p := len + 1;
     if p > len then begin
       { past the end: empty rows }
@@ -1062,6 +1079,7 @@ begin
   attrComment := (aText and $F0) or colComment;
   attrString := (aText and $F0) or colString;
   attrNumber := (aText and $F0) or colNumber;
+  for i := 0 to Cols - 1 do plainAttr[i] := aText;
   for i := 0 to 255 do cls[i] := 0;
   for i := ord('a') to ord('z') do cls[i] := cLetter;
   for i := ord('A') to ord('Z') do cls[i] := cLetter;

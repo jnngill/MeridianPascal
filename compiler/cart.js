@@ -82,6 +82,117 @@ function stampLibrary(bytes, sym) {
 // image -> $00:2000; pieces 0 and 1 only when $40:LIBSTAMP differs, entry $30:0000.
 // SCHUB (stamp 0): 0 RV library -> $04:0400, 1 host stub -> $04:0000, 2 code ->
 // $08:0000, 3 variables -> $0A:0000, 4 heap start -> $04:03E0; entry $04:0000.
+// Fast loops for the PASCAL editor (external 'findlf', 'linestart', 'drawrow').
+// Outside the library block, so the library stamp does not depend on them.
+// The text is in bank $20 at offsets below 64 KB.
+const EDIT_ASM = `
+	.al
+	.xl
+; findlf(p, limit: word): word - offset of the first LF in $20:p..limit-1, or limit
+rt_findlf
+	rep #$30
+	phb
+	lda 5,s                 ; limit
+	sec
+	sbc 7,s                 ; - p = bytes to look at
+	tay
+	lda 7,s
+	tax
+	cpy #0
+	beq _fl_done
+	pea $2020
+	plb
+	plb
+	sep #$20
+	.as
+_fl_loop
+	lda @w $0000,x
+	cmp #10
+	beq _fl_found
+	inx
+	dey
+	bne _fl_loop
+_fl_found
+	rep #$20
+	.al
+_fl_done
+	plb
+	txa
+	rtl
+
+; linestart(p: word): word - offset of the start of the line that holds $20:p
+rt_linestart
+	rep #$30
+	phb
+	lda 5,s
+	tax
+	pea $2020
+	plb
+	plb
+	sep #$20
+	.as
+_ls_loop
+	cpx #0
+	beq _ls_done
+	dex
+	lda @w $0000,x
+	cmp #10
+	bne _ls_loop
+	inx
+_ls_done
+	rep #$20
+	.al
+	plb
+	txa
+	rtl
+
+; drawrow(scr, text, n, attr, plain: word) - one screen row of 80 cells at
+; $00:scr: n characters from $20:text with the colours from $00:attr, then
+; blanks with the word plain (colour * 256 + 32). Pointers in rt_t0..rt_fp.
+rt_drawrow
+	rep #$30
+	phd
+	lda #rt_t0
+	tcd
+	lda 12,s                ; text
+	sta $00
+	lda #$0020
+	sta $02
+	lda 8,s                 ; attr
+	sta $04
+	stz $06
+	lda 14,s                ; scr
+	sta $08
+	stz $0a
+	lda 10,s                ; n
+	sta $0c
+	ldy #0
+	ldx #80
+_dr_loop
+	cpy $0c
+	bcs _dr_blank
+	sep #$20
+	.as
+	lda [$04],y
+	xba
+	lda [$00],y
+	rep #$20
+	.al
+	sta [$08]
+	bra _dr_next
+_dr_blank
+	lda 6,s                 ; plain
+	sta [$08]
+_dr_next
+	inc $08
+	inc $08
+	iny
+	dex
+	bne _dr_loop
+	pld
+	rtl
+`;
+
 const MER_STUB = `
 MERSTUB
 	.logical $220000
@@ -360,7 +471,7 @@ ${progInits.map(l => `\tjsl ${l}`).join('\n')}
 	jsl ${prog.main}
 	jml rt_exit
 `;
-    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + exp.asm + rvAsm + MER_STUB } });
+    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + exp.asm + rvAsm + MER_STUB } });
     res.asm = asm;
     const a = assemble816(asm, { listing: !!opts.listing });
     res.symbols = a.symbols;
