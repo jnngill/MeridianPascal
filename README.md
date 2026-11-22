@@ -66,8 +66,10 @@ in the MiSTer menu.
 
 ## Building PASCAL.MOD
 
-`PASCAL.MOD` is not in the repository. Each [release](https://github.com/jnngill/MeridianPascal/releases) has a ready-made one; to make your own from the sources here:
-You need Node.js (developed with v24); there are no packages to install.
+`PASCAL.MOD` is not in the repository. Each
+[release](https://github.com/jnngill/MeridianPascal/releases) has a
+ready-made one. To build your own from the sources here, you need Node.js
+(developed with v24); there are no packages to install.
 
 1. Get the sources:
 
