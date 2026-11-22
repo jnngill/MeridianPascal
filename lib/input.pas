@@ -61,23 +61,29 @@ begin
     if Mem[$033E00 + i] <> 0 then begin AnyKeyDown := true; exit; end;
 end;
 
+{ PFORTE gives the mouse state as it was at the last write to MAUS_FEST
+  ($C12A), so every read takes a fresh one first }
 function MouseX: integer;
 begin
+  Mem[$C12A] := 0;
   MouseX := MemW[$C120];
 end;
 
 function MouseY: integer;
 begin
+  Mem[$C12A] := 0;
   MouseY := MemW[$C122];
 end;
 
 function MouseButtons: byte;
 begin
+  Mem[$C12A] := 0;
   MouseButtons := Mem[$C124];
 end;
 
 function MouseWheel: integer;
 begin
+  Mem[$C12A] := 0;
   MouseWheel := shortint(Mem[$C125]);
 end;
 

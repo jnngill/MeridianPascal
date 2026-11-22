@@ -48,6 +48,7 @@ export class Meridian {
     this.schub = { enabled: false, start: 0, arg: 0, res: 0, cycles: 0, present: opts.schub !== false };
     this.joy = [0, 0];
     this.mouse = { x: 160, y: 120, b: 0, wheel: 0 };
+    this.mouseHeld = { ...this.mouse };
     this.frame = 0;
     this.frameCycle = 0;
     this.totalCycles = 0;
@@ -85,12 +86,14 @@ export class Meridian {
       case 0x10b: return this.joy[1] >> 8;
       case 0x110: case 0x111: case 0x112: case 0x113: return (this.usLatch >>> (8 * (r - 0x110))) & 0xff;
       case 0x114: case 0x115: case 0x118: case 0x119: return io[r];
-      case 0x120: return this.mouse.x & 0xff;
-      case 0x121: return this.mouse.x >> 8;
-      case 0x122: return this.mouse.y & 0xff;
-      case 0x123: return this.mouse.y >> 8;
-      case 0x124: return this.mouse.b;
-      case 0x125: return this.mouse.wheel & 0xff;
+      // like rtl/pforte.sv: reads give the state frozen by the last write to
+      // MAUS_FEST ($2A), not the live one
+      case 0x120: return this.mouseHeld.x & 0xff;
+      case 0x121: return this.mouseHeld.x >> 8;
+      case 0x122: return this.mouseHeld.y & 0xff;
+      case 0x123: return this.mouseHeld.y >> 8;
+      case 0x124: return this.mouseHeld.b;
+      case 0x125: return this.mouseHeld.wheel & 0xff;
       case 0x130: case 0x131: case 0x132: case 0x133: case 0x134: case 0x135: case 0x136: return this.rtc(r - 0x130);
       case 0x137: return 1;
       case 0x200: return io[0x200];
@@ -123,6 +126,7 @@ export class Meridian {
       case 0x110: this.usLatch = Math.floor(this.totalCycles / 8) >>> 0; break;
       case 0x120: case 0x121: this.mouse.x = io[0x120] | (io[0x121] << 8); break;
       case 0x122: case 0x123: this.mouse.y = io[0x122] | (io[0x123] << 8); break;
+      case 0x12a: this.mouseHeld = { ...this.mouse }; break;     // MAUS_FEST
       case 0x402: {                                    // KOBOLD pattern data
         const a = (io[0x400] | (io[0x401] << 8)) & 0x3fff;
         this.pattern[a] = v;

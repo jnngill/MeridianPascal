@@ -434,7 +434,7 @@ end;
 procedure EditorMouse(on: boolean);
 begin
   if on then SetMouseLimits(639, 239) else SetMouseLimits(319, 239);
-  lastMX := MouseX; lastMY := MouseY; lastButtons := MouseButtons; lastWheel := Mem[$C125];
+  lastMX := MouseX; lastMY := MouseY; lastButtons := MouseButtons; Mem[$C12A] := 0; lastWheel := Mem[$C125];
   sampleB := lastButtons and 1; clickLatch := false;
   ptrCell := -1;
 end;
@@ -1193,7 +1193,7 @@ var x, y, row, col, d: integer;
     b, w: byte;
 begin
   SampleMouse;
-  x := MouseX; y := MouseY; b := MouseButtons; w := Mem[$C125];
+  x := MouseX; y := MouseY; b := MouseButtons; Mem[$C12A] := 0; w := Mem[$C125];
   if (x <> lastMX) or (y <> lastMY) or (b <> lastButtons) or (w <> lastWheel) or clickLatch then mouseSeen := true;
   if not mouseSeen then exit;
   col := x div 8; row := y div 8 + 1;
