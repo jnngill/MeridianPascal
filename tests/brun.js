@@ -16,7 +16,43 @@ let fail = 0;
 const check = (what, ok, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) { fail++; if (extra) console.log(extra); } };
 
 const src = "program PC;\nvar a: array[0..9999] of byte; i: integer;\nbegin\n  for i := 0 to 9999 do a[i] := 0;\n  WriteLn('PC BUILD ', 6 * 7);\nend.\n";
-const files = { 'PCM816.MER': build(src, 'm816').mer, 'PCSCHUB.MER': build(src, 'schub').mer };
+// ways a program can end: Halt deep inside procedures, a runtime error, and
+// leaving the screen in graphics mode
+const halt = `program H;
+procedure Deep(n: integer);
+var pad: array[0..99] of byte;
+begin
+  pad[0] := n;
+  if n = 0 then begin WriteLn('PC BUILD 42'); Halt(3); end;
+  Deep(n - 1);
+  WriteLn('NOT HERE');
+end;
+begin
+  Deep(20);
+  WriteLn('NOT HERE');
+end.
+`;
+const divz = `program D;
+var a, b: integer;
+begin
+  WriteLn('PC BUILD 42');
+  a := 7; b := 0;
+  WriteLn(a div b);
+  WriteLn('NOT HERE');
+end.
+`;
+const gfx = `program G;
+uses Graph;
+var i: integer;
+begin
+  WriteLn('PC BUILD 42');
+  InitGraph;
+  for i := 0 to 99 do PutPixel(i, i, 5);
+end.
+`;
+const files = {};
+for (const [n, s] of [['PC', src], ['HALT', halt], ['DIVZ', divz], ['GFX', gfx]])
+  for (const t of ['m816', 'schub']) files[`${n}${t === 'm816' ? 'M816' : 'SCHUB'}.MER`] = build(s, t).mer;
 
 function brun(name, drive) {
   const m = new Meridian({ ...roms, sys });
@@ -35,6 +71,7 @@ function brun(name, drive) {
   mem[0x16ff] = 1;                                     // DRIVE 1
   mem[0x20] = 0xff; mem[0x21] = 0;                     // the kernel's count of memory banks (SDRAM module)
   const keep = Uint8Array.from(mem.subarray(0, 0xc000));
+  const layerA = m.read ? m.read(0xc000) : mem[0xc000];
   // JSL $FF4030 from BASIC: emulation mode, data bank 1
   m.startProgram(0xff4030);
   const c = m.cpu;
@@ -48,11 +85,16 @@ function brun(name, drive) {
   const same = (lo, hi) => { for (let a = lo; a < hi; a++) if (mem[a] !== keep[a]) { diff.push(a); if (diff.length > 5) return; } };
   same(0x2000, 0xc000); same(0x55, 0x100); same(0x0310, 0x0398);
   back = back || { a: -1, e: -1, dbr: -1, s: -1 };
-  return { m, a: back.a, e: back.e, dbr: back.dbr, s: back.s, diff };
+  const layerAafter = m.read ? m.read(0xc000) : mem[0xc000];
+  return { m, layerA, layerAafter, a: back.a, e: back.e, dbr: back.dbr, s: back.s, diff };
 }
 
-for (const [name, what] of [['PCM816', '65C816 program loaded at $2000'], ['PCSCHUB', 'SCHUB program']]) {
+const kinds = [['PC', 'ends normally'], ['HALT', 'Halt inside 21 nested calls'], ['DIVZ', 'runtime error (div by 0)'], ['GFX', 'ends in graphics mode']];
+for (const [k, how] of kinds) for (const [t, tn] of [['M816', '65C816'], ['SCHUB', 'SCHUB']]) {
+  const name = k + t, what = `${tn}, ${how},`;
   const r = brun(name);
+  if (k === 'HALT' || k === 'DIVZ') check(`BRUN "${name}": stopped where it should`, !/NOT HERE/.test(r.m.output) && (k !== 'DIVZ' || /RUNTIME ERROR 200/.test(r.m.output)), r.m.output);
+  if (k === 'GFX') check(`BRUN "${name}": text screen back afterwards`, r.layerAafter === r.layerA, `before $${r.layerA.toString(16)} after $${r.layerAafter.toString(16)}`);
   check(`BRUN "${name}": ${what} ran`, /PC BUILD 42/.test(r.m.output), `${r.m.state} ${r.m.message}\n${r.m.output}`);
   check(`BRUN "${name}": back in BASIC's mode (emulation, bank 1), A = 0`, r.e === 1 && r.dbr === 1 && r.a === 0 && r.s === 0x01fc,
     `${r.m.state} ${r.m.message} e=${r.e} db=${r.dbr} a=${r.a} s=${r.s.toString(16)}`);
