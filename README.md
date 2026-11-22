@@ -44,6 +44,66 @@ node compiler/mpc.js examples/primes.pas -t schub    # SCHUB RV32IM
 Copy the `.MER` file to `/media/fat/games/MERIDIAN/` and choose *Load program*
 in the MiSTer menu.
 
+## Building PASCAL.MOD
+
+`PASCAL.MOD` is not in the repository; it is built from the sources here.
+You need Node.js (developed with v24); there are no packages to install.
+
+1. Get the sources:
+
+   ```sh
+   git clone https://github.com/jnngill/MeridianPascal.git
+   cd MeridianPascal
+   ```
+
+2. Build the cartridge:
+
+   ```sh
+   node compiler/mkcart.js            # or: npm run cart
+   ```
+
+   This compiles the editor (`cart/ide.pas`), the on-device compiler
+   (`cart/ncomp.pas`) and every library unit in `lib/`, and writes
+   `PASCAL.MOD` (about 310 KB) to the repository folder. When it works it
+   prints one line, for example:
+
+   ```
+   .../MeridianPascal/PASCAL.MOD: 315481 bytes ROM, 391 library symbols, bank 0 data up to $992B, programs from $2671
+   ```
+
+   Options: `-o FILE` writes somewhere else, `-l` also writes a listing
+   (`PASCAL.lst`). Compile errors are printed as `file(line,col): error: ...`
+   and nothing is written.
+
+   Instead of the command line you can use the *PASCAL cartridge* button in
+   the IDE: it builds the cartridge, starts it in the built-in emulator and
+   saves `PASCAL.MOD` in the IDE's workspace (`projects/`).
+
+3. Optional: check it before putting it on the machine. `npm test` runs every
+   suite, including the cartridge ones (`tests/cartide.js`,
+   `tests/standalone.js`, `tests/brun.js`), in the emulator.
+
+4. Put it on the MiSTer. Copy it to `/media/fat/games/MERIDIAN/` on the SD
+   card, or over the network:
+
+   ```sh
+   scp PASCAL.MOD root@mister.local:/media/fat/games/MERIDIAN/
+   ```
+
+5. Load the MERIDIAN core, open the OSD (F12), choose *Insert cartridge* and
+   pick `PASCAL.MOD`. The MERIDIAN restarts into the editor; F10 goes to
+   BASIC. The cartridge needs the SDRAM module. `BRUN` in BASIC needs a
+   MERIDIAN core from 22 November 2026 or later.
+
+**After a rebuild:** standalone `.MER` files saved with F7 carry a
+fingerprint of the library. With the PASCAL cartridge inserted, a `.MER` runs
+only if the cartridge's library has the same fingerprint. Otherwise it says
+that another cartridge is inserted (without a cartridge it always runs).
+Changes to the editor or the on-device compiler keep the fingerprint; changes
+to `lib/`, the runtime (`compiler/rt816.js`) or the 65C816 code generator
+change it. After such a rebuild, load each program in the editor and press F7
+again to save it with the new library.
+
 ## Tests
 
 ```sh
