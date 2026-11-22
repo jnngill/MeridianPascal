@@ -1,5 +1,5 @@
 program CartSmoke;
-uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub;
+uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic;
 var s: string; i: integer; l: longint;
 begin
   WriteLn('CARTRIDGE OK');

@@ -9,7 +9,8 @@ import { roms } from './harness.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
-export const LIB_UNITS = ['crt', 'graph', 'sprites', 'audio', 'input', 'dos', 'blitter', 'copper', 'schub'];
+export { LIB_UNITS } from '../compiler/mkcart.js';
+import { LIB_UNITS } from '../compiler/mkcart.js';
 
 export function cartLoader(dirs) {
   return (name) => {

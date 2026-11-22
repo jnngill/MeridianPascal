@@ -12,7 +12,7 @@
          PgUp PgDn Home End and the cursor keys move }
 program PascalIDE;
 
-uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, NComp;
+uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, NComp;
 
 const
   TB = $200000;               { text buffer (= NComp.SrcBase) }

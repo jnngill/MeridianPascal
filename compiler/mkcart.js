@@ -9,7 +9,7 @@ import { buildCartridge } from './cart.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
-export const LIB_UNITS = ['crt', 'graph', 'sprites', 'audio', 'input', 'dos', 'blitter', 'copper', 'schub'];
+export const LIB_UNITS = ['crt', 'graph', 'sprites', 'audio', 'input', 'dos', 'blitter', 'copper', 'schub', 'basic'];
 
 export function buildPascalCart(opts = {}) {
   const dirs = [path.join(root, 'cart'), path.join(root, 'lib')];

@@ -64,6 +64,7 @@ a { color: var(--accent); }
   <a href="#l-blitter">Blitter</a>
   <a href="#l-copper">Copper</a>
   <a href="#l-schub">Schub</a>
+  <a href="#l-basic">Basic</a>
   <a class="h" href="#errors">Runtime errors</a>
   <a class="h" href="#inside">How it works</a>
 </nav>
@@ -138,7 +139,7 @@ node compiler/mkcart.js -l         # also a listing, PASCAL.lst</pre>
 <tr><td><code>Ctrl+T</code></td><td>target: 65C816 or SCHUB (shown at the right of the status line)</td></tr>
 <tr><td><code>PgUp PgDn Home End Ctrl+Home Ctrl+End</code></td><td>move</td></tr>
 </table>
-<p>The cartridge holds all library units (System, Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub), compiled by the cross compiler in its far code model, plus a table of their routines. The on-device compiler (<code>cart/ncomp.pas</code>, written in Pascal) is a one-pass compiler that writes 65C816 code straight into bank <code>$30</code> and calls the library in ROM. While a program runs, bank 0 is saved in bank <code>$31</code> and the editor's state comes back afterwards; a runtime error or <code>Halt</code> also returns to the editor.</p>
+<p>The cartridge holds all library units (System, Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic), compiled by the cross compiler in its far code model, plus a table of their routines. The on-device compiler (<code>cart/ncomp.pas</code>, written in Pascal) is a one-pass compiler that writes 65C816 code straight into bank <code>$30</code> and calls the library in ROM. While a program runs, bank 0 is saved in bank <code>$31</code> and the editor's state comes back afterwards; a runtime error or <code>Halt</code> also returns to the editor.</p>
 <p><b>Language on the MERIDIAN:</b> programs with <code>uses</code> of the built-in units, <code>const</code> (also typed constant arrays), <code>type</code>, <code>var</code>, nested procedures and functions with value, <code>var</code> and <code>const</code> parameters (string, array, record and set parameters too), <code>integer word byte shortint longint real char boolean string string[n]</code>, arrays (up to 4 dimensions), records with variant parts, sets (<code>set of</code>, constructors with expressions, <code>+ - * in = &lt;&gt; &lt;= &gt;=</code>, <code>Include</code>/<code>Exclude</code>), pointers with <code>New</code>/<code>Dispose</code>, enumerations, subranges, <code>if while repeat for case with</code>, <code>Exit Break Continue Halt</code>, <code>Write(Ln)</code> with widths (<code>r:w:d</code> for reals), <code>Read(Ln)</code>, <code>Inc Dec Str Ord Chr Succ Pred Odd Abs Sqr Sqrt Trunc Round Int Frac Length SizeOf Low High Lo Hi Assigned</code>, <code>Mem[] MemW[] MemL[]</code> and <code>@</code>. <code>and</code>/<code>or</code> stop as soon as the result is known. The library's <code>Sin Cos ArcTan Exp Ln Power</code> work as on the PC.</p>
 <p><b>Your own units:</b> <code>uses MyUnit</code> reads <code>MYUNIT.PAS</code> from the current drive and compiles it together with the program (file names are the first 8 letters of the unit name). A unit has <code>unit</code>, <code>interface</code> and <code>implementation</code> parts, may use other units (also in its implementation part) and may end with <code>begin</code> or <code>initialization</code> code, which runs before the program. Only what the interface declares is visible to the program. An error inside a unit shows as <code>ERROR IN MYUNIT.PAS LINE n</code>.</p>
 <p>Functions can return records, arrays and sets (up to 256 bytes), also as <code>F(a).x</code> or <code>F[i]</code>. <code>absolute</code> places a variable over another one or at an address; outside bank 0 (for example <code>absolute $310000</code>) it is for simple variables and records.</p>
@@ -337,6 +338,32 @@ CopperOn;</pre>
 
 <h3 id="l-schub">Schub</h3>
 <p><code>SchubPresent SchubStatus SchubRunning SchubCycles OnSchub</code> on both targets. On the 65C816 also <code>SchubStart(addr) SchubStop SchubCall(n, a, b, c)</code>: start a RISC-V program loaded into memory and call it through the same mailbox that BASIC's <code>SCHUB()</code> uses (<code>$FE:1800</code>).</p>
+
+<h3 id="l-basic">Basic <small>&mdash; the variables of the BASIC program that started this one</small></h3>
+<p>A program started from MERIDIAN BASIC with <code>BRUN "NAME"</code> can read and set that BASIC program's variables. Names are written as in BASIC: <code>'SC'</code> a number, <code>'N%'</code> an integer, <code>'A$'</code> a string. Only the first two characters count, like in BASIC (<code>'SCORE'</code> is <code>SC</code>). A variable BASIC has not used yet reads as 0 or <code>''</code>; the <code>Set</code> routines create it. BASIC sees the new values as soon as the program ends.</p>
+<pre>10 W=320:H=200:T$="MANDEL"
+20 BRUN "CALC",3
+30 PRINT T$;" TOOK";MS;"MS, RESULT";R%</pre>
+<pre>program Calc;
+uses Basic;
+var w, h: real;
+begin
+  w := BasicReal('W'); h := BasicReal('H');
+  { ... }
+  SetBasicInt('R%', 42);
+  SetBasicReal('MS', 1234.5);
+  SetBasicStr('T$', BasicStr('T$') + ' (PASCAL)');
+end.</pre>
+<table>
+<tr><td><code>BasicPresent</code></td><td>true when started with <code>BRUN</code> (otherwise every read gives 0 or <code>''</code> and the <code>Set</code> routines do nothing)</td></tr>
+<tr><td><code>BasicExists(name)</code></td><td>BASIC has used this variable</td></tr>
+<tr><td><code>BasicReal BasicInt BasicStr</code> <code>(name)</code></td><td>read a number, integer (<code>%</code>) or string (<code>$</code>)</td></tr>
+<tr><td><code>SetBasicReal SetBasicInt</code> <code>(name, v)</code></td><td>set it, and create it if BASIC has not used it yet</td></tr>
+<tr><td><code>SetBasicStr(name, s): boolean</code></td><td><code>false</code> when BASIC's string space is full (BASIC tidies it up later)</td></tr>
+<tr><td><code>BasicArrLen(name)</code></td><td>elements of an array with one dimension (<code>DIM A(10)</code> gives 11), &minus;1 if there is none</td></tr>
+<tr><td><code>BasicArrReal BasicArrInt BasicArrStr</code> <code>(name, i)</code><br><code>SetBasicArrReal SetBasicArrInt SetBasicArrStr</code> <code>(name, i, v)</code></td><td>array elements; the array must exist (BASIC's <code>DIM</code>); out of range reads 0 and writes nothing</td></tr>
+</table>
+<p>Numbers are converted between BASIC's 5-byte format (about 9 digits) and <code>real</code> (about 7). The unit works on both targets and in programs made with the cartridge. How it works: BASIC keeps its program and variables in bank 1, which <code>BRUN</code> leaves alone. <code>BRUN</code> keeps BASIC's page zero, with the pointers to the variables (<code>$87</code>&ndash;<code>$94</code>), in bank <code>$E0</code> while the program runs and puts it back afterwards. The unit reads and changes the pointers there.</p>
 
 <h2 id="errors">Runtime errors</h2>
 <table>

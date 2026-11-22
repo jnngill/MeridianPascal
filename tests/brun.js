@@ -51,7 +51,24 @@ begin
   for i := 0 to 99 do PutPixel(i, i, 5);
 end.
 `;
-const sources = [['PC', src], ['HALT', halt], ['DIVZ', divz], ['GFX', gfx]];
+// the Basic unit: read BASIC's variables, change some, make new ones
+const bvar = `program BV;
+uses Basic;
+begin
+  WriteLn('PC BUILD 42');
+  WriteLn('V ', BasicPresent, ' ', BasicReal('A'):0:2, ' ', BasicReal('SCORE'):0:1, ' ', BasicInt('N%'), ' ', BasicStr('A$'), ' ', BasicReal('Q'):0:1, ' ', BasicExists('Q'));
+  WriteLn('W ', BasicArrLen('D'), ' ', BasicArrReal('D', 3):0:2, ' ', BasicArrInt('E%', 2), ' ', BasicArrStr('F$', 1), ' ', BasicArrLen('NO'), ' ', BasicReal('BIG'):0:1);
+  SetBasicReal('R', BasicReal('A') * 2);
+  SetBasicInt('N%', BasicInt('N%') - 1);
+  if SetBasicStr('B$', BasicStr('A$') + ' WORLD') then WriteLn('STR OK');
+  SetBasicArrReal('D', 2, -0.15625);
+  SetBasicArrInt('E%', 0, 32767);
+  if SetBasicArrStr('F$', 0, 'XY') then WriteLn('ARR OK');
+  SetBasicReal('BIG', 1.0E30);
+  SetBasicReal('SC', 0.0);
+end.
+`;
+const sources = [['PC', src], ['HALT', halt], ['DIVZ', divz], ['GFX', gfx], ['BVAR', bvar]];
 const files = {};
 for (const [n, s] of sources)
   for (const t of ['m816', 'schub']) files[`${n}${t === 'm816' ? 'M816' : 'SCHUB'}.MER`] = build(s, t).mer;
@@ -88,7 +105,7 @@ for (const [n, s] of sources)
   }
 }
 
-function brun(name, drive) {
+function brun(name, drive, setup) {
   const m = new Meridian({ ...roms, sys });
   for (const [n, b] of Object.entries(files)) m.drives[1].set(n, b);
   const mem = m.mem;
@@ -97,6 +114,7 @@ function brun(name, drive) {
   for (let a = 0x2000; a < 0xc000; a++) mem[a] = pat(a);
   for (let a = 0x55; a < 0x100; a++) mem[a] = pat(a);
   for (let a = 0x0310; a < 0x0398; a++) mem[a] = pat(a);
+  if (setup) setup(mem);
   // the name in bank 1, as FRESTR leaves it
   for (let i = 0; i < name.length; i++) mem[0x015000 + i] = name.charCodeAt(i);
   mem[0x039c] = name.length; mem[0x039d] = 0x00; mem[0x039e] = 0x50;
@@ -140,6 +158,86 @@ for (const [k, how] of kinds) for (const [p, t, tn] of builds) {
 }
 const r = brun('NOTHERE', 1);
 check('BRUN of a missing file returns DOS error 2 and changes nothing', r.a === 2 && r.diff.length === 0 && !/PC BUILD/.test(r.m.output), `a=${r.a} ${r.m.message}`);
+
+// ---- the Basic unit, against BASIC's variables laid out as MERIDIAN BASIC
+// does (basic/basic.s: PTRGET, NOTFDD, MOVMF, GETSPA). Numbers in Microsoft's
+// 5-byte format, written and read here independently of the unit.
+function mbf(x) {
+  if (x === 0) return [0, 0, 0, 0, 0];
+  const s = x < 0 ? 0x80 : 0; x = Math.abs(x);
+  let e = Math.floor(Math.log2(x)) + 1, m = x / 2 ** e;
+  if (m >= 1) { m /= 2; e++; } if (m < 0.5) { m *= 2; e--; }
+  let man = Math.round(m * 2 ** 32);
+  if (man >= 2 ** 32) { man /= 2; e++; }
+  return [e + 128, ((man >>> 24) & 0x7f) | s, (man >>> 16) & 255, (man >>> 8) & 255, man & 255];
+}
+const unmbf = (b) => b[0] === 0 ? 0 : (b[1] & 0x80 ? -1 : 1) * ((((b[1] | 0x80) * 2 ** 24) + b[2] * 65536 + b[3] * 256 + b[4]) / 2 ** 32) * 2 ** (b[0] - 128);
+const ZP = { TXTTAB: 0x87, VARTAB: 0x89, ARYTAB: 0x8b, STREND: 0x8d, FRETOP: 0x8f, FRESPC: 0x91, MEMSIZ: 0x93 };
+const nm = (s) => { const k = s.endsWith('$') ? 2 : s.endsWith('%') ? 1 : 0; const n = s.replace(/[$%]$/, '');
+  let c1 = n.charCodeAt(0), c2 = n.length > 1 ? n.charCodeAt(1) : 0;
+  if (k === 2) c2 |= 0x80; if (k === 1) { c1 |= 0x80; c2 |= 0x80; } return [c1, c2]; };
+function basicSetup(mem) {
+  const B1 = 0x10000;
+  let fre = 0x4f00;
+  const str = (t) => { fre -= t.length; for (let i = 0; i < t.length; i++) mem[B1 + fre + i] = t.charCodeAt(i); return [t.length, fre & 255, fre >> 8]; };
+  const w16 = (a, v) => { mem[a] = v & 255; mem[a + 1] = v >> 8; };
+  for (let a = 0x0801; a < 0x0810; a++) mem[B1 + a] = 0x55;     // stands in for the program text
+  let p = 0x2000;
+  const simple = (name, val) => { const [c1, c2] = nm(name); const v = [...val, 0, 0, 0, 0, 0].slice(0, 5);
+    [c1, c2, ...v].forEach((b, i) => { mem[B1 + p + i] = b; }); p += 7; };
+  simple('A', mbf(3.25)); simple('SC', mbf(1234.5)); simple('N%', [(-300 >> 8) & 255, -300 & 255]);
+  simple('A$', str('HELLO')); simple('BI', mbf(5));
+  const ary = p;
+  const array = (name, size, els) => { const [c1, c2] = nm(name); const n = els.length, total = 7 + n * size;
+    const bytes = [c1, c2, total & 255, total >> 8, 1, n >> 8, n & 255, ...els.flat()];
+    bytes.forEach((b, i) => { mem[B1 + p + i] = b; }); p += total; };
+  array('D', 5, [0, 1, 2, 7.5, 4, 5].map(mbf));
+  array('E%', 2, [10, 20, -2, 40].map(v => [(v >> 8) & 255, v & 255]));
+  array('F$', 3, [str('ONE'), str('HI')]);
+  w16(ZP.TXTTAB, 0x0801); w16(ZP.VARTAB, 0x2000); w16(ZP.ARYTAB, ary); w16(ZP.STREND, p);
+  w16(ZP.FRETOP, fre); w16(ZP.FRESPC, fre); w16(ZP.MEMSIZ, 0x4f00);
+}
+// read the variables back the way BASIC would
+function basicRead(mem) {
+  const B1 = 0x10000, z = (k) => mem[ZP[k]] | mem[ZP[k] + 1] << 8;
+  const out = { zp: {}, v: {}, a: {} };
+  for (const k of Object.keys(ZP)) out.zp[k] = z(k);
+  const val = (name, a) => name.endsWith('$') ? String.fromCharCode(...mem.subarray(B1 + (mem[a + 1] | mem[a + 2] << 8), B1 + (mem[a + 1] | mem[a + 2] << 8) + mem[a]))
+    : name.endsWith('%') ? ((mem[a] << 8 | mem[a + 1]) << 16 >> 16) : unmbf(mem.subarray(a, a + 5));
+  const nameOf = (c1, c2) => String.fromCharCode(c1 & 0x7f) + (c2 & 0x7f ? String.fromCharCode(c2 & 0x7f) : '') + (c1 & 0x80 ? '%' : c2 & 0x80 ? '$' : '');
+  for (let p = z('VARTAB'); p < z('ARYTAB'); p += 7) { const n = nameOf(mem[B1 + p], mem[B1 + p + 1]); out.v[n] = val(n, B1 + p + 2); }
+  for (let p = z('ARYTAB'); p < z('STREND');) {
+    const n = nameOf(mem[B1 + p], mem[B1 + p + 1]), len = mem[B1 + p + 2] | mem[B1 + p + 3] << 8, cnt = mem[B1 + p + 5] << 8 | mem[B1 + p + 6];
+    const size = n.endsWith('$') ? 3 : n.endsWith('%') ? 2 : 5;
+    out.a[n] = []; for (let i = 0; i < cnt; i++) out.a[n].push(val(n, B1 + p + 7 + i * size));
+    if (!len) break; p += len;
+  }
+  return out;
+}
+for (const [p, t, tn] of builds) {
+  const name = `${p}BVAR${t}`;
+  const r = brun(name, undefined, basicSetup);
+  const out = r.m.output.replace(/\r/g, '\n');
+  check(`Basic unit (${tn}): reads BASIC's variables`, /V TRUE 3\.25 1234\.5 -300 HELLO 0\.0 FALSE/.test(out) && /W 6 7\.50 -2 HI -1 5\.0/.test(out), out);
+  check(`Basic unit (${tn}): sets strings`, /STR OK/.test(out) && /ARR OK/.test(out), out);
+  const b = basicRead(r.m.mem);
+  const near = (x, y) => Math.abs(x - y) <= Math.abs(y) * 1e-6;
+  const ok = b.v.R === 6.5 && b.v['N%'] === -301 && b.v['B$'] === 'HELLO WORLD' && b.v['A$'] === 'HELLO' && b.v.SC === 0 && b.v.A === 3.25
+    && near(b.v.BI, 1e30) && JSON.stringify(b.a.D) === JSON.stringify([0, 1, -0.15625, 7.5, 4, 5])
+    && JSON.stringify(b.a['E%']) === JSON.stringify([32767, 20, -2, 40]) && JSON.stringify(b.a['F$']) === JSON.stringify(['XY', 'HI']);
+  check(`Basic unit (${tn}): BASIC sees the new values, arrays intact after the new variables`, ok, JSON.stringify(b));
+  check(`Basic unit (${tn}): pointers in BASIC's page zero updated (2 new variables, 3 new strings)`,
+    b.zp.VARTAB === 0x2000 && b.zp.ARYTAB - 0x2000 === 7 * 7 && b.zp.FRETOP === b.zp.FRESPC && 0x4f00 - b.zp.FRETOP === 5 + 3 + 2 + 11 + 2 && b.zp.STREND <= b.zp.FRETOP,
+    JSON.stringify(b.zp));
+  check(`Basic unit (${tn}): back in BASIC's mode, A = 0`, r.e === 1 && r.dbr === 1 && r.a === 0, `e=${r.e} db=${r.dbr} a=${r.a}`);
+}
+{
+  // not started by BRUN: BasicPresent is false, nothing is read or written
+  const x = new Meridian(roms);
+  x.startProgram(x.loadMer(files['BVARM816.MER']).start);
+  for (let i = 0; i < 600 && x.state === 'running'; i++) x.runFrame();
+  check('Basic unit without BRUN: BasicPresent false, reads 0', /V FALSE 0\.00 0\.0 0  0\.0 FALSE/.test(x.output) && !/STR OK/.test(x.output), x.output);
+}
 
 console.log(fail ? `${fail} failed` : 'all ok');
 process.exit(fail ? 1 : 0);

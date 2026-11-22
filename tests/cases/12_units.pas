@@ -1,5 +1,5 @@
 program units;
-uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub;
+uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic;
 var i: integer; n: string; sz, t: longint; buf: array[0..9] of byte;
 begin
   GotoXY(5, 3); write('X'); writeln(WhereX, ' ', WhereY);
