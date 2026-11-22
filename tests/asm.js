@@ -120,23 +120,48 @@ function runMer(mer, frm = 600) {
   for (let i = 0; i < frm && x.state === 'running'; i++) x.runFrame();
   return x;
 }
+// the examples show the mouse position until a click: run one (F5 or a .MER),
+// move the mouse, look, click; returns the screen before and after the click
+function mouseRun(x, frm, start) {
+  const fr = (n) => { for (let i = 0; i < n && x.state === 'running'; i++) x.runFrame(); };
+  start(); fr(frm);
+  x.mouse.x = 0xc8; x.mouse.y = 0x64; fr(30);
+  x.mouse.x = 0x123; x.mouse.y = 0xef; fr(30);
+  const moved = x.screenText();
+  x.mouse.b = 1; fr(10); x.mouse.b = 0; fr(frm);
+  return [moved, x.screenText()];
+}
+const MOVED = /^X \$0123  Y \$00EF$/m;
 {
   const src = ex('hello.asm');
   const dev = onDevice('HELLO.ASM', src);
   compare('examples/hello.asm', dev, assemble816(src));
-  const scr = f5();
-  check('F5 runs HELLO.ASM, back to the editor', /HELLO FROM THE MERIDIAN!/.test(scr) && /PRESS A KEY/.test(scr) && /PROGRAM ENDED/.test(m.screenText()), scr);
+  const [moved, scr] = mouseRun(m, 200, () => hold(0x03));
+  check('F5 runs HELLO.ASM: it shows the mouse position on one line', /HELLO FROM THE MERIDIAN!/.test(moved) && MOVED.test(moved) && !/\$00C8/.test(moved), moved);
+  check('a click ends HELLO.ASM, back to the editor', /PRESS A KEY/.test(scr), scr);
+  m.pushKey(32); frames(60);
+  check('the editor is back', /PROGRAM ENDED/.test(m.screenText()), m.screenText());
   const mer = f7('HELLO.MER');
   check('F7 saves HELLO.MER (load and start $002000)', !!mer && mer[0] === 0x4d && mer[4] === 0 && mer[5] === 0x20 && mer[8] === 0 && mer[9] === 0x20, m.screenText().split('\n')[29]);
-  if (mer) { const x = runMer(mer); check('HELLO.MER runs without the cartridge', x.state === 'idle' && /HELLO FROM THE MERIDIAN!/.test(x.output), `${x.state} ${x.message}\n${x.output}`); }
+  if (mer) {
+    const x = new Meridian(roms);
+    const [mv] = mouseRun(x, 100, () => x.startProgram(x.loadMer(mer).start));
+    check('HELLO.MER runs without the cartridge, a click ends it', x.state === 'idle' && /HELLO FROM THE MERIDIAN!/.test(x.output) && MOVED.test(mv), `${x.state} ${x.message}\n${mv}`);
+  }
 }
 {
   const dev = onDevice('HELLORV.ASM', ex('hellorv.asm'));
   check('examples/hellorv.asm assembles for SCHUB at $040400', /^OK/.test(dev.msg) && dev.origin === 0x40400 && /ASM SCHUB/.test(status()), dev.msg + '\n' + status());
-  const scr = f5(600);
-  check('F5 runs HELLORV.ASM on SCHUB', /HELLO FROM SCHUB!/.test(scr) && /PRESS A KEY/.test(scr), scr);
+  const [moved, scr] = mouseRun(m, 300, () => hold(0x03));
+  check('F5 runs HELLORV.ASM on SCHUB: it reads the mouse itself', /HELLO FROM SCHUB!/.test(moved) && MOVED.test(moved), moved);
+  check('a click ends HELLORV.ASM', /PRESS A KEY/.test(scr), scr);
+  m.pushKey(32); frames(60);
   const mer = f7('HELLORV.MER');
-  if (mer) { const x = runMer(mer, 900); check('HELLORV.MER runs without the cartridge', x.state === 'idle' && /HELLO FROM SCHUB!/.test(x.output), `${x.state} ${x.message}\n${x.output}`); }
+  if (mer) {
+    const x = new Meridian(roms);
+    const [mv] = mouseRun(x, 300, () => x.startProgram(x.loadMer(mer).start));
+    check('HELLORV.MER runs without the cartridge, a click ends it', x.state === 'idle' && /HELLO FROM SCHUB!/.test(x.output) && MOVED.test(mv), `${x.state} ${x.message}\n${mv}`);
+  }
   else check('F7 saves HELLORV.MER', false, m.screenText().split('\n')[29]);
 }
 {

@@ -47,7 +47,8 @@ all. See [Start](#start) for the PC side and
   scrolls, and the F-key names on the top line can be clicked.
   It also assembles: a NAME.ASM text is 65C816 assembly (or RV32IM for
   SCHUB with `.schub`), with the same F9/F5/F7 and the syntax of the PC
-  assemblers (examples/hello.asm, examples/hellorv.asm).
+  assemblers (examples/hello.asm, examples/hellorv.asm; both also show
+  the mouse position until a click or Esc).
 
 ## Start
 
