@@ -1074,27 +1074,91 @@ begin
   _writestr(s, 0);
 end;
 
+{ text -> real, rounded once: the digits are collected as an integer (up to
+  9 significant digits, the rest only marks "more"), scaled by the power of
+  ten in a 64-bit mantissa of four 16-bit limbs (m[3] the highest), and only
+  then rounded to the 24 bits of a real (to nearest, ties to even). }
 function _valreal(const s: string; var code: integer): real;
-var i, n, ex, scale: integer;
-    neg, eneg, digit: boolean;
-    v: real;
+var i, n, ex, scale, nd, be, k, e: integer;
+    neg, eneg, digit, more: boolean;
+    mant, cur, rem, top: longint;
+    m: array[0..4] of longint;
+    u: TRealBits;
+
+  procedure ShiftLeft;
+  var j: integer;
+  begin
+    for j := 3 downto 1 do m[j] := ((m[j] shl 1) and $FFFF) or (m[j - 1] shr 15);
+    m[0] := (m[0] shl 1) and $FFFF;
+    be := be - 1;
+  end;
+
+  procedure ShiftRight;            { from m[4] down; the lost bit stays as "more" }
+  var j: integer;
+  begin
+    if odd(m[0]) then more := true;
+    for j := 0 to 3 do m[j] := (m[j] shr 1) or ((m[j + 1] and 1) shl 15);
+    m[4] := m[4] shr 1;
+    be := be + 1;
+  end;
+
+  procedure Normalize;             { highest bit of m[3] set }
+  begin
+    while m[3] < $8000 do ShiftLeft;
+  end;
+
+  procedure Mul10;
+  var j: integer;
+  begin
+    cur := 0;
+    for j := 0 to 3 do begin
+      cur := m[j] * 10 + cur;
+      m[j] := cur and $FFFF;
+      cur := cur shr 16;
+    end;
+    m[4] := cur;
+    while m[4] <> 0 do ShiftRight;
+    Normalize;
+  end;
+
+  procedure Div10;
+  var j: integer;
+  begin
+    rem := 0;
+    for j := 3 downto 0 do begin
+      cur := rem * 65536 + m[j];
+      m[j] := cur div 10;
+      rem := cur mod 10;
+    end;
+    if rem <> 0 then more := true;
+    Normalize;
+  end;
+
 begin
   i := 1; n := length(s);
-  v := 0.0; code := 0;
+  code := 0; mant := 0; nd := 0; scale := 0; more := false;
   while (i <= n) and (s[i] = ' ') do i := i + 1;
   neg := false;
   if (i <= n) and ((s[i] = '-') or (s[i] = '+')) then begin neg := s[i] = '-'; i := i + 1; end;
   digit := false;
   while (i <= n) and (s[i] >= '0') and (s[i] <= '9') do begin
-    v := _addreal(_mulreal(v, 10.0), _inttoreal(ord(s[i]) - 48));
+    if nd < 9 then begin
+      mant := mant * 10 + ord(s[i]) - 48;
+      if mant <> 0 then nd := nd + 1;
+    end else begin
+      scale := scale + 1;
+      if s[i] <> '0' then more := true;
+    end;
     i := i + 1; digit := true;
   end;
-  scale := 0;
   if (i <= n) and (s[i] = '.') then begin
     i := i + 1;
     while (i <= n) and (s[i] >= '0') and (s[i] <= '9') do begin
-      v := _addreal(_mulreal(v, 10.0), _inttoreal(ord(s[i]) - 48));
-      scale := scale - 1;
+      if nd < 9 then begin
+        mant := mant * 10 + ord(s[i]) - 48;
+        if mant <> 0 then nd := nd + 1;
+        scale := scale - 1;
+      end else if s[i] <> '0' then more := true;
       i := i + 1; digit := true;
     end;
   end;
@@ -1110,10 +1174,26 @@ begin
     if eneg then scale := scale - ex else scale := scale + ex;
   end;
   if (i <= n) or not digit then code := i;
-  while scale > 0 do begin v := _mulreal(v, 10.0); scale := scale - 1; end;
-  while scale < 0 do begin v := _divreal(v, 10.0); scale := scale + 1; end;
-  if neg then v := _negreal(v);
-  _valreal := v;
+  u.l := 0;
+  if (code = 0) and (mant <> 0) then begin
+    m[0] := mant and $FFFF; m[1] := (mant shr 16) and $FFFF; m[2] := 0; m[3] := 0; m[4] := 0;
+    be := 0;
+    Normalize;
+    if scale > 60 then scale := 60;                   { far beyond the range of real }
+    if scale < -60 then scale := -60;
+    for k := 1 to scale do Mul10;
+    for k := -1 downto scale do Div10;
+    { value = m * 2^be with m in [2^63, 2^64): keep the top 24 bits }
+    top := m[3] * 256 + (m[2] shr 8);
+    if (m[2] and $80) <> 0 then
+      if ((m[2] and $7F) <> 0) or (m[1] <> 0) or (m[0] <> 0) or more or odd(top) then top := top + 1;
+    e := be + 63 + 127;                               { biased exponent of top / 2^23 }
+    if top = $1000000 then begin top := $800000; e := e + 1; end;
+    if e >= 255 then code := n                        { too large for real }
+    else if e > 0 then u.l := (longint(e) shl 23) or (top and $7FFFFF);
+  end;
+  if neg and (u.l <> 0) then u.l := u.l or not longint($7FFFFFFF);
+  _valreal := u.r;
 end;
 
 begin

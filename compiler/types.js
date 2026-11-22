@@ -97,6 +97,38 @@ export function wrapTo(v, t) {
   return r;
 }
 
+// a decimal number text -> the nearest real (IEEE single, ties to even), as a
+// JS number. Exact: parseFloat would round to double first, which is wrong
+// near halfway cases (16777217.000000001 must give 16777218). Like the
+// library's Val: below the smallest normal real gives 0, above the largest
+// Infinity.
+export function decimalToReal(s) {
+  const m = /^([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$/.exec(s);
+  if (!m) return NaN;
+  const frac = m[2] || '';
+  let n = BigInt((m[1] || '') + frac || '0');
+  if (n === 0n) return 0;
+  const e10 = Number(m[3] || 0) - frac.length;
+  let num = n, den = 1n;
+  if (e10 >= 0) num *= 10n ** BigInt(e10); else den = 10n ** BigInt(-e10);
+  let e2 = num.toString(2).length - den.toString(2).length - 24;
+  let q, r, b;
+  for (;;) {
+    const a = e2 >= 0 ? num : num << BigInt(-e2);
+    b = e2 >= 0 ? den << BigInt(e2) : den;
+    q = a / b; r = a % b;
+    if (q >= 1n << 24n) e2++;
+    else if (q < 1n << 23n) e2--;
+    else break;
+  }
+  if (2n * r > b || (2n * r === b && (q & 1n))) q++;
+  if (q === 1n << 24n) { q = 1n << 23n; e2++; }
+  const v = Number(q) * 2 ** e2;
+  if (v < 2 ** -126) return 0;
+  if (v >= 2 ** 128) return Infinity;
+  return v;
+}
+
 // IEEE single precision bits of a JS number
 export function realBits(x) {
   const dv = new DataView(new ArrayBuffer(4));

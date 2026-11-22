@@ -2,6 +2,8 @@
 // Turns source text into tokens. Handles comments, compiler directives
 // ({$IFDEF}, {$DEFINE}, {$I file}), Turbo Pascal number and string syntax.
 
+import { decimalToReal } from './types.js';
+
 export class CompileError extends Error {
   constructor(msg, pos) {
     super(msg);
@@ -145,7 +147,7 @@ export function tokenize(text, file, defines, includeLoader) {
         }
         const s = src.slice(i, j);
         adv(j - i);
-        if (isReal) toks.push({ k: 'real', v: parseFloat(s), pos: p });
+        if (isReal) toks.push({ k: 'real', v: decimalToReal(s), pos: p });
         else toks.push({ k: 'int', v: parseInt(s, 10), pos: p });
         continue;
       }
