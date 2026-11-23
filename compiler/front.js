@@ -95,7 +95,7 @@ export class Front {
     switch (t.k) {
       case 'int': case 'enum': return t.size;
       case 'real': return 4;
-      case 'ptr': case 'nil': return this.target.ptrSize;
+      case 'ptr': case 'nil': case 'proc': return this.target.ptrSize;
       case 'record': return t.align || 1;
       case 'array': return this.alignOf(t.elem);
       default: return 1;
@@ -110,7 +110,7 @@ export class Front {
       case 'char': case 'bool': return 'u8';
       case 'enum': return t.size === 1 ? 'u8' : 'u16';
       case 'real': return '32';
-      case 'ptr': case 'nil': return this.target.ptrSize === 2 ? 'u16' : '32';
+      case 'ptr': case 'nil': case 'proc': return this.target.ptrSize === 2 ? 'u16' : '32';
       default: this.err(`no scalar access for ${typeName(t)}`);
     }
   }
@@ -521,7 +521,21 @@ export class Front {
       const fr = this.fileRec();
       return { ...fr, fileOf: of, name: of ? 'file of ' + typeName(of) : 'file' };
     }
-    if (this.is('procedure') || this.is('function')) this.err('procedural types are not supported');
+    if (this.is('procedure') || this.is('function')) {
+      // procedure(...) / function(...): T: the address of a global routine
+      const isFunc = this.next().v === 'function';
+      const params = this.is('(') ? this.parseParams() : [];
+      let ret = null;
+      if (isFunc) {
+        this.expect(':');
+        ret = this.parseTypeIdent();
+        if (ret.k === 'string' || isStruct(ret)) this.err('a procedural function returns a scalar, a real or a pointer');
+      }
+      if (params.some(p => p.hiddenHigh)) this.err('open arrays in a procedural type are not supported');
+      const ps = { kind: 'proc', name: '(procedural)', params, ret, level: 1, procType: true };
+      this.layoutParams(ps);
+      return { k: 'proc', params, ret, sym: ps, size: this.target.ptrSize, name: nameHint || (isFunc ? 'function' : 'procedure') };
+    }
     if (t.k === 'op' && t.v === '(') {
       this.next();
       const names = [];
@@ -914,7 +928,9 @@ export class Front {
     }
     const lhs = this.parseDesignator('lhs');
     if (this.accept(':=')) {
+      if (lhs.type && lhs.type.k === 'proc') this.wantProc = lhs.type;
       const rhs = this.parseExpr();
+      this.wantProc = null;
       this.assign(lhs, rhs, t.pos);
       return;
     }
@@ -925,6 +941,13 @@ export class Front {
       return;
     }
     if (lhs.n === 'call') { this.genCall(lhs); if (lhs.type.k !== 'string' && lhs.type.k !== 'void') this.emit({ o: 'drop', s: this.clsOf(lhs.type) }); return; }
+    if (lhs.type && lhs.type.k === 'proc') {
+      // p; without arguments
+      const c = this.parseIndirectCall(lhs, t.pos);
+      this.genCall(c);
+      if (c.type.k !== 'void') this.emit({ o: 'drop', s: this.clsOf(c.type) });
+      return;
+    }
     this.err(`':=' expected but ${this.desc(this.tk)} found`);
   }
 
@@ -1417,6 +1440,13 @@ export class Front {
         if (t.v === '[') return this.parseSetCons();
         if (t.v === '@') {
           this.next();
+          const ps = this.tk.k === 'id' && this.lookup(this.tk.v);
+          if (ps && ps.kind === 'proc') {
+            // @Routine: its address, an untyped pointer
+            this.next();
+            const v = this.procValue(ps, null, t.pos);
+            return { ...v, type: { k: 'ptr', to: null, size: this.target.ptrSize } };
+          }
           const e = this.parseDesignator();
           if (!e.lv) this.err('variable expected after @');
           return { n: 'addr', e, type: { k: 'ptr', to: e.type, size: this.target.ptrSize } };
@@ -1501,6 +1531,11 @@ export class Front {
         break;
       }
       case 'proc': {
+        if (this.wantProc && !(this.ctx && this.ctx.sym === sym && inExpr === 'lhs')) {
+          e = this.procValue(sym, this.wantProc, t.pos);
+          this.wantProc = null;
+          break;
+        }
         if (this.ctx && this.ctx.sym === sym && inExpr === 'lhs') {
           e = { n: 'var', sym: this.ctx.resultSym, type: this.ctx.resultSym.type, lv: true };
           break;
@@ -1526,8 +1561,38 @@ export class Front {
     return this.parsePostfix(e);
   }
 
+  // a global routine as a procedural value (t: the type expected, or null)
+  procValue(sym, t, pos) {
+    if (sym.level !== 1 || sym.external || sym.procType) this.err(`'${sym.name}' cannot be used as a procedural value (only routines of the program or a unit, not nested ones)`, pos);
+    if (t && (!this.sameParams(sym.params, t.params) || !!sym.ret !== !!t.ret || (t.ret && !sameType(sym.ret, t.ret))))
+      this.err(`'${sym.name}' does not fit ${typeName(t)}`, pos);
+    return { n: 'procaddr', sym, type: t || { k: 'proc', params: sym.params, ret: sym.ret, size: this.target.ptrSize } };
+  }
+
+  // p(args): a call through a procedural value
+  parseIndirectCall(fn, pos) {
+    const pt = fn.type;
+    const args = [];
+    if (this.accept('(')) {
+      if (!this.is(')')) {
+        let i = 0;
+        do {
+          const want = pt.params[i] && pt.params[i].type.k === 'proc' ? pt.params[i].type : null;
+          this.wantProc = want;
+          args.push(this.parseExpr());
+          this.wantProc = null;
+          i++;
+        } while (this.accept(','));
+      }
+      this.expect(')');
+    }
+    const c = this.checkCall(pt.sym, args, pos);
+    return { ...c, n: 'call', fn, type: pt.ret || T.void };
+  }
+
   parsePostfix(e) {
     for (;;) {
+      if (e.type && e.type.k === 'proc' && e.n !== 'procaddr' && this.is('(')) { e = this.parseIndirectCall(e, this.tk.pos); continue; }
       const t = this.tk;
       if (t.k !== 'op') return e;
       if (t.v === '^') {
@@ -1704,7 +1769,7 @@ export class Front {
       case 'sqrt': need(1); return this.callRt('sqrtreal', [this.conv(a, T.real)]);
       case 'assigned':
         need(1);
-        if (!isPtr(a.type)) this.err('pointer expected', pos);
+        if (!isPtr(a.type) && a.type.k !== 'proc') this.err('pointer expected', pos);
         return this.binop('<>', a, { n: 'const', type: T.nil, v: 0 }, pos);
       case 'concat': {
         if (!args.length) this.err('concat needs arguments', pos);
@@ -1727,9 +1792,15 @@ export class Front {
 
   parseCallArgs(sym, pos) {
     const args = [];
+    const user = (sym.params || []).filter(p => !p.hiddenHigh);
     if (this.accept('(')) {
       if (!this.is(')')) {
-        do { args.push(this.parseExpr()); } while (this.accept(','));
+        do {
+          const p = user[args.length];
+          this.wantProc = p && p.type.k === 'proc' ? p.type : null;
+          args.push(this.parseExpr());
+          this.wantProc = null;
+        } while (this.accept(','));
       }
       this.expect(')');
     }
@@ -1800,6 +1871,11 @@ export class Front {
       return;
     }
     if (dt.k === 'bool') { if (st.k !== 'bool') bad(); return; }
+    if (dt.k === 'proc') {
+      if (st.k === 'nil' || (st.k === 'ptr' && !st.to)) return;
+      if (st.k !== 'proc' || !this.sameParams(dt.params, st.params) || !!dt.ret !== !!st.ret) bad();
+      return;
+    }
     if (dt.k === 'enum') { if (st.k !== 'enum' || (st.base || st) !== (dt.base || dt)) bad(); return; }
     if (dt.k === 'string') { if (st.k !== 'string' && st.k !== 'char') bad(); return; }
     if (dt.k === 'ptr') {
@@ -2228,7 +2304,13 @@ export class Front {
     this.err('set expected');
   }
 
-  emitCall(sym) {
+  emitCall(sym, fn) {
+    if (fn) {
+      // through a procedural value: its address last
+      this.genValue(fn);
+      this.emit({ o: 'calli', args: sym.parBytes, ret: sym.ret ? this.clsOf(sym.ret) : null });
+      return;
+    }
     this.emit({ o: 'call', l: sym.label, args: sym.parBytes, ret: sym.ret && sym.ret.k !== 'string' ? this.clsOf(sym.ret) : null, ext: sym.external });
   }
 
@@ -2270,7 +2352,7 @@ export class Front {
       this.emit({ o: 'fp', hops });
       this.emit({ o: 'arg', s: P });
     }
-    this.emitCall(sym);
+    this.emitCall(sym, c.fn);
   }
 
   // push a scalar value
@@ -2368,6 +2450,7 @@ export class Front {
     const t = e.type;
     switch (e.n) {
       case 'onstack': return;     // a value already computed (see assign)
+      case 'procaddr': this.emit({ o: 'gaddr', g: e.sym.label, off: 0 }); return;
       case 'const': {
         if (t.k === 'real') { this.emit({ o: 'lit', s: 'L', v: realBits(e.v) }); return; }
         if (t.k === 'string') this.err('string constant used as a value');

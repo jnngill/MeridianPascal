@@ -94,7 +94,7 @@ const
   skConst = 1; skVar = 2; skType = 3; skProc = 4; skField = 5; skPar = 6; skAsm = 7;
   { type forms }
   fInt = 1; fChar = 2; fBool = 3; fEnum = 4; fStr = 5; fArr = 6; fRec = 7; fPtr = 8; fNil = 9; fUntyped = 10;
-  fReal = 11; fSet = 12;
+  fReal = 11; fSet = 12; fProc = 13;    { fProc: base = a routine with the parameters }
   { predefined types }
   tInteger = 1; tWord = 2; tByte = 3; tShort = 4; tLong = 5; tLongW = 6; tChar = 7; tBool = 8;
   tString = 9; tPointer = 10; tNil = 11; tUntyped = 12; tReal = 13; tSet = 14;
@@ -229,6 +229,8 @@ var
     stack (a goto out of a loop drops them) }
   nLab, labStart, nFix, stkSlots, preLabels: integer;
   skipHidden: boolean;                 { PushArg pushed an open array's hidden index too }
+  wantProc: integer;                   { a procedural type is expected: a routine gives its address }
+  procAny: integer;                    { the type of @Routine }
   openHi: integer;                     { Selector: the hidden index of the open array indexed }
   curUnit: integer;                    { 0: the program, else the unit being compiled }
   msgsBuilt: boolean;
@@ -2003,7 +2005,7 @@ begin
   if not rv then exit;
   case types[t].form of
     fInt, fEnum: AlignOf := types[t].size;
-    fReal, fPtr, fNil: AlignOf := 4;
+    fReal, fPtr, fNil, fProc: AlignOf := 4;
     fRec: AlignOf := types[t].al;
     fArr: AlignOf := AlignOf(types[t].base);
   end;
@@ -2750,6 +2752,14 @@ begin
     if not (xf in [fPtr, fNil]) then ErrorN(31, '');
     Load(x); exit;
   end;
+  if tf = fProc then begin
+    if not (xf in [fProc, fNil]) then ErrorN(31, '');
+    if x.mode = mConst then begin
+      if rv then RLi(rA0, x.a) else begin LdaImm(x.a); LdxImm(x.a shr 16); end;
+      x.mode := mReg; x.typ := t; exit;
+    end;
+    Load(x); exit;
+  end;
   ErrorN(30, '');
 end;
 
@@ -2823,6 +2833,8 @@ end;
 procedure Expression(var x: TItem); forward;
 procedure Designator(var x: TItem; s: integer); forward;
 procedure CallProc(s: integer; var x: TItem); forward;
+procedure ProcValue(s, t: integer; var x: TItem); forward;
+procedure CallIndirect(var x: TItem); forward;
 
 function ConstExpr: longint;
 var x: TItem;
@@ -3595,6 +3607,13 @@ begin
     end;
     sAt: begin
       Next;
+      if (sym = sIdent) and (Find(id) <> 0) then
+        if syms[Find(id)].kind = skProc then begin
+          s := Find(id); Next;
+          if procAny = 0 then begin procAny := NewType(fProc, 4); types[procAny].base := 0; end;
+          ProcValue(s, procAny, x);
+          exit;
+        end;
       VarDesignator(x);
       LoadAdr(x);
       x.typ := tPointer;
@@ -3629,7 +3648,10 @@ begin
           MakeConst(x, syms[s].adr, syms[s].typ);
           if types[x.typ].form = fStr then x.mode := mGlob;
         end;
-        skVar: Designator(x, s);
+        skVar: begin
+          Designator(x, s);
+          if (types[x.typ].form = fProc) and (sym = sLparen) then CallIndirect(x);
+        end;
         skType: begin
           t := syms[s].typ;
           Expect(sLparen); Expression(x); Expect(sRparen);
@@ -3637,7 +3659,10 @@ begin
           else Cast(x, t);
           Selector(x);
         end;
-        skProc: begin
+        skProc: if (wantProc <> 0) and (sym <> sLparen) then begin
+          ProcValue(s, wantProc, x);
+          wantProc := 0;
+        end else begin
           if syms[s].typ = 0 then ErrorN(58, '');
           if (syms[s].flags and 4 = 0) and (sym <> sLparen) and (s = ctxProc[curLev]) then
             ErrorN(59, '');
@@ -3944,6 +3969,11 @@ begin
     CondResult(x, c);
     exit;
   end;
+  { procedural values (4 bytes) and nil: compared as longints }
+  if (types[x.typ].form in [fProc, fNil]) and (types[y.typ].form in [fProc, fNil]) and
+     ((types[x.typ].form = fProc) or (types[y.typ].form = fProc)) then begin
+    x.typ := tLong; y.typ := tLong;
+  end;
   if (x.mode = mConst) and (y.mode = mConst) then begin
     case c of
       cEq: x.a := ord(x.a = y.a); cNe: x.a := ord(x.a <> y.a); cLt: x.a := ord(x.a < y.a);
@@ -4183,7 +4213,9 @@ begin
     LoadAdr(x); PushA(2);
     exit;
   end;
+  if types[pt].form = fProc then wantProc := pt;
   Expression(x);
+  wantProc := 0;
   LoadAs(x, pt);
   PushA(types[pt].size);
 end;
@@ -4244,6 +4276,51 @@ begin
   end else begin
     x.mode := mReg; x.typ := syms[s].typ;
   end;
+end;
+
+{ the address of a routine as a procedural value of type t }
+procedure ProcValue(s, t: integer; var x: TItem);
+begin
+  if (syms[s].lev <> 1) or (syms[s].flags and 4 <> 0) then Error('only routines of the program can be procedural values');
+  if syms[s].flags and 2 = 0 then Error('the routine must come before it is used as a value');
+  if (types[t].base <> 0) and (syms[types[t].base].npar <> syms[s].npar) then Error('the routine does not fit the procedural type');
+  MakeConst(x, syms[s].adr, t);
+end;
+
+{ p(args): a call through the procedural value x (not loaded yet) }
+procedure CallIndirect(var x: TItem);
+var ps, p: integer;
+begin
+  ps := types[x.typ].base;
+  if ps = 0 then Error('this procedural value has no parameter list');
+  Load(x); PushA(4);                        { the address, under the arguments }
+  p := syms[ps].first;
+  if sym = sLparen then begin
+    Next;
+    if sym <> sRparen then
+      repeat
+        if p = 0 then ErrorN(68, '');
+        PushArg(p);
+        p := syms[p].next;
+        if sym = sComma then Next else break;
+      until false;
+    Expect(sRparen);
+  end;
+  if p <> 0 then ErrorN(69, '');
+  if rv then begin
+    RLd(4, false, rT0, rSp, syms[ps].parsz);
+    RI($67, 0, rRa, rT0, 0);                 { jalr ra, 0(t0) }
+  end else begin
+    Op8($A3, syms[ps].parsz + 1); StaAbs(aT0);       { lda n+1,s: the address }
+    Op8($A3, syms[ps].parsz + 3); StaAbs(aT0 + 2);
+    Gen($4B);                                        { phk }
+    Gen($62); Gen16(2);                              { per: the return address - 1 }
+    Gen($DC); Gen16(aT0);                            { jml [rt_t0] }
+  end;
+  PopBytes(syms[ps].parsz);
+  if rv then RAddi(rSp, rSp, 4) else begin Gen($7A); Gen($7A); end;   { the address }
+  lastDbg := -1;
+  x.mode := mReg; x.typ := syms[ps].typ; x.tmp := false;
 end;
 
 { library procedures: arguments by count (parsz from the parameter list) }
@@ -4603,7 +4680,9 @@ begin
   end;
   PrepStore(x);
   if becomes then Expect(sBecomes);
+  if types[t].form = fProc then wantProc := t;
   Expression(y);
+  wantProc := 0;
   if swR and IsOrd(t) and IsOrd(y.typ) and (y.mode <> mConst) and
      ((types[y.typ].lo < types[t].lo) or (types[y.typ].hi > types[t].hi)) then begin
     LoadBool(y);
@@ -5206,7 +5285,11 @@ begin
         if s = 0 then ErrorN(57, n);
         Next;
         case syms[s].kind of
-          skVar: begin Designator(x, s); Assignment(x); end;
+          skVar: begin
+            Designator(x, s);
+            if (types[x.typ].form = fProc) and (sym <> sBecomes) then CallIndirect(x)
+            else Assignment(x);
+          end;
           skProc: begin
             if (sym = sBecomes) and (s = ctxProc[curLev]) then begin
               { function result }
@@ -5309,6 +5392,7 @@ var s, f, prev, k: integer;
     ids: array[1..16] of TName;
     nid, i, ft: integer;
     pt: integer;
+    isF: boolean;
 begin
   case sym of
     sPacked: begin Next; TypeDef(t); end;
@@ -5389,6 +5473,59 @@ begin
       if not IsOrd(ft) then ErrorN(109, '');
       t := NewType(fSet, 32);
       types[t].base := ft;
+    end;
+    sProcedure, sFunction: begin
+      { procedural type: the parameters on a nameless routine (no open arrays) }
+      isF := sym = sFunction;
+      Next;
+      f := NewSym('', skProc, 0);
+      syms[f].lev := 1; syms[f].adr := 0; syms[f].flags := 2;
+      prev := 0;
+      if sym = sLparen then begin
+        Next;
+        if sym <> sRparen then
+          repeat
+            k := 0;
+            if sym = sVar then begin k := 1; Next; end
+            else if sym = sConst then begin k := 2; Next; end;
+            nid := 0;
+            repeat
+              if sym <> sIdent then ErrorN(119, '');
+              nid := nid + 1; ids[nid] := id; Next;
+              if sym = sComma then Next else break;
+            until false;
+            if sym = sColon then begin Next; ParseTypeIdent(pt); end
+            else begin if k = 0 then ErrorN(120, ''); pt := tUntyped; end;
+            for i := 1 to nid do begin
+              s := NewSym(ids[i], skPar, pt);
+              syms[s].isRef := (k = 1) or IsStruct(pt) or (pt = tUntyped);
+              if k = 1 then syms[s].flags := 1;
+              if k = 2 then syms[s].flags := 2;
+              if prev = 0 then syms[f].first := s else syms[prev].next := s;
+              prev := s;
+              syms[f].npar := syms[f].npar + 1;
+            end;
+            if sym = sSemi then Next else break;
+          until false;
+        Expect(sRparen);
+      end;
+      if isF then begin
+        Expect(sColon); ParseTypeIdent(pt);
+        if types[pt].form in [fStr, fArr, fRec, fSet] then Error('a procedural function returns a scalar');
+        syms[f].typ := pt;
+      end;
+      off := 0;
+      k := syms[f].npar;
+      while k > 0 do begin
+        s := syms[f].first;
+        for i := 2 to k do s := syms[s].next;
+        syms[s].adr := off;
+        if rv or not syms[s].isRef and (types[syms[s].typ].size > 2) then off := off + 4 else off := off + 2;
+        k := k - 1;
+      end;
+      syms[f].parsz := off;
+      t := NewType(fProc, 4);
+      types[t].base := f;
     end;
     sFile: begin
       { file of T / file: System's _TFile record; base = 1 untyped, T + 1 }
@@ -6000,6 +6137,7 @@ begin
   pc := 0; dataTop := 0; nLoop := 0; nTmp := 0; nPend := 0; nWith := 0;
   lastDbg := -1; curUnit := 0;
   nLab := 0; labStart := 0; nFix := 0; stkSlots := 0; preLabels := 0;
+  wantProc := 0; procAny := 0;
   hasWith := ScanWith(SrcBase, srcLen);
   for i := 0 to 63 do impType[i] := 0;
   InitKeywords;

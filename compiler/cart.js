@@ -508,7 +508,7 @@ export function buildCartridge(source, fileName, opts) {
       const p = procs.get(l);
       if (!p) continue;
       live.add(l);
-      for (const ins of p.code) if (ins.o === 'call') work.push(ins.l);
+      for (const ins of p.code) { if (ins.o === 'call') work.push(ins.l); if (ins.o === 'gaddr' && typeof ins.g === 'string') work.push(ins.g); }
       if (p.parent) work.push(p.parent);
     }
     prog = { ...prog, procs: prog.procs.filter(p => live.has(p.label)) };

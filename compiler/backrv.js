@@ -411,6 +411,18 @@ export function genRV(prog, opts = {}) {
           B('call rt_memcpy');
           break;
         }
+        case 'calli': {
+          // a procedural variable: the address is on top (the arguments are out)
+          const r = popR();
+          matAll();
+          B(`jalr ra, 0(${r})`);
+          if (ins.args) {
+            if (fits12(ins.args)) B(`addi sp, sp, ${ins.args}`);
+            else { B(`li t0, ${ins.args}`); B('add sp, sp, t0'); }
+          }
+          if (ins.ret) { const q = pushR(); B(`mv ${q}, a0`); }
+          break;
+        }
         case 'call': {
           matAll();
           B(`call ${ins.l}`);
