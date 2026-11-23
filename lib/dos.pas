@@ -36,6 +36,7 @@ const
 procedure SetDrive(d: integer);
 begin
   if (d >= 0) and (d <= 3) then CurrentDrive := d;
+  _setdrive(d);                 { Text and file variables follow }
 end;
 
 procedure SetName(const name: string);

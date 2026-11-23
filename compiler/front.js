@@ -39,7 +39,7 @@ class ProcCtx {
 
 const BUILTIN_PROCS = ['write', 'writeln', 'read', 'readln', 'inc', 'dec', 'new',
   'dispose', 'halt', 'exit', 'break', 'continue', 'str', 'val', 'include',
-  'exclude', 'getmem', 'freemem'];
+  'exclude', 'getmem', 'freemem', 'reset', 'rewrite', 'blockread', 'blockwrite'];
 const BUILTIN_FUNCS = ['ord', 'chr', 'succ', 'pred', 'low', 'high', 'sizeof',
   'length', 'abs', 'sqr', 'odd', 'hi', 'lo', 'swap', 'trunc', 'round',
   'assigned', 'concat', 'addr', 'ptr', 'sqrt', 'int', 'frac'];
@@ -502,7 +502,14 @@ export class Front {
       if (b.lo < 0 || b.hi > 255) this.err('set base type must be in 0..255');
       return { k: 'set', base: b, size: 32, name: nameHint };
     }
-    if (this.is('file')) this.err('file types are not supported; use the Dos unit');
+    if (this.is('file')) {
+      // file of T / file: System's _TFile record, with the record type (null: untyped)
+      this.next();
+      let of = null;
+      if (this.accept('of')) of = this.parseType();
+      const fr = this.fileRec();
+      return { ...fr, fileOf: of, name: of ? 'file of ' + typeName(of) : 'file' };
+    }
     if (this.is('procedure') || this.is('function')) this.err('procedural types are not supported');
     if (t.k === 'op' && t.v === '(') {
       this.next();
@@ -855,6 +862,7 @@ export class Front {
       const call = this.parseCallArgs(sym, t.pos);
       this.genCall(call);
       if (sym.ret && sym.ret.k !== 'string') this.emit({ o: 'drop', s: this.clsOf(sym.ret) });
+      if (this.isFileProc(sym)) this.genIoCheck();
       return;
     }
     const lhs = this.parseDesignator('lhs');
@@ -1030,9 +1038,56 @@ export class Front {
     return false;
   }
 
+  // ------------------------------------------------------------ files
+  // System's file record (Text is the same type)
+  fileRec() {
+    const sys = this.units.get('system');
+    const s = sys && sys.iface.syms.get('_tfile');
+    if (!s) this.err('internal: _TFile missing in System');
+    return s.type;
+  }
+  isFileType(t) { return t && t.k === 'record' && (t === this.fileRec() || t.fileOf !== undefined); }
+  isTextType(t) { return t && t.k === 'record' && t.fileOf === undefined && t === this.fileRec(); }
+  // a System routine on files (Close, Append, Seek ...): $I+ checks after it
+  isFileProc(sym) {
+    const sys = this.units.get('system');
+    return sys && sym.params && sym.params.length > 0 && sym.params[0].type === this.fileRec() &&
+      sys.iface.syms.get(sym.name) === sym;
+  }
+  genIoCheck() { if (this.sw.I) this.genCall(this.mkRtCall('iocheck', [])); }
+  // the record size Reset / Rewrite give a file: 0 = text
+  fileRecSize(t) { return t.fileOf === undefined ? 0 : t.fileOf === null ? 128 : t.fileOf.size; }
+
   // ------------------------------------------------------------ builtins
   builtinProc(name, pos) {
     switch (name) {
+      case 'reset': case 'rewrite': {
+        this.expect('(');
+        const f = this.parseDesignator();
+        if (!f.lv || !this.isFileType(f.type)) this.err('file variable expected');
+        let rs = this.cint(this.fileRecSize(f.type));
+        if (this.accept(',')) rs = this.conv(this.parseExpr(), T.integer);
+        this.expect(')');
+        this.genCall(this.mkRtCall(name === 'reset' ? 'freset' : 'frewrite', [f, rs]));
+        this.genIoCheck();
+        return;
+      }
+      case 'blockread': case 'blockwrite': {
+        this.expect('(');
+        const f = this.parseDesignator();
+        if (!f.lv || !this.isFileType(f.type)) this.err('file variable expected');
+        this.expect(',');
+        const buf = this.parseDesignator();
+        this.expect(',');
+        const n = this.conv(this.parseExpr(), T.word);
+        let res;
+        if (this.accept(',')) res = this.parseDesignator();
+        else res = { n: 'var', sym: this.units.get('system').iface.syms.get('_fdummy'), type: T.word, lv: true };
+        this.expect(')');
+        this.genCall(this.mkRtCall(name === 'blockread' ? 'fblockread' : 'fblockwrite', [f, buf, n, res]));
+        this.genIoCheck();
+        return;
+      }
       case 'write': case 'writeln': return this.genWrite(name === 'writeln');
       case 'read': case 'readln': return this.genRead(name === 'readln');
       case 'inc': case 'dec': {
@@ -1157,6 +1212,22 @@ export class Front {
       }
       this.expect(')');
     }
+    // Write(f, ...): a file of records takes variables; a text file the usual
+    let file = null;
+    if (args.length && this.isFileType(args[0].e.type)) {
+      file = args.shift().e;
+      if (!file.lv) this.err('file variable expected');
+      if (!this.isTextType(file.type)) {
+        if (ln) this.err('WriteLn is for text files');
+        for (const a of args) {
+          if (!a.e.lv) this.err('variable expected');
+          this.genCall(this.mkRtCall('fwrite', [file, a.e, this.cint(a.e.type.size)]));
+        }
+        this.genIoCheck();
+        return;
+      }
+      this.genCall(this.mkRtCall('textout', [file]));
+    }
     for (const a of args) {
       const t = a.e.type;
       const w = a.w ? this.conv(a.w, T.integer) : this.cint(0);
@@ -1171,6 +1242,7 @@ export class Front {
       else this.err(`cannot write a value of type ${typeName(t)}`);
     }
     if (ln) this.genCall(this.mkRtCall('writeln', []));
+    if (file) { this.genCall(this.mkRtCall('textend', [])); this.genIoCheck(); }
   }
 
   genRead(ln) {
@@ -1180,6 +1252,20 @@ export class Front {
         do { vars.push(this.parseDesignator()); } while (this.accept(','));
       }
       this.expect(')');
+    }
+    let file = null;
+    if (vars.length && this.isFileType(vars[0].type)) {
+      file = vars.shift();
+      if (!this.isTextType(file.type)) {
+        if (ln) this.err('ReadLn is for text files');
+        for (const v of vars) {
+          if (!v.lv) this.err('variable expected in read');
+          this.genCall(this.mkRtCall('fread', [file, v, this.cint(v.type.size)]));
+        }
+        this.genIoCheck();
+        return;
+      }
+      this.genCall(this.mkRtCall('textin', [file]));
     }
     for (const v of vars) {
       if (!v.lv) this.err('variable expected in read');
@@ -1191,6 +1277,7 @@ export class Front {
       else this.err(`cannot read a value of type ${typeName(t)}`);
     }
     if (ln) this.genCall(this.mkRtCall('readlnend', []));
+    if (file) { this.genCall(this.mkRtCall('textend', [])); this.genIoCheck(); }
   }
 
   genIncDec(v, amount) {
@@ -1615,6 +1702,7 @@ export class Front {
 
   varCompat(pt, at) {
     if (pt === at) return true;
+    if (pt.k === 'record' && at.k === 'record' && at.fileOf !== undefined && pt === this.fileRec()) return true;
     if (pt.k === 'string' && at.k === 'string') return true;
     if (pt.k === 'ptr' && at.k === 'ptr') return !pt.to || !at.to || pt.to === at.to;
     if (pt.k === 'array' || pt.k === 'record' || pt.k === 'set') return pt === at || (pt.k === at.k && pt.size === at.size && pt.k !== 'record');

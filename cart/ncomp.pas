@@ -1043,19 +1043,13 @@ begin
   MemL[MsgBase + 7000] := 1701869669;
   MemL[MsgBase + 7004] := 1684370531;
   { set of an ordinal type expected }
-  MemL[MsgBase + 7040] := 1818846766;
-  MemL[MsgBase + 7044] := 2037653605;
-  MemL[MsgBase + 7048] := 544433520;
-  MemL[MsgBase + 7052] := 543519329;
-  MemL[MsgBase + 7056] := 544501614;
-  MemL[MsgBase + 7060] := 1886418291;
-  MemL[MsgBase + 7064] := 1702130287;
-  MemL[MsgBase + 7068] := 1965046628;
-  MemL[MsgBase + 7072] := 1948280179;
-  MemL[MsgBase + 7076] := 1142973800;
-  MemL[MsgBase + 7080] := 1965060975;
-  MemL[MsgBase + 7084] := 7629166;
-  { file types are not supported; use the Dos unit }
+  MemL[MsgBase + 7040] := 1818846742;
+  MemL[MsgBase + 7044] := 1635131493;
+  MemL[MsgBase + 7048] := 1650551154;
+  MemL[MsgBase + 7052] := 1696621932;
+  MemL[MsgBase + 7056] := 1667592312;
+  MemL[MsgBase + 7060] := 6579572;
+  { file variable expected }
   MemL[MsgBase + 7104] := 1802401037;
   MemL[MsgBase + 7108] := 1853321070;
   MemL[MsgBase + 7112] := 1887007776;
@@ -4198,15 +4192,113 @@ end;
 { ================================================================ statements }
 procedure Statement; forward;
 
-procedure StdWrite(ln: boolean);
-var x, w: TItem;
-    f: integer;
+{ ---- files }
+{ System's file record (Text) }
+function FileRecT: integer;
+var k: integer;
 begin
+  k := Find('_tfile');
+  if (k = 0) or (syms[k].kind <> skType) then ErrorN(110, '');
+  FileRecT := syms[k].typ;
+end;
+
+function IsFileT(t: integer): boolean;
+begin
+  IsFileT := (types[t].form = fRec) and ((types[t].base >= 1) or (t = FileRecT));
+end;
+
+{ $I+: an I/O error stops the program }
+procedure IoCheck;
+begin
+  if swI then CallLib('_iocheck');
+end;
+
+{ the address of a file variable (a simple one: it is taken again) }
+procedure FileAdr(var f: TItem);
+var y: TItem;
+begin
+  if not (f.mode in [mGlob, mLoc]) then ErrorN(42, '');
+  y := f;
+  LoadAdr(y); PushA(2);
+end;
+
+{ Reset / Rewrite (f [, record size]) }
+procedure StdReset(rw: boolean);
+var f, y: TItem;
+    rs: integer;
+begin
+  Expect(sLparen);
+  VarDesignator(f);
+  if not IsFileT(f.typ) then ErrorN(110, '');
+  LoadAdr(f); PushA(2);
+  if sym = sComma then begin Next; Expression(y); LoadAs(y, tInteger); PushA(2); end
+  else begin
+    rs := types[f.typ].base;
+    if rs = 0 then rs := 0 else if rs = 1 then rs := 128 else rs := types[rs - 1].size;
+    PeaW(rs);
+  end;
+  Expect(sRparen);
+  if rw then LibCallPop('_frewrite') else LibCallPop('_freset');
+  IoCheck;
+end;
+
+{ BlockRead / BlockWrite (f, buf, count [, result]) }
+procedure StdBlock(wr: boolean);
+var f, b, y: TItem;
+    k: integer;
+begin
+  Expect(sLparen);
+  VarDesignator(f);
+  if not IsFileT(f.typ) then ErrorN(110, '');
+  LoadAdr(f); PushA(2);
+  Expect(sComma);
+  VarDesignator(b); LoadAdr(b); PushA(2);
+  Expect(sComma);
+  Expression(y); LoadAs(y, tWord); PushA(2);
+  if sym = sComma then begin Next; VarDesignator(y); LoadAdr(y); PushA(2); end
+  else begin
+    k := Find('_fdummy');
+    y.mode := mGlob; y.a := syms[k].adr; y.typ := tWord; y.tmp := false; y.tj := 0; y.fj := 0;
+    LoadAdr(y); PushA(2);
+  end;
+  Expect(sRparen);
+  if wr then LibCallPop('_fblockwrite') else LibCallPop('_fblockread');
+  IoCheck;
+end;
+
+procedure StdWrite(ln: boolean);
+var x, w, fx: TItem;
+    f: integer;
+    first, isF: boolean;
+begin
+  isF := false;
   if sym = sLparen then begin
     Next;
+    first := true;
     if sym <> sRparen then
       repeat
         Expression(x);
+        if first and IsFileT(x.typ) then begin
+          { Write(f, ...): to a file }
+          fx := x; isF := true;
+          if types[fx.typ].base >= 1 then begin
+            { records: each one a variable }
+            if ln then Error('WriteLn/ReadLn: text files only');
+            while sym = sComma do begin
+              Next;
+              FileAdr(fx);
+              VarDesignator(x); LoadAdr(x); PushA(2); PeaW(types[x.typ].size);
+              LibCallPop('_fwrite');
+            end;
+            Expect(sRparen);
+            IoCheck;
+            exit;
+          end;
+          FileAdr(fx); LibCallPop('_textout');
+          first := false;
+          if sym = sComma then begin Next; Expression(x); end else break;
+        end;
+        first := false;
         f := types[x.typ].form;
         if f = fStr then begin StrAdr(x); PushA(2); end
         else if f = fChar then begin Load(x); PushA(2); end
@@ -4239,17 +4331,40 @@ begin
     Expect(sRparen);
   end;
   if ln then CallLib('_writeln');
+  if isF then begin CallLib('_textend'); IoCheck; end;
 end;
 
 procedure StdRead(ln: boolean);
-var x: TItem;
+var x, fx: TItem;
     s, f: integer;
+    first, isF: boolean;
 begin
+  isF := false;
   if sym = sLparen then begin
     Next;
+    first := true;
     if sym <> sRparen then
       repeat
         VarDesignator(x);
+        if first and IsFileT(x.typ) then begin
+          fx := x; isF := true;
+          if types[fx.typ].base >= 1 then begin
+            if ln then Error('WriteLn/ReadLn: text files only');
+            while sym = sComma do begin
+              Next;
+              FileAdr(fx);
+              VarDesignator(x); LoadAdr(x); PushA(2); PeaW(types[x.typ].size);
+              LibCallPop('_fread');
+            end;
+            Expect(sRparen);
+            IoCheck;
+            exit;
+          end;
+          FileAdr(fx); LibCallPop('_textin');
+          first := false;
+          if sym = sComma then begin Next; VarDesignator(x); end else break;
+        end;
+        first := false;
         f := types[x.typ].form;
         if f = fStr then begin
           LoadAdr(x); PushA(2); PeaW(types[x.typ].hi);
@@ -4267,6 +4382,7 @@ begin
     Expect(sRparen);
   end;
   if ln then CallLib('_readlnend');
+  if isF then begin CallLib('_textend'); IoCheck; end;
 end;
 
 procedure StdIncDec(dec: boolean);
@@ -4832,6 +4948,8 @@ begin
       else if (n = 'new') or (n = 'dispose') then begin Next; StdNewDispose(n = 'new'); end
       else if n = 'str' then begin Next; StdStr; end
       else if (n = 'val') and (Find(n) = 0) then begin Next; StdVal; end
+      else if ((n = 'reset') or (n = 'rewrite')) and (Find(n) = 0) then begin Next; StdReset(n = 'rewrite'); end
+      else if ((n = 'blockread') or (n = 'blockwrite')) and (Find(n) = 0) then begin Next; StdBlock(n = 'blockwrite'); end
       else if ((n = 'getmem') or (n = 'freemem')) and (Find(n) = 0) then begin Next; StdGetFree(n = 'getmem'); end
       else if n = 'exit' then begin
         Next;
@@ -4884,6 +5002,9 @@ begin
               Assignment(x);
             end else begin
               CallProc(s, x);
+              { a System routine on files (Close, Append, Seek ...): $I+ }
+              if (syms[s].flags and 4 <> 0) and (syms[s].first <> 0) then
+                if IsFileT(syms[syms[s].first].typ) then IoCheck;
             end;
           end;
         else
@@ -5052,7 +5173,14 @@ begin
       t := NewType(fSet, 32);
       types[t].base := ft;
     end;
-    sFile: ErrorN(110, '');
+    sFile: begin
+      { file of T / file: System's _TFile record; base = 1 untyped, T + 1 }
+      Next;
+      f := FileRecT;
+      if sym = sOf then begin Next; TypeDef(ft); ft := ft + 1; end else ft := 1;
+      t := NewType(fRec, types[f].size);
+      types[t].fields := types[f].fields; types[t].al := types[f].al; types[t].base := ft;
+    end;
   else
     if sym = sIdent then begin
       s := Find(id);

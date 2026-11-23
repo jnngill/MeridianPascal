@@ -17,6 +17,20 @@ type
   PString = ^string;
   TByteArray = array[0..32766] of byte;
   PByteArray = ^TByteArray;
+  { a file (Text, file of T, file): the whole file is kept in a buffer (a
+    bank of expansion RAM, $E1..$E7, so up to 64 KB and 7 files open);
+    Reset loads it, Close saves what was written }
+  _TFile = record
+    mode: word;          { 0 closed, 1 text input, 2 text output, 3 records }
+    recsize: word;
+    buf: longint;
+    len: longint;
+    pos: longint;
+    dirty: boolean;
+    drive: byte;
+    name: string[16];
+  end;
+  Text = _TFile;
 
 const
   TargetM816 = 1;
@@ -26,6 +40,7 @@ var
   RandSeed: longint;
   HeapError: boolean;
   ExitCode: integer;
+  _fdummy: word;         { BlockRead / BlockWrite without a result }
 
 { ---- machine primitives (back end) ---- }
 procedure _putchar(c: char); external 'putchar';
@@ -120,6 +135,32 @@ function  Min(a, b: longint): longint;
 function  Max(a, b: longint): longint;
 function  EscPressed: boolean;
 
+{ ---- files ---- }
+procedure Assign(var f: _TFile; const name: string);
+procedure _freset(var f: _TFile; recsize: integer);
+procedure _frewrite(var f: _TFile; recsize: integer);
+procedure Append(var f: _TFile);
+procedure Close(var f: _TFile);
+procedure Erase(var f: _TFile);
+procedure Rename(var f: _TFile; const name: string);
+function  Eof(var f: _TFile): boolean;
+function  Eoln(var f: _TFile): boolean;
+procedure Seek(var f: _TFile; n: longint);
+function  FilePos(var f: _TFile): longint;
+function  FileSize(var f: _TFile): longint;
+procedure Truncate(var f: _TFile);
+procedure Flush(var f: _TFile);
+procedure _fread(var f: _TFile; var v; size: word);
+procedure _fwrite(var f: _TFile; const v; size: word);
+procedure _fblockread(var f: _TFile; var buf; count: word; var result: word);
+procedure _fblockwrite(var f: _TFile; const buf; count: word; var result: word);
+procedure _textout(var f: _TFile);
+procedure _textin(var f: _TFile);
+procedure _textend;
+procedure _iocheck;
+function  IOResult: integer;
+procedure _setdrive(d: integer);
+
 implementation
 
 type
@@ -141,6 +182,12 @@ var
   LineBuf: string;
   LinePos: integer;
   LineValid: boolean;
+  { files }
+  IoErr: integer;
+  CurDrive: integer;
+  Slots: integer;              { bit k: bank $E1 + k in use }
+  OutMode, InMode: integer;    { 0 screen / keyboard, 1 a file, 2 nowhere (an error) }
+  OutF, InF: ^_TFile;
 
 procedure RunError(code: integer);
 begin
@@ -431,18 +478,35 @@ begin
 end;
 
 { ------------------------------------------------------------- output }
+{ a character to the screen, or to the text file Write(f, ...) names }
+procedure _out(c: char);
+var f: ^_TFile;
+begin
+  if OutMode = 0 then _putchar(c)
+  else if OutMode = 1 then begin
+    f := OutF;
+    if f^.pos >= 65536 then begin if IoErr = 0 then IoErr := 101; end
+    else begin
+      Mem[f^.buf + f^.pos] := ord(c);
+      f^.pos := f^.pos + 1;
+      if f^.pos > f^.len then f^.len := f^.pos;
+      f^.dirty := true;
+    end;
+  end;
+end;
+
 procedure _writechar(c: char; w: integer);
 begin
-  while w > 1 do begin _putchar(' '); w := w - 1; end;
-  _putchar(c);
+  while w > 1 do begin _out(' '); w := w - 1; end;
+  _out(c);
 end;
 
 procedure _writestr(const s: string; w: integer);
 var i, n: integer;
 begin
   n := ord(s[0]);
-  while w > n do begin _putchar(' '); w := w - 1; end;
-  for i := 1 to n do _putchar(s[i]);
+  while w > n do begin _out(' '); w := w - 1; end;
+  for i := 1 to n do _out(s[i]);
 end;
 
 procedure _writebool(b: boolean; w: integer);
@@ -466,7 +530,7 @@ begin
     hi := (v shr 1) div 5;
     _strint(longint(hi), w - 1, s, 40);
     _writestr(s, 0);
-    _putchar(chr(48 + integer(v - hi * 10)));
+    _out(chr(48 + integer(v - hi * 10)));
   end else begin
     _strint(longint(v), w, s, 40);
     _writestr(s, 0);
@@ -475,7 +539,8 @@ end;
 
 procedure _writeln;
 begin
-  _putchar(#13);
+  if OutMode = 0 then _putchar(#13)
+  else begin _out(#13); _out(#10); end;
 end;
 
 { ------------------------------------------------------------- input }
@@ -511,9 +576,56 @@ begin
   if not LineValid then ReadLine;
 end;
 
+{ ---- reading a text file: straight from its buffer }
+function FPeek: integer;           { the next byte, -1 at the end }
+begin
+  if InF^.pos >= InF^.len then FPeek := -1 else FPeek := Mem[InF^.buf + InF^.pos];
+end;
+
+function FAtEol: boolean;
+var c: integer;
+begin
+  c := FPeek;
+  FAtEol := (c = -1) or (c = 13) or (c = 10) or (c = 26);
+end;
+
+procedure FSkipEol;
+begin
+  if FPeek = 13 then InF^.pos := InF^.pos + 1;
+  if FPeek = 10 then InF^.pos := InF^.pos + 1;
+end;
+
+function FToken: string;
+var s: string;
+    c, n: integer;
+begin
+  repeat
+    c := FPeek;
+    if (c = 32) or (c = 9) or (c = 13) or (c = 10) then InF^.pos := InF^.pos + 1;
+  until not ((c = 32) or (c = 9) or (c = 13) or (c = 10));
+  n := 0;
+  repeat
+    c := FPeek;
+    if (c > 32) and (c <> 26) and (n < 255) then begin
+      n := n + 1; s[n] := chr(c); InF^.pos := InF^.pos + 1;
+    end else c := -1;
+  until c = -1;
+  s[0] := chr(n);
+  FToken := s;
+end;
+
 procedure _readstr(var s: string; max: integer);
 var n: integer;
 begin
+  if InMode <> 0 then begin
+    n := 0;
+    if InMode = 1 then
+      while not FAtEol and (n < max) do begin
+        n := n + 1; s[n] := chr(FPeek); InF^.pos := InF^.pos + 1;
+      end;
+    s[0] := chr(n);
+    exit;
+  end;
   NeedLine;
   n := length(LineBuf) - LinePos + 1;
   if n > max then n := max;
@@ -524,7 +636,16 @@ begin
 end;
 
 function _readchar: char;
+var c: integer;
 begin
+  if InMode <> 0 then begin
+    c := -1;
+    if InMode = 1 then c := FPeek;
+    if c = -1 then _readchar := #26
+    else if (c = 13) or (c = 10) then begin FSkipEol; _readchar := #13; end
+    else begin _readchar := chr(c); InF^.pos := InF^.pos + 1; end;
+    exit;
+  end;
   NeedLine;
   if LinePos > length(LineBuf) then begin
     _readchar := #13;
@@ -551,6 +672,14 @@ end;
 function _readint: longint;
 var c: integer;
 begin
+  if InMode <> 0 then begin
+    _readint := 0;
+    if InMode = 1 then begin
+      _readint := _valint(FToken, c);
+      if (c <> 0) and (IoErr = 0) then IoErr := 106;
+    end;
+    exit;
+  end;
   _readint := _valint(NextToken, c);
   if c <> 0 then RunError(106);
 end;
@@ -558,14 +687,325 @@ end;
 function _readreal: real;
 var c: integer;
 begin
+  if InMode <> 0 then begin
+    _readreal := 0;
+    if InMode = 1 then begin
+      _readreal := _valreal(FToken, c);
+      if (c <> 0) and (IoErr = 0) then IoErr := 106;
+    end;
+    exit;
+  end;
   _readreal := _valreal(NextToken, c);
   if c <> 0 then RunError(106);
 end;
 
 procedure _readlnend;
 begin
+  if InMode <> 0 then begin
+    if InMode = 1 then begin
+      while not FAtEol do InF^.pos := InF^.pos + 1;
+      FSkipEol;
+    end;
+    exit;
+  end;
   if not LineValid then ReadLine;
   LineValid := false;
+end;
+
+{ ------------------------------------------------------------- files }
+const
+  PB = $16C0;                  { the DOS parameter block }
+
+procedure DosName(var f: _TFile);
+var i: integer;
+begin
+  Mem[PB] := f.drive;
+  Mem[PB + 6] := length(f.name);
+  for i := 1 to length(f.name) do Mem[PB + 6 + i] := ord(UpCase(f.name[i]));
+  Mem[PB + 2] := 0; Mem[PB + 3] := 0; Mem[PB + 4] := 0; Mem[PB + 5] := 0;
+end;
+
+procedure DosAddr(addr, len: longint);
+begin
+  Mem[PB + $24] := addr and 255; Mem[PB + $25] := (addr shr 8) and 255; Mem[PB + $26] := (addr shr 16) and 255;
+  Mem[PB + $28] := len and 255; Mem[PB + $29] := (len shr 8) and 255;
+  Mem[PB + $2A] := (len shr 16) and 255; Mem[PB + $2B] := (len shr 24) and 255;
+end;
+
+{ a DOS error as a Turbo Pascal I/O error }
+function IoCode(e: integer; writing: boolean): integer;
+begin
+  case e of
+    0: IoCode := 0;
+    2, 9: IoCode := 2;            { file not found }
+    4: IoCode := 152;             { drive not ready }
+    6: IoCode := 150;             { write protected }
+  else
+    if writing then IoCode := 101 else IoCode := 100;
+  end;
+end;
+
+procedure SetErr(e: integer);
+begin
+  if IoErr = 0 then IoErr := e;
+end;
+
+{ a buffer: one of the banks $E1..$E7 }
+function NewSlot: longint;
+var k: integer;
+begin
+  NewSlot := 0;
+  for k := 0 to 6 do
+    if Slots and (1 shl k) = 0 then begin
+      Slots := Slots or (1 shl k);
+      NewSlot := longint($E1 + k) shl 16;
+      exit;
+    end;
+  SetErr(4);                      { too many open files }
+end;
+
+procedure FreeSlot(var f: _TFile);
+begin
+  if f.buf <> 0 then Slots := Slots and not (1 shl integer((f.buf shr 16) - $E1));
+  f.buf := 0;
+end;
+
+function IsOpen(var f: _TFile): boolean;
+begin
+  IsOpen := (f.mode >= 1) and (f.mode <= 3) and (f.buf <> 0);
+end;
+
+procedure Assign(var f: _TFile; const name: string);
+var n: string;
+begin
+  f.mode := 0; f.buf := 0; f.len := 0; f.pos := 0; f.dirty := false;
+  n := name;
+  f.drive := CurDrive;
+  if (length(n) >= 2) and (n[2] = ':') and (n[1] >= '0') and (n[1] <= '3') then begin
+    f.drive := ord(n[1]) - 48;
+    Delete(n, 1, 2);
+  end;
+  if length(n) > 16 then n[0] := chr(16);
+  f.name := n;
+end;
+
+procedure _freset(var f: _TFile; recsize: integer);
+var e: integer;
+begin
+  if IsOpen(f) then Close(f);
+  if f.name = '' then begin SetErr(102); exit; end;
+  f.buf := NewSlot;
+  if f.buf = 0 then exit;
+  DosName(f);
+  DosAddr(f.buf, 65536);
+  e := DosCall(0);
+  if e <> 0 then begin FreeSlot(f); SetErr(IoCode(e, false)); exit; end;
+  f.len := longint(Mem[PB + $28]) or (longint(Mem[PB + $29]) shl 8) or (longint(Mem[PB + $2A]) shl 16);
+  f.pos := 0; f.dirty := false;
+  if recsize = 0 then f.mode := 1 else begin f.mode := 3; f.recsize := recsize; end;
+end;
+
+procedure _frewrite(var f: _TFile; recsize: integer);
+begin
+  if IsOpen(f) then Close(f);
+  if f.name = '' then begin SetErr(102); exit; end;
+  f.buf := NewSlot;
+  if f.buf = 0 then exit;
+  f.len := 0; f.pos := 0; f.dirty := true;
+  if recsize = 0 then f.mode := 2 else begin f.mode := 3; f.recsize := recsize; end;
+end;
+
+procedure Append(var f: _TFile);
+begin
+  _freset(f, 0);
+  if IsOpen(f) then begin f.mode := 2; f.pos := f.len; end;
+end;
+
+procedure Close(var f: _TFile);
+var e: integer;
+begin
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  if f.dirty then begin
+    DosName(f);
+    DosAddr(f.buf, f.len);
+    e := DosCall(1);
+    if e <> 0 then SetErr(IoCode(e, true));
+  end;
+  FreeSlot(f);
+  f.mode := 0;
+end;
+
+procedure Erase(var f: _TFile);
+var e: integer;
+begin
+  if IsOpen(f) then begin SetErr(102); exit; end;
+  DosName(f);
+  e := DosCall(2);
+  if e <> 0 then SetErr(IoCode(e, false));
+end;
+
+procedure Rename(var f: _TFile; const name: string);
+var g: _TFile;
+    e: integer;
+begin
+  if IsOpen(f) then begin SetErr(102); exit; end;
+  { (the DOS has no rename) load, save under the new name, remove the old }
+  _freset(f, 1);
+  if not IsOpen(f) then exit;
+  Assign(g, name);
+  DosName(g);
+  DosAddr(f.buf, f.len);
+  e := DosCall(1);
+  FreeSlot(f);
+  f.mode := 0;
+  if e <> 0 then begin SetErr(IoCode(e, true)); exit; end;
+  DosName(f);
+  e := DosCall(2);
+  f.name := g.name; f.drive := g.drive;
+end;
+
+function Eof(var f: _TFile): boolean;
+begin
+  if not IsOpen(f) then begin SetErr(103); Eof := true; exit; end;
+  Eof := (f.pos >= f.len) or ((f.mode = 1) and (Mem[f.buf + f.pos] = 26));
+end;
+
+function Eoln(var f: _TFile): boolean;
+var c: integer;
+begin
+  if not IsOpen(f) then begin SetErr(103); Eoln := true; exit; end;
+  if f.pos >= f.len then Eoln := true
+  else begin c := Mem[f.buf + f.pos]; Eoln := (c = 13) or (c = 10) or (c = 26); end;
+end;
+
+function RecSz(var f: _TFile): longint;
+begin
+  if f.mode = 3 then RecSz := f.recsize else RecSz := 1;
+end;
+
+procedure Seek(var f: _TFile; n: longint);
+begin
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  if (n < 0) or (n * RecSz(f) > f.len) then begin SetErr(100); exit; end;
+  f.pos := n * RecSz(f);
+end;
+
+function FilePos(var f: _TFile): longint;
+begin
+  if not IsOpen(f) then begin SetErr(103); FilePos := 0; exit; end;
+  FilePos := f.pos div RecSz(f);
+end;
+
+function FileSize(var f: _TFile): longint;
+begin
+  if not IsOpen(f) then begin SetErr(103); FileSize := 0; exit; end;
+  FileSize := f.len div RecSz(f);
+end;
+
+procedure Truncate(var f: _TFile);
+begin
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  f.len := f.pos; f.dirty := true;
+end;
+
+procedure Flush(var f: _TFile);
+begin
+  if not IsOpen(f) then SetErr(103);
+end;
+
+procedure _fread(var f: _TFile; var v; size: word);
+var p: PByteArray;
+    i: integer;
+begin
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  if f.mode <> 3 then begin SetErr(104); exit; end;
+  if f.pos + size > f.len then begin SetErr(100); exit; end;
+  p := PByteArray(@v);
+  for i := 0 to size - 1 do p^[i] := Mem[f.buf + f.pos + i];
+  f.pos := f.pos + size;
+end;
+
+procedure _fwrite(var f: _TFile; const v; size: word);
+var p: PByteArray;
+    i: integer;
+begin
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  if f.mode <> 3 then begin SetErr(105); exit; end;
+  if f.pos + size > 65536 then begin SetErr(101); exit; end;
+  p := PByteArray(@v);
+  for i := 0 to size - 1 do Mem[f.buf + f.pos + i] := p^[i];
+  f.pos := f.pos + size;
+  if f.pos > f.len then f.len := f.pos;
+  f.dirty := true;
+end;
+
+procedure _fblockread(var f: _TFile; var buf; count: word; var result: word);
+var p: PByteArray;
+    n, i: longint;
+begin
+  result := 0;
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  n := count;
+  if f.pos + n * RecSz(f) > f.len then n := (f.len - f.pos) div RecSz(f);
+  p := PByteArray(@buf);
+  for i := 0 to n * RecSz(f) - 1 do p^[i] := Mem[f.buf + f.pos + i];
+  f.pos := f.pos + n * RecSz(f);
+  result := n;
+end;
+
+procedure _fblockwrite(var f: _TFile; const buf; count: word; var result: word);
+var p: PByteArray;
+    n, i: longint;
+begin
+  result := 0;
+  if not IsOpen(f) then begin SetErr(103); exit; end;
+  n := count;
+  if f.pos + n * RecSz(f) > 65536 then begin n := (65536 - f.pos) div RecSz(f); SetErr(101); end;
+  p := PByteArray(@buf);
+  for i := 0 to n * RecSz(f) - 1 do Mem[f.buf + f.pos + i] := p^[i];
+  f.pos := f.pos + n * RecSz(f);
+  if f.pos > f.len then f.len := f.pos;
+  f.dirty := true;
+  result := n;
+end;
+
+{ Write(f, ...) / Read(f, ...) on a text file: the output / input go there
+  until _textend }
+procedure _textout(var f: _TFile);
+begin
+  if not IsOpen(f) then begin SetErr(103); OutMode := 2; end
+  else if f.mode <> 2 then begin SetErr(105); OutMode := 2; end
+  else begin OutF := @f; OutMode := 1; end;
+end;
+
+procedure _textin(var f: _TFile);
+begin
+  if not IsOpen(f) then begin SetErr(103); InMode := 2; end
+  else if f.mode <> 1 then begin SetErr(104); InMode := 2; end
+  else begin InF := @f; InMode := 1; end;
+end;
+
+procedure _textend;
+begin
+  OutMode := 0; InMode := 0;
+end;
+
+{ $I+: an I/O error stops the program }
+procedure _iocheck;
+var e: integer;
+begin
+  if IoErr <> 0 then begin e := IoErr; IoErr := 0; RunError(e); end;
+end;
+
+function IOResult: integer;
+begin
+  IOResult := IoErr;
+  IoErr := 0;
+end;
+
+procedure _setdrive(d: integer);
+begin
+  if (d >= 0) and (d <= 3) then CurDrive := d;
 end;
 
 { ------------------------------------------------------------- heap }
@@ -1200,4 +1640,8 @@ begin
   HeapInit;
   RandSeed := 1;
   LineValid := false;
+  IoErr := 0; Slots := 0; OutMode := 0; InMode := 0;
+  { files go to the drive of the last DOS request (where the program came from) }
+  CurDrive := Mem[PB];
+  if CurDrive > 3 then CurDrive := 1;
 end.
