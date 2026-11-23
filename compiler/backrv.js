@@ -58,7 +58,9 @@ export function genRV(prog, opts = {}) {
 
   for (const p of prog.procs) genProc(p);
 
-  let rt = RUNTIME_RV.replace(/MBOXADDR/g, h((RVLAYOUT.MBOX | RVLAYOUT.UNCACHED) >>> 0));
+  // opts.layout { LOAD, MBOX, CODE }: a program that does not live at $04:0000
+  const layout = opts.layout || RVLAYOUT;
+  let rt = RUNTIME_RV.replace(/MBOXADDR/g, h((layout.MBOX | RVLAYOUT.UNCACHED) >>> 0));
   // the heap starts where the loader says (programs compiled on the MERIDIAN)
   if (opts.heapVar) rt = rt.replace(/rt_heaporg:\n\tla a0, PAS_HEAP\n/, `rt_heaporg:\n\tli t0, ${h(opts.heapVar)}\n\tlw a0, 0(t0)\n`);
   out.push(rt);
@@ -81,7 +83,7 @@ export function genRV(prog, opts = {}) {
   LBL('PAS_BSS_END');
   LBL('PAS_HEAP');
 
-  return { asm: out.join('\n') + '\n', stub: buildStub() };
+  return { asm: out.join('\n') + '\n', stub: buildStub(layout) };
 
   // ================================================================
   function genProc(p) {
@@ -629,12 +631,12 @@ rt_error:
 // --------------------------------------------------------------------------
 // 65C816 host stub: loaded with the program at $04:0000, started with JSL.
 // It starts SCHUB at the RV code and serves its requests through the mailbox.
-export function buildStub() {
-  const MB = RVLAYOUT.MBOX;
+export function buildStub(layout = RVLAYOUT) {
+  const MB = layout.MBOX;
   const hex6 = (v) => '$' + v.toString(16).padStart(6, '0');
   const asm = String.raw`
 	.cpu "65816"
-	* = ${hex6(RVLAYOUT.LOAD)}
+	* = ${hex6(layout.LOAD)}
 	.as
 	.xl
 SCHUB_ID   = $CD00
@@ -658,11 +660,11 @@ stub
 	cmp #$43                ; "C"
 	bne nosch
 	jsr @w stop
-	lda #<${RVLAYOUT.CODE}
+	lda #<${layout.CODE}
 	sta @w SCHUB_START
-	lda #>${RVLAYOUT.CODE}
+	lda #>${layout.CODE}
 	sta @w SCHUB_START+1
-	lda #${(RVLAYOUT.CODE >> 16) & 255}
+	lda #${(layout.CODE >> 16) & 255}
 	sta @w SCHUB_START+2
 	lda #0
 	sta @w SCHUB_START+3
@@ -809,6 +811,6 @@ t_adr
 	.byte 13,0
 `;
   const a = assemble816(asm, { listing: true });
-  if (a.bytes.length > MB - RVLAYOUT.LOAD) throw new Error('stub too large');
+  if (a.bytes.length > MB - layout.LOAD) throw new Error('stub too large');
   return { bytes: a.bytes, asm, listing: formatListing(a.listing) };
 }

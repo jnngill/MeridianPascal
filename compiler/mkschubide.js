@@ -4,9 +4,15 @@
 //
 //   node compiler/mkschubide.js [-o PASCALRV.MER]
 //
-// The result is an ordinary SCHUB .MER (65C816 host stub at $04:0000, RV32
-// code from $04:0400). It needs the PASCAL cartridge inserted: the on-device
-// compiler links programs against the library and tables in its ROM.
+// The result is a SCHUB .MER that lives in banks $A0-$AF, away from
+// everything a program on the MERIDIAN uses: the 65C816 host stub at
+// $A0:0000, its mailbox at $A0:03F0, the RV32 code from $A0:0400 and the
+// stack below $B0:0000. So SCHUB programs compiled with it can keep their
+// usual places ($04:0000-$1F:FFFF), and the editor's work areas stay in
+// banks $20-$3C as on the 65C816. (Officially SONG may use $80-$BF for the
+// song it plays; the editor plays none.) It needs the PASCAL cartridge
+// inserted: the on-device compiler links programs against the library and
+// tables in its ROM.
 // Not done yet: F5 / Ctrl+R (running a program from the editor).
 
 import fs from 'node:fs';
@@ -14,8 +20,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Front } from './front.js';
 import { TARGETS, makeMer } from './compile.js';
-import { genRV, RVLAYOUT } from './backrv.js';
+import { genRV } from './backrv.js';
 import { assembleRV } from './asmrv.js';
+
+export const IDE_LAYOUT = { LOAD: 0xa00000, MBOX: 0xa003f0, CODE: 0xa00400, STACK_TOP: 0xaffff0 };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -163,23 +171,22 @@ export function buildSchubIde() {
   const front = new Front(tgt, { loadSource: loadUnit, defines: [...tgt.defines] });
   const main = path.join(root, 'cart', 'ide.pas');
   const prog = front.compileProgram(fs.readFileSync(main, 'latin1'), main);
-  // the code reaches past $08:0000, so the stack goes higher than usual.
-  // Not solved yet: a SCHUB program compiled on the device goes to
-  // $08:0000 (NComp.RvCode), over this code.
-  const stackTop = 0x0ffff0;
-  let { asm, stub } = genRV(prog, { stackTop });
+  const L = IDE_LAYOUT;
+  const stackTop = L.STACK_TOP;
+  let { asm, stub } = genRV(prog, { stackTop, layout: L });
   // the externals go before the bss (which is cleared at start, not saved)
   const at = asm.indexOf('\nPAS_BSS:');
   if (at < 0) throw new Error('PAS_BSS not found');
   asm = asm.slice(0, at) + '\n' + EXTERNALS_RV + asm.slice(at);
-  const a = assembleRV(asm, { org: RVLAYOUT.CODE });
+  const a = assembleRV(asm, { org: L.CODE });
   const bss = a.symbols.get('PAS_BSS');
-  const code = a.bytes.slice(0, bss - RVLAYOUT.CODE);
-  const img = new Uint8Array(RVLAYOUT.CODE - RVLAYOUT.LOAD + code.length);
+  const code = a.bytes.slice(0, bss - L.CODE);
+  if (a.symbols.get('PAS_HEAP') > stackTop - 0x10000) throw new Error('the SCHUB editor does not fit below its stack');
+  const img = new Uint8Array(L.CODE - L.LOAD + code.length);
   img.set(stub.bytes, 0);
-  img.set(code, RVLAYOUT.CODE - RVLAYOUT.LOAD);
+  img.set(code, L.CODE - L.LOAD);
   return {
-    mer: makeMer(img, RVLAYOUT.LOAD, RVLAYOUT.LOAD, true),
+    mer: makeMer(img, L.LOAD, L.LOAD, true),
     symbols: a.symbols,
     info: { codeEnd: bss, heap: a.symbols.get('PAS_HEAP'), stackTop },
   };
