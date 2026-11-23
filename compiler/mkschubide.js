@@ -13,7 +13,8 @@
 // song it plays; the editor plays none.) It needs the PASCAL cartridge
 // inserted: the on-device compiler links programs against the library and
 // tables in its ROM.
-// Not done yet: F5 / Ctrl+R (running a program from the editor).
+// F5 and Ctrl+R run programs through its host stub (request 8), which keeps
+// bank 0 in bank $B0 meanwhile.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +24,8 @@ import { TARGETS, makeMer } from './compile.js';
 import { genRV } from './backrv.js';
 import { assembleRV } from './asmrv.js';
 
-export const IDE_LAYOUT = { LOAD: 0xa00000, MBOX: 0xa003f0, CODE: 0xa00400, STACK_TOP: 0xaffff0 };
+// RUN: its host stub can run programs while the editor waits (request 8)
+export const IDE_LAYOUT = { LOAD: 0xa00000, MBOX: 0xa003f0, CODE: 0xa00400, STACK_TOP: 0xaffff0, RUN: true };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -145,16 +147,66 @@ rt_throw:
 	li a0, 1
 	ret
 
-# runuser(entry: longint), runmer: integer - running programs from the
-# editor is not there yet: nothing happens / DOS error 255
+# runuser(entry: longint): run the program at entry (JSL on the 65C816);
+# runmer: integer: load and run the .MER named at $16C0, the DOS error or 0.
+# The host stub does it (request 8): it stops SCHUB, runs the program -
+# which may be a SCHUB program, so SCHUB cannot simply wait - and restarts
+# SCHUB at .run_resume, which takes the registers back and returns.
 rt_runuser:
-	ret
+	lw a1, 0(sp)
+	j .run_go
 rt_runmer:
-	li a0, 255
+	li a1, 0xffffff
+.run_go:
+	la t0, .run_buf
+	sw sp, 0(t0)
+	sw ra, 4(t0)
+	sw s0, 8(t0)
+	sw s1, 12(t0)
+	sw s2, 16(t0)
+	sw s3, 20(t0)
+	sw s4, 24(t0)
+	sw s5, 28(t0)
+	sw s6, 32(t0)
+	sw s7, 36(t0)
+	sw s8, 40(t0)
+	sw s9, 44(t0)
+	sw s10, 48(t0)
+	sw s11, 52(t0)
+	li t0, MBOX_U
+	sw a1, 8(t0)
+	la t1, .run_resume
+	sw t1, 12(t0)
+	li t1, 8
+	sw t1, 4(t0)
+	li t1, 1
+	sw t1, 0(t0)
+.run_wait:
+	j .run_wait              # the 65C816 stops SCHUB here
+.run_resume:
+	la t0, .run_buf
+	lw sp, 0(t0)
+	lw ra, 4(t0)
+	lw s0, 8(t0)
+	lw s1, 12(t0)
+	lw s2, 16(t0)
+	lw s3, 20(t0)
+	lw s4, 24(t0)
+	lw s5, 28(t0)
+	lw s6, 32(t0)
+	lw s7, 36(t0)
+	lw s8, 40(t0)
+	lw s9, 44(t0)
+	lw s10, 48(t0)
+	lw s11, 52(t0)
+	li t0, MBOX_U
+	lw a0, 12(t0)
 	ret
 
 	.align 4
 .catch_buf:
+	.fill 56
+.run_buf:
 	.fill 56
 `;
 
@@ -177,7 +229,8 @@ export function buildSchubIde() {
   // the externals go before the bss (which is cleared at start, not saved)
   const at = asm.indexOf('\nPAS_BSS:');
   if (at < 0) throw new Error('PAS_BSS not found');
-  asm = asm.slice(0, at) + '\n' + EXTERNALS_RV + asm.slice(at);
+  const ext = `MBOX_U = 0x${((L.MBOX | 0x80000000) >>> 0).toString(16)}\n` + EXTERNALS_RV;
+  asm = asm.slice(0, at) + '\n' + ext + asm.slice(at);
   const a = assembleRV(asm, { org: L.CODE });
   const bss = a.symbols.get('PAS_BSS');
   const code = a.bytes.slice(0, bss - L.CODE);
