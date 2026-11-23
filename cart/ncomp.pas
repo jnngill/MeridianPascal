@@ -225,6 +225,9 @@ var
   nDef, condDepth, incDepth: integer;
   swR, swQ, swI, swD: boolean;         { the switches R+ Q+ I+ D+ }
   lastDbg: longint;                    { DebugLines: the last line stored }
+  { labels: their table in expansion RAM; the slots FOR loops keep on the
+    stack (a goto out of a loop drops them) }
+  nLab, labStart, nFix, stkSlots, preLabels: integer;
   curUnit: integer;                    { 0: the program, else the unit being compiled }
   msgsBuilt: boolean;
 
@@ -4735,6 +4738,7 @@ begin
     if sg then Op16($49, $8000);
     Gen($48);                             { the limit stays on the stack }
   end;
+  stkSlots := stkSlots + 1;
   if sg then f3 := 5 else f3 := 7;        { SCHUB: bge / bgeu }
   ReleaseTmp(false, false);
   Expect(sDo);
@@ -4771,6 +4775,7 @@ begin
   BrlTo(top);
   FixChain(loopBreak[nLoop], pc);
   DropSlot;                               { drop the limit }
+  stkSlots := stkSlots - 1;
   nLoop := nLoop - 1;
 end;
 
@@ -4877,6 +4882,129 @@ begin
   nWith := n0;
 end;
 
+{ ---- goto and label. A label (32 bytes at LabBase): name (16), address
+  (-1 not placed), FOR slots there, chain of the forward jumps. A forward
+  goto (8 bytes at FixBase): the place of its stack adjustment, the label,
+  its FOR slots. The adjustment (65C816 tsc clc adc #n tcs, RISC-V addi sp)
+  drops the limits of the loops it leaves. }
+const
+  LabBase = $3D5000;
+  FixBase = $3D6000;
+
+function LabelName: TName;
+var n: TName;
+begin
+  if sym = sNumber then n := IntToStr(num)
+  else if sym = sIdent then n := id
+  else Error('label name expected');
+  LabelName := n;
+end;
+
+{ a label of this routine, -1 = none }
+function FindLabel(const n: TName): integer;
+var i, k: integer;
+    a: longint;
+    ok: boolean;
+begin
+  FindLabel := -1;
+  for i := labStart to nLab - 1 do begin
+    a := LabBase + longint(i) * 32;
+    if Mem[a] = length(n) then begin
+      ok := true;
+      for k := 1 to length(n) do if Mem[a + k] <> ord(n[k]) then ok := false;
+      if ok then begin FindLabel := i; exit; end;
+    end;
+  end;
+end;
+
+procedure LabelSection;
+var n: TName;
+    a: longint;
+    k: integer;
+begin
+  Next;
+  repeat
+    n := LabelName;
+    if FindLabel(n) >= 0 then ErrorN(2, n);
+    if nLab >= 128 then Error('too many labels');
+    a := LabBase + longint(nLab) * 32;
+    for k := 0 to length(n) do Mem[a + k] := ord(n[k]);
+    MemL[a + 16] := -1; MemW[a + 20] := 0; MemL[a + 28] := 0; Mem[a + 24] := 0;
+    nLab := nLab + 1;
+    Next;
+    if sym = sComma then Next else break;
+  until false;
+  Expect(sSemi);
+end;
+
+{ the stack adjustment of a goto: n bytes up }
+procedure StackAdjust(n: integer);
+begin
+  if rv then RI($13, 0, rSp, rSp, n)
+  else begin Gen($3B); Gen($18); Op16($69, n); Gen($1B); end;
+end;
+
+function SlotBytes: integer;
+begin
+  if rv then SlotBytes := 4 else SlotBytes := 2;
+end;
+
+procedure GotoStat;
+var k: integer;
+    a, chain, site: longint;
+begin
+  Next;
+  k := FindLabel(LabelName);
+  if k < 0 then Error('label of this routine expected');
+  Next;
+  a := LabBase + longint(k) * 32;
+  Mem[a + 24] := 1;
+  if MemL[a + 16] >= 0 then begin
+    if stkSlots < MemW[a + 20] then Error('goto into a FOR loop');
+    if stkSlots > MemW[a + 20] then StackAdjust((stkSlots - MemW[a + 20]) * SlotBytes);
+    BrlTo(MemL[a + 16]);
+  end else begin
+    if nFix >= 64 then Error('too many forward gotos');
+    site := pc;
+    StackAdjust(0);
+    MemL[FixBase + nFix * 8] := site; MemW[FixBase + nFix * 8 + 4] := k; MemW[FixBase + nFix * 8 + 6] := stkSlots;
+    nFix := nFix + 1;
+    chain := MemL[a + 28];
+    BrlFwd(chain);
+    MemL[a + 28] := chain;
+  end;
+end;
+
+procedure PlaceLabel(k: integer);
+var a: longint;
+    i, d: integer;
+begin
+  a := LabBase + longint(k) * 32;
+  if MemL[a + 16] >= 0 then Error('label placed twice');
+  MemL[a + 16] := pc; MemW[a + 20] := stkSlots;
+  FixChain(MemL[a + 28], pc);
+  MemL[a + 28] := 0;
+  { the forward gotos: their stack adjustments }
+  for i := 0 to nFix - 1 do
+    if MemW[FixBase + i * 8 + 4] = k then begin
+      d := MemW[FixBase + i * 8 + 6] - stkSlots;
+      if d < 0 then Error('goto into a FOR loop');
+      if rv then Put32(MemL[FixBase + i * 8], IEnc($13, 0, rSp, rSp, d * 4))
+      else Put16(MemL[FixBase + i * 8] + 3, d * 2);
+      MemW[FixBase + i * 8 + 4] := $FFFF;
+    end;
+  lastDbg := -1;
+end;
+
+{ the end of a routine: every label used is placed }
+procedure EndLabels;
+var i: integer;
+begin
+  for i := labStart to nLab - 1 do
+    if (Mem[LabBase + longint(i) * 32 + 24] <> 0) and (MemL[LabBase + longint(i) * 32 + 16] < 0) then
+      Error('a label is used but not placed');
+end;
+
 { DebugLines: the statement's line into DbgLineAdr (lda #v / sta long; on
   RISC-V gp points there) }
 procedure StmtLine;
@@ -4913,7 +5041,7 @@ end;
 
 procedure Statement;
 var x: TItem;
-    s: integer;
+    s, k: integer;
     n: TName;
 begin
   nTmp := 0;
@@ -4926,9 +5054,23 @@ begin
     sFor: ForStat;
     sCase: CaseStat;
     sWith: WithStat;
-    sGoto: ErrorN(92, '');
+    sGoto: GotoStat;
+    sNumber: begin
+      k := FindLabel(LabelName);
+      if k < 0 then Error('label of this routine expected');
+      Next; Expect(sColon);
+      PlaceLabel(k);
+      Statement;
+    end;
     sIdent: begin
       n := id;
+      k := FindLabel(n);
+      if k >= 0 then begin
+        Next; Expect(sColon);
+        PlaceLabel(k);
+        Statement;
+        exit;
+      end;
       if WithField(x) then Assignment(x)
       else if (n = 'write') or (n = 'writeln') then begin Next; StdWrite(n = 'writeln'); end
       else if (n = 'include') or (n = 'exclude') then begin
@@ -5491,14 +5633,17 @@ procedure Block;
 var entry, fs: longint;
     s, p, q: integer;
     x: TItem;
+    saveLab, saveFix, saveSlots: integer;
 begin
+  saveLab := labStart; saveFix := nFix; saveSlots := stkSlots;
+  labStart := nLab - preLabels; preLabels := 0; stkSlots := 0;
   repeat
     case sym of
       sConst: ConstSection;
       sType: TypeSection;
       sVar: VarSection;
       sProcedure, sFunction: ProcDecl;
-      sLabel: ErrorN(125, '');
+      sLabel: LabelSection;
     else
       break;
     end;
@@ -5529,6 +5674,7 @@ begin
     Next;
     StatSeq;
     Expect(sEnd);
+    EndLabels; nLab := labStart; labStart := saveLab; nFix := saveFix; stkSlots := saveSlots;
     FixChain(ctxExit[curLev], pc);
     if (s <> 0) and (syms[s].typ <> 0) and (syms[s].flags and 1 = 0) then
       RLd(types[syms[s].typ].size, types[syms[s].typ].sgn, rA0, rS0, ctxRes[curLev]);
@@ -5551,6 +5697,7 @@ begin
   Next;
   StatSeq;
   Expect(sEnd);
+  EndLabels; nLab := labStart; labStart := saveLab; nFix := saveFix; stkSlots := saveSlots;
   FixChain(ctxExit[curLev], pc);
   { epilogue }
   if (s <> 0) and (syms[s].typ <> 0) and (syms[s].flags and 1 = 0) then begin
@@ -5603,7 +5750,7 @@ begin
       sType: TypeSection;
       sVar: VarSection;
       sProcedure, sFunction: ProcDecl;
-      sLabel: ErrorN(125, '');
+      sLabel: LabelSection;
     else
       break;
     end;
@@ -5760,6 +5907,7 @@ begin
   tokLine := 1; tokCol := 1;
   pc := 0; dataTop := 0; nLoop := 0; nTmp := 0; nPend := 0; nWith := 0;
   lastDbg := -1; curUnit := 0;
+  nLab := 0; labStart := 0; nFix := 0; stkSlots := 0; preLabels := 0;
   hasWith := ScanWith(SrcBase, srcLen);
   for i := 0 to 63 do impType[i] := 0;
   InitKeywords;
@@ -5828,6 +5976,7 @@ begin
   if rv and (nInit > 0) then RPush(rRa);
   for i := 1 to nInit do Jsl(cBase + unitInit[i]);   { unit initialisation, then the body }
   if rv and (nInit > 0) then RPop(rRa);
+  preLabels := nLab;                         { the program's labels belong to its body }
   Block;
   if sym <> sPeriod then ErrorN(140, '');
   if not rv then begin

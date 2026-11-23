@@ -290,9 +290,20 @@ export class Front {
       else if (this.accept('type')) this.parseTypeSection();
       else if (this.accept('var')) this.parseVarSection();
       else if (this.is('procedure') || this.is('function')) this.parseProcDecl(isInterface);
-      else if (this.is('label')) this.err('labels and goto are not supported');
+      else if (this.accept('label')) this.parseLabelSection();
       else break;
     }
+  }
+
+  // label 10, done;  (names or numbers; goto stays within the routine)
+  parseLabelSection() {
+    do {
+      const t = this.next();
+      if (t.k !== 'id' && t.k !== 'int') this.err('label name expected', t.pos);
+      const name = String(t.v);
+      this.declare(name, { kind: 'label', name, lbl: this.newLabel('G'), defined: false, used: null, scope: this.scope }, t.pos);
+    } while (this.accept(','));
+    this.expect(';');
   }
 
   parseConstSection() {
@@ -792,6 +803,8 @@ export class Front {
   }
   endProc() {
     const c = this.ctx;
+    for (const sym of this.scope.syms.values())
+      if (sym.kind === 'label' && sym.used && !sym.defined) this.err(`label '${sym.name}' is used but not placed`, sym.used);
     this.emit({ o: 'label', l: c.exitLabel });
     this.procs.push({
       label: c.label, name: c.name, level: c.level, locSize: c.locMax,
@@ -833,6 +846,20 @@ export class Front {
     const t = this.tk;
     const mark = this.tempMark();
     if (t.k !== 'eof') this.emit({ o: 'line', file: t.pos.file, line: t.pos.line });
+    // a label in front of the statement
+    if ((t.k === 'id' || t.k === 'int') && this.peekTok().k === 'op' && this.peekTok().v === ':') {
+      const sym = this.lookup(String(t.v));
+      if (sym && sym.kind === 'label') {
+        if (sym.scope !== this.scope) this.err(`label '${t.v}' belongs to another routine`, t.pos);
+        if (sym.defined) this.err(`label '${t.v}' placed twice`, t.pos);
+        sym.defined = true;
+        this.emit({ o: 'label', l: sym.lbl });
+        this.next(); this.next();
+        this.tempRelease(mark);
+        this.parseStatement();
+        return;
+      }
+    }
     if (t.k === 'kw') {
       switch (t.v) {
         case 'begin': this.next(); this.parseStmtSeq('end'); this.expect('end'); break;
@@ -842,7 +869,16 @@ export class Front {
         case 'for': this.parseFor(); break;
         case 'case': this.parseCase(); break;
         case 'with': this.parseWith(); break;
-        case 'goto': this.err('goto is not supported');
+        case 'goto': {
+          this.next();
+          const g = this.next();
+          const sym = this.lookup(String(g.v));
+          if (!sym || sym.kind !== 'label') this.err('label expected after goto', g.pos);
+          if (sym.scope !== this.scope) this.err(`goto out of the routine to '${g.v}'`, g.pos);
+          sym.used = sym.used || g.pos;
+          this.emit({ o: 'jmp', l: sym.lbl });
+          break;
+        }
         case 'asm': this.err('asm blocks are not supported');
         default: break; // empty statement (e.g. before 'end' / 'else' / 'until')
       }
