@@ -51,10 +51,11 @@ function session(onSchub) {
     m.keyState(0x01, true); frames(2); m.keyState(0x01, false);         // F9
     let k = 0;
     while (!/^ *OK|ERROR/.test(line(29)) && k < 4000 && m.state === 'running') { frames(1); k++; }
+    const t1 = n; frames(10);                                                        // the whole message drawn
     // code and data of a 65C816 program, of a SCHUB program, of assembly
     const area = /\.ASM$/.test(name) ? [0x330000, 1024] : text.startsWith('{$SCHUB}') ? [0x080000, 8192] : [0x300000, 4096];
     out.jobs.push({
-      name, msg: line(29).trim().replace(/, \d+ MS$/, ''), frames: n - t0,
+      name, msg: line(29).trim().replace(/, \d+ MS$/, ''), frames: t1 - t0,
       bytes: Buffer.from(m.mem.subarray(area[0], area[0] + area[1])).toString('hex'),
       data: Buffer.from(m.mem.subarray(0x320000, 0x320000 + 2048)).toString('hex'),
       fault: m.schubFault, state: m.state,

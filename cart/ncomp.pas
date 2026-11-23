@@ -205,6 +205,12 @@ var
   pendPtr: array[1..16] of integer;
   pendName: array[1..16] of TName;
   nPend: integer;
+  { directives: defined names, open IFDEFs, open include files }
+  nDef, condDepth, incDepth: integer;
+  msgsBuilt: boolean;
+
+const
+  MsgBase = $3D1000;         { error messages, 64 bytes each (up to $3D:4FFF) }
 
 function CatchError: integer; external 'catch';
 procedure ThrowError; external 'throw';
@@ -218,7 +224,1098 @@ begin
   ThrowError;
 end;
 
+{ the error messages, 4 characters a number (string literals would take
+  room in bank 0); written by a script. Message n starts at MsgBase + n * 64:
+  its length, then the characters }
+procedure BuildMessages;
+begin
+  MemL[MsgBase + 64] := 1869575184;
+  MemL[MsgBase + 68] := 1851878688;
+  MemL[MsgBase + 72] := 1701060729;
+  MemL[MsgBase + 76] := 1701734758;
+  MemL[MsgBase + 80] := 115;
+  { too many defines }
+  MemL[MsgBase + 128] := 1160018704;
+  MemL[MsgBase + 132] := 1179206734;
+  MemL[MsgBase + 136] := 1768759421;
+  MemL[MsgBase + 140] := 1852404595;
+  MemL[MsgBase + 144] := 103;
+  { $ENDIF missing }
+  MemL[MsgBase + 192] := 1668180253;
+  MemL[MsgBase + 196] := 1701082476;
+  MemL[MsgBase + 200] := 1818846752;
+  MemL[MsgBase + 204] := 1847620453;
+  MemL[MsgBase + 208] := 1702130533;
+  MemL[MsgBase + 212] := 1869881444;
+  MemL[MsgBase + 216] := 1701060719;
+  MemL[MsgBase + 220] := 28773;
+  { include files nested too deep }
+  MemL[MsgBase + 256] := 544173580;
+  MemL[MsgBase + 260] := 1836019570;
+  MemL[MsgBase + 264] := 1919903264;
+  MemL[MsgBase + 268] := 32;
+  { no room for  }
+  MemL[MsgBase + 320] := 1668180248;
+  MemL[MsgBase + 324] := 1701082476;
+  MemL[MsgBase + 328] := 1818846752;
+  MemL[MsgBase + 332] := 1869488229;
+  MemL[MsgBase + 336] := 1868963956;
+  MemL[MsgBase + 340] := 979660405;
+  MemL[MsgBase + 344] := 32;
+  { include file not found:  }
+  MemL[MsgBase + 384] := 1160018712;
+  MemL[MsgBase + 388] := 2101695308;
+  MemL[MsgBase + 392] := 1953068832;
+  MemL[MsgBase + 396] := 1953853288;
+  MemL[MsgBase + 400] := 1227127584;
+  MemL[MsgBase + 404] := 1178944582;
+  MemL[MsgBase + 408] := 125;
+  { $ELSE without $IFDEF }
+  MemL[MsgBase + 448] := 1160018713;
+  MemL[MsgBase + 452] := 1179206734;
+  MemL[MsgBase + 456] := 1769414781;
+  MemL[MsgBase + 460] := 1970235508;
+  MemL[MsgBase + 464] := 612049012;
+  MemL[MsgBase + 468] := 1162102345;
+  MemL[MsgBase + 472] := 32070;
+  { $ENDIF without $IFDEF }
+  MemL[MsgBase + 512] := 1684103696;
+  MemL[MsgBase + 516] := 1634038304;
+  MemL[MsgBase + 520] := 1970151532;
+  MemL[MsgBase + 524] := 1919246957;
+  MemL[MsgBase + 528] := 32;
+  { bad real number  }
+  MemL[MsgBase + 576] := 1920234257;
+  MemL[MsgBase + 580] := 543649385;
+  MemL[MsgBase + 584] := 544501614;
+  MemL[MsgBase + 588] := 1936682083;
+  MemL[MsgBase + 592] := 25701;
+  { string not closed }
+  MemL[MsgBase + 640] := 1701737750;
+  MemL[MsgBase + 644] := 1667592312;
+  MemL[MsgBase + 648] := 543450484;
+  MemL[MsgBase + 652] := 1918986339;
+  MemL[MsgBase + 656] := 1702126433;
+  MemL[MsgBase + 660] := 2564210;
+  { unexpected character ' }
+  MemL[MsgBase + 704] := 1869770783;
+  MemL[MsgBase + 708] := 1835102823;
+  MemL[MsgBase + 712] := 1685021472;
+  MemL[MsgBase + 716] := 1634476133;
+  MemL[MsgBase + 720] := 1919248242;
+  MemL[MsgBase + 724] := 1634235424;
+  MemL[MsgBase + 728] := 842080366;
+  MemL[MsgBase + 732] := 1112219704;
+  { program code larger than 128 KB }
+  MemL[MsgBase + 768] := 1869770782;
+  MemL[MsgBase + 772] := 1835102823;
+  MemL[MsgBase + 776] := 1685021472;
+  MemL[MsgBase + 780] := 1634476133;
+  MemL[MsgBase + 784] := 1919248242;
+  MemL[MsgBase + 788] := 1634235424;
+  MemL[MsgBase + 792] := 875962478;
+  MemL[MsgBase + 796] := 4344608;
+  { program code larger than 64 KB }
+  MemL[MsgBase + 832] := 1869575182;
+  MemL[MsgBase + 836] := 1851878688;
+  MemL[MsgBase + 840] := 2037653625;
+  MemL[MsgBase + 844] := 7562608;
+  { too many types }
+  MemL[MsgBase + 896] := 1869575188;
+  MemL[MsgBase + 900] := 1851878688;
+  MemL[MsgBase + 904] := 1684611193;
+  MemL[MsgBase + 908] := 1769238117;
+  MemL[MsgBase + 912] := 1919248742;
+  MemL[MsgBase + 916] := 115;
+  { too many identifiers }
+  MemL[MsgBase + 960] := 1918984990;
+  MemL[MsgBase + 964] := 1684632180;
+  MemL[MsgBase + 968] := 1914725735;
+  MemL[MsgBase + 972] := 1769238133;
+  MemL[MsgBase + 976] := 1763730797;
+  MemL[MsgBase + 980] := 1836016494;
+  MemL[MsgBase + 984] := 1952803952;
+  MemL[MsgBase + 988] := 2112101;
+  { cartridge runtime incomplete:  }
+  MemL[MsgBase + 1024] := 1651076121;
+  MemL[MsgBase + 1028] := 2037539186;
+  MemL[MsgBase + 1032] := 1970237984;
+  MemL[MsgBase + 1036] := 1701734772;
+  MemL[MsgBase + 1040] := 1936289056;
+  MemL[MsgBase + 1044] := 1735289203;
+  MemL[MsgBase + 1048] := 8250;
+  { library routine missing:  }
+  MemL[MsgBase + 1088] := 1869575193;
+  MemL[MsgBase + 1092] := 1851878688;
+  MemL[MsgBase + 1096] := 1818697849;
+  MemL[MsgBase + 1100] := 1818321519;
+  MemL[MsgBase + 1104] := 1918989856;
+  MemL[MsgBase + 1108] := 1818386793;
+  MemL[MsgBase + 1112] := 29541;
+  { too many global variables }
+  MemL[MsgBase + 1152] := 1667589162;
+  MemL[MsgBase + 1156] := 1701994860;
+  MemL[MsgBase + 1160] := 1918989856;
+  MemL[MsgBase + 1164] := 1818386793;
+  MemL[MsgBase + 1168] := 1646293861;
+  MemL[MsgBase + 1172] := 1919903333;
+  MemL[MsgBase + 1176] := 1701716069;
+  MemL[MsgBase + 1180] := 1684370547;
+  MemL[MsgBase + 1184] := 1869770784;
+  MemL[MsgBase + 1188] := 1969513827;
+  MemL[MsgBase + 1192] := 7562610;
+  { declare variables before nested procedures }
+  MemL[MsgBase + 1216] := 1869575198;
+  MemL[MsgBase + 1220] := 1851878688;
+  MemL[MsgBase + 1224] := 1634476153;
+  MemL[MsgBase + 1228] := 543516530;
+  MemL[MsgBase + 1232] := 1633906540;
+  MemL[MsgBase + 1236] := 1635131500;
+  MemL[MsgBase + 1240] := 1650551154;
+  MemL[MsgBase + 1244] := 7562604;
+  { too many large local variables }
+  MemL[MsgBase + 1280] := 1918989841;
+  MemL[MsgBase + 1284] := 1818386793;
+  MemL[MsgBase + 1288] := 2019893349;
+  MemL[MsgBase + 1292] := 1952671088;
+  MemL[MsgBase + 1296] := 25701;
+  { variable expected }
+  MemL[MsgBase + 1344] := 1818326542;
+  MemL[MsgBase + 1348] := 1696621941;
+  MemL[MsgBase + 1352] := 1667592312;
+  MemL[MsgBase + 1356] := 6579572;
+  { value expected }
+  MemL[MsgBase + 1408] := 1953392920;
+  MemL[MsgBase + 1412] := 1634628197;
+  MemL[MsgBase + 1416] := 1663056492;
+  MemL[MsgBase + 1420] := 1768189551;
+  MemL[MsgBase + 1424] := 1852795252;
+  MemL[MsgBase + 1428] := 1768649504;
+  MemL[MsgBase + 1432] := 112;
+  { internal: condition skip }
+  MemL[MsgBase + 1472] := 1953392920;
+  MemL[MsgBase + 1476] := 1634628197;
+  MemL[MsgBase + 1480] := 1663056492;
+  MemL[MsgBase + 1484] := 1768189551;
+  MemL[MsgBase + 1488] := 1852795252;
+  MemL[MsgBase + 1492] := 1685021472;
+  MemL[MsgBase + 1496] := 101;
+  { internal: condition code }
+  MemL[MsgBase + 1536] := 1869570576;
+  MemL[MsgBase + 1540] := 1851876716;
+  MemL[MsgBase + 1544] := 1886938400;
+  MemL[MsgBase + 1548] := 1702126437;
+  MemL[MsgBase + 1552] := 100;
+  { boolean expected }
+  MemL[MsgBase + 1600] := 1869570587;
+  MemL[MsgBase + 1604] := 1851876716;
+  MemL[MsgBase + 1608] := 1886938400;
+  MemL[MsgBase + 1612] := 1936942450;
+  MemL[MsgBase + 1616] := 544108393;
+  MemL[MsgBase + 1620] := 1701869669;
+  MemL[MsgBase + 1624] := 1684370531;
+  { boolean expression expected }
+  MemL[MsgBase + 1664] := 1920234255;
+  MemL[MsgBase + 1668] := 543649385;
+  MemL[MsgBase + 1672] := 1701869669;
+  MemL[MsgBase + 1676] := 1684370531;
+  { string expected }
+  MemL[MsgBase + 1728] := 1836412431;
+  MemL[MsgBase + 1732] := 544367970;
+  MemL[MsgBase + 1736] := 1701869669;
+  MemL[MsgBase + 1740] := 1684370531;
+  { number expected }
+  MemL[MsgBase + 1792] := 1953392912;
+  MemL[MsgBase + 1796] := 1919248229;
+  MemL[MsgBase + 1800] := 1886938400;
+  MemL[MsgBase + 1804] := 1702126437;
+  MemL[MsgBase + 1808] := 100;
+  { integer expected }
+  MemL[MsgBase + 1856] := 1634231053;
+  MemL[MsgBase + 1860] := 2019893362;
+  MemL[MsgBase + 1864] := 1952671088;
+  MemL[MsgBase + 1868] := 25701;
+  { char expected }
+  MemL[MsgBase + 1920] := 1668180242;
+  MemL[MsgBase + 1924] := 1634757999;
+  MemL[MsgBase + 1928] := 1818388852;
+  MemL[MsgBase + 1932] := 2037653605;
+  MemL[MsgBase + 1936] := 7562608;
+  { incompatible types }
+  MemL[MsgBase + 1984] := 1768910864;
+  MemL[MsgBase + 1988] := 1919251566;
+  MemL[MsgBase + 1992] := 1886938400;
+  MemL[MsgBase + 1996] := 1702126437;
+  MemL[MsgBase + 2000] := 100;
+  { pointer expected }
+  MemL[MsgBase + 2048] := 1851876117;
+  MemL[MsgBase + 2052] := 544501614;
+  MemL[MsgBase + 2056] := 1769173857;
+  MemL[MsgBase + 2060] := 1948282471;
+  MemL[MsgBase + 2064] := 1752440943;
+  MemL[MsgBase + 2068] := 29545;
+  { cannot assign to this }
+  MemL[MsgBase + 2112] := 1852793617;
+  MemL[MsgBase + 2116] := 1851880563;
+  MemL[MsgBase + 2120] := 2019893364;
+  MemL[MsgBase + 2124] := 1952671088;
+  MemL[MsgBase + 2128] := 25701;
+  { constant expected }
+  MemL[MsgBase + 2176] := 1887007757;
+  MemL[MsgBase + 2180] := 2019893349;
+  MemL[MsgBase + 2184] := 1952671088;
+  MemL[MsgBase + 2188] := 25701;
+  { type expected }
+  MemL[MsgBase + 2240] := 1887007759;
+  MemL[MsgBase + 2244] := 2019893349;
+  MemL[MsgBase + 2248] := 1952671088;
+  MemL[MsgBase + 2252] := 540697701;
+  { type expected:  }
+  MemL[MsgBase + 2304] := 1986947345;
+  MemL[MsgBase + 2308] := 1684630625;
+  MemL[MsgBase + 2312] := 1887007776;
+  MemL[MsgBase + 2316] := 1633886309;
+  MemL[MsgBase + 2320] := 29811;
+  { invalid type cast }
+  MemL[MsgBase + 2368] := 1667592719;
+  MemL[MsgBase + 2372] := 543453807;
+  MemL[MsgBase + 2376] := 1701869669;
+  MemL[MsgBase + 2380] := 1684370531;
+  { record expected }
+  MemL[MsgBase + 2432] := 1701406222;
+  MemL[MsgBase + 2436] := 1696621676;
+  MemL[MsgBase + 2440] := 1667592312;
+  MemL[MsgBase + 2444] := 6579572;
+  { field expected }
+  MemL[MsgBase + 2496] := 1802401038;
+  MemL[MsgBase + 2500] := 1853321070;
+  MemL[MsgBase + 2504] := 1701406240;
+  MemL[MsgBase + 2508] := 2122860;
+  { unknown field  }
+  MemL[MsgBase + 2560] := 1701406235;
+  MemL[MsgBase + 2564] := 1864393836;
+  MemL[MsgBase + 2568] := 1752440934;
+  MemL[MsgBase + 2572] := 1847620457;
+  MemL[MsgBase + 2576] := 1931506799;
+  MemL[MsgBase + 2580] := 1869639797;
+  MemL[MsgBase + 2584] := 1684370546;
+  { field of this not supported }
+  MemL[MsgBase + 2624] := 1920098574;
+  MemL[MsgBase + 2628] := 1696627041;
+  MemL[MsgBase + 2632] := 1667592312;
+  MemL[MsgBase + 2636] := 6579572;
+  { array expected }
+  MemL[MsgBase + 2688] := 1851876113;
+  MemL[MsgBase + 2692] := 544501614;
+  MemL[MsgBase + 2696] := 1701080681;
+  MemL[MsgBase + 2700] := 1752440952;
+  MemL[MsgBase + 2704] := 29545;
+  { cannot index this }
+  MemL[MsgBase + 2752] := 1684957461;
+  MemL[MsgBase + 2756] := 1830844517;
+  MemL[MsgBase + 2760] := 544502645;
+  MemL[MsgBase + 2764] := 1864394082;
+  MemL[MsgBase + 2768] := 1852400754;
+  MemL[MsgBase + 2772] := 27745;
+  { index must be ordinal }
+  MemL[MsgBase + 2816] := 1953392911;
+  MemL[MsgBase + 2820] := 1634628197;
+  MemL[MsgBase + 2824] := 1763719788;
+  MemL[MsgBase + 2828] := 2019910766;
+  { internal: index }
+  MemL[MsgBase + 2880] := 1887007766;
+  MemL[MsgBase + 2884] := 1881171045;
+  MemL[MsgBase + 2888] := 1953393007;
+  MemL[MsgBase + 2892] := 1696625253;
+  MemL[MsgBase + 2896] := 1667592312;
+  MemL[MsgBase + 2900] := 6579572;
+  { typed pointer expected }
+  MemL[MsgBase + 2944] := 1684300048;
+  MemL[MsgBase + 2948] := 1936942450;
+  MemL[MsgBase + 2952] := 1886938400;
+  MemL[MsgBase + 2956] := 1702126437;
+  MemL[MsgBase + 2960] := 100;
+  { address expected }
+  MemL[MsgBase + 3008] := 1918989843;
+  MemL[MsgBase + 3012] := 1818386793;
+  MemL[MsgBase + 3016] := 2019893349;
+  MemL[MsgBase + 3020] := 1952671088;
+  MemL[MsgBase + 3024] := 540697701;
+  { variable expected:  }
+  MemL[MsgBase + 3072] := 1986618384;
+  MemL[MsgBase + 3076] := 1869181801;
+  MemL[MsgBase + 3080] := 2036473966;
+  MemL[MsgBase + 3084] := 1919253024;
+  MemL[MsgBase + 3088] := 111;
+  { division by zero }
+  MemL[MsgBase + 3136] := 1836412432;
+  MemL[MsgBase + 3140] := 1936876898;
+  MemL[MsgBase + 3144] := 1886938400;
+  MemL[MsgBase + 3148] := 1702126437;
+  MemL[MsgBase + 3152] := 100;
+  { numbers expected }
+  MemL[MsgBase + 3200] := 1768453148;
+  MemL[MsgBase + 3204] := 1886330995;
+  MemL[MsgBase + 3208] := 1952543333;
+  MemL[MsgBase + 3212] := 1847620207;
+  MemL[MsgBase + 3216] := 1935959397;
+  MemL[MsgBase + 3220] := 1953392928;
+  MemL[MsgBase + 3224] := 1919248229;
+  MemL[MsgBase + 3228] := 115;
+  { this operator needs integers }
+  MemL[MsgBase + 3264] := 1952805644;
+  MemL[MsgBase + 3268] := 1886938400;
+  MemL[MsgBase + 3272] := 1702126437;
+  MemL[MsgBase + 3276] := 100;
+  { set expected }
+  MemL[MsgBase + 3328] := 1685221151;
+  MemL[MsgBase + 3332] := 1818324585;
+  MemL[MsgBase + 3336] := 1818326560;
+  MemL[MsgBase + 3340] := 1696621941;
+  MemL[MsgBase + 3344] := 1667592312;
+  MemL[MsgBase + 3348] := 543450484;
+  MemL[MsgBase + 3352] := 1629515369;
+  MemL[MsgBase + 3356] := 1952805664;
+  { ordinal value expected in a set }
+  MemL[MsgBase + 3392] := 1685221136;
+  MemL[MsgBase + 3396] := 1818324585;
+  MemL[MsgBase + 3400] := 1886938400;
+  MemL[MsgBase + 3404] := 1702126437;
+  MemL[MsgBase + 3408] := 100;
+  { ordinal expected }
+  MemL[MsgBase + 3456] := 1935827234;
+  MemL[MsgBase + 3460] := 543584032;
+  MemL[MsgBase + 3464] := 1735290732;
+  MemL[MsgBase + 3468] := 980708969;
+  MemL[MsgBase + 3472] := 1702065440;
+  MemL[MsgBase + 3476] := 1701344288;
+  MemL[MsgBase + 3480] := 1886938400;
+  MemL[MsgBase + 3484] := 1936942450;
+  MemL[MsgBase + 3488] := 7237481;
+  { abs of longint: use the expression }
+  MemL[MsgBase + 3520] := 1802401041;
+  MemL[MsgBase + 3524] := 1853321070;
+  MemL[MsgBase + 3528] := 1853187616;
+  MemL[MsgBase + 3532] := 1869182051;
+  MemL[MsgBase + 3536] := 8302;
+  { unknown function  }
+  MemL[MsgBase + 3584] := 1869570586;
+  MemL[MsgBase + 3588] := 1851876716;
+  MemL[MsgBase + 3592] := 1886938400;
+  MemL[MsgBase + 3596] := 1702126437;
+  MemL[MsgBase + 3600] := 1717641316;
+  MemL[MsgBase + 3604] := 544367988;
+  MemL[MsgBase + 3608] := 5525326;
+  { boolean expected after NOT }
+  MemL[MsgBase + 3648] := 1802401043;
+  MemL[MsgBase + 3652] := 1853321070;
+  MemL[MsgBase + 3656] := 1701079328;
+  MemL[MsgBase + 3660] := 1718187118;
+  MemL[MsgBase + 3664] := 544367977;
+  { unknown identifier  }
+  MemL[MsgBase + 3712] := 1869770774;
+  MemL[MsgBase + 3716] := 1969513827;
+  MemL[MsgBase + 3720] := 1746953586;
+  MemL[MsgBase + 3724] := 1847620449;
+  MemL[MsgBase + 3728] := 1635131503;
+  MemL[MsgBase + 3732] := 6649196;
+  { procedure has no value }
+  MemL[MsgBase + 3776] := 1702065441;
+  MemL[MsgBase + 3780] := 1936020000;
+  MemL[MsgBase + 3784] := 544500853;
+  MemL[MsgBase + 3788] := 544370534;
+  MemL[MsgBase + 3792] := 543516788;
+  MemL[MsgBase + 3796] := 1668183398;
+  MemL[MsgBase + 3800] := 1852795252;
+  MemL[MsgBase + 3804] := 1818326560;
+  MemL[MsgBase + 3808] := 25973;
+  { use Result for the function value }
+  MemL[MsgBase + 3840] := 1886938387;
+  MemL[MsgBase + 3844] := 1936942450;
+  MemL[MsgBase + 3848] := 544108393;
+  MemL[MsgBase + 3852] := 1701869669;
+  MemL[MsgBase + 3856] := 1684370531;
+  { expression expected }
+  MemL[MsgBase + 3904] := 1953392913;
+  MemL[MsgBase + 3908] := 1919248229;
+  MemL[MsgBase + 3912] := 2019893363;
+  MemL[MsgBase + 3916] := 1952671088;
+  MemL[MsgBase + 3920] := 25701;
+  { integers expected }
+  MemL[MsgBase + 3968] := 1952805660;
+  MemL[MsgBase + 3972] := 1868767347;
+  MemL[MsgBase + 3976] := 1918988397;
+  MemL[MsgBase + 3980] := 1769414757;
+  MemL[MsgBase + 3984] := 1025534068;
+  MemL[MsgBase + 3988] := 540949536;
+  MemL[MsgBase + 3992] := 1042300220;
+  MemL[MsgBase + 3996] := 61;
+  { sets compare with = <> <= >= }
+  MemL[MsgBase + 4032] := 1668180256;
+  MemL[MsgBase + 4036] := 1634757999;
+  MemL[MsgBase + 4040] := 1818388852;
+  MemL[MsgBase + 4044] := 2037653605;
+  MemL[MsgBase + 4048] := 544433520;
+  MemL[MsgBase + 4052] := 1663069801;
+  MemL[MsgBase + 4056] := 1634757999;
+  MemL[MsgBase + 4060] := 1869834610;
+  MemL[MsgBase + 4064] := 110;
+  { incompatible types in comparison }
+  MemL[MsgBase + 4096] := 1685221152;
+  MemL[MsgBase + 4100] := 1818324585;
+  MemL[MsgBase + 4104] := 1818326560;
+  MemL[MsgBase + 4108] := 1696621941;
+  MemL[MsgBase + 4112] := 1667592312;
+  MemL[MsgBase + 4116] := 543450484;
+  MemL[MsgBase + 4120] := 1868981602;
+  MemL[MsgBase + 4124] := 1226859890;
+  MemL[MsgBase + 4128] := 78;
+  { ordinal value expected before IN }
+  MemL[MsgBase + 4160] := 1953853496;
+  MemL[MsgBase + 4164] := 1701344288;
+  MemL[MsgBase + 4168] := 1920234272;
+  MemL[MsgBase + 4172] := 543649385;
+  MemL[MsgBase + 4176] := 1936877926;
+  MemL[MsgBase + 4180] := 1752637556;
+  MemL[MsgBase + 4184] := 1663069797;
+  MemL[MsgBase + 4188] := 1634757999;
+  MemL[MsgBase + 4192] := 1735289202;
+  MemL[MsgBase + 4196] := 1931501856;
+  MemL[MsgBase + 4200] := 1852404340;
+  MemL[MsgBase + 4204] := 1769414759;
+  MemL[MsgBase + 4208] := 1629513844;
+  MemL[MsgBase + 4212] := 1634231072;
+  MemL[MsgBase + 4216] := 114;
+  { put the string first when comparing a string with a char }
+  MemL[MsgBase + 4224] := 1835355423;
+  MemL[MsgBase + 4228] := 1663065435;
+  MemL[MsgBase + 4232] := 1869508193;
+  MemL[MsgBase + 4236] := 1700929652;
+  MemL[MsgBase + 4240] := 1981833504;
+  MemL[MsgBase + 4244] := 1881174625;
+  MemL[MsgBase + 4248] := 1835102817;
+  MemL[MsgBase + 4252] := 1919251557;
+  { Mem[] cannot be a var parameter }
+  MemL[MsgBase + 4288] := 1869772563;
+  MemL[MsgBase + 4292] := 1981835118;
+  MemL[MsgBase + 4296] := 1634300513;
+  MemL[MsgBase + 4300] := 543517794;
+  MemL[MsgBase + 4304] := 1701869940;
+  { wrong variable type }
+  MemL[MsgBase + 4352] := 1869575186;
+  MemL[MsgBase + 4356] := 1851878688;
+  MemL[MsgBase + 4360] := 1918967929;
+  MemL[MsgBase + 4364] := 1701672295;
+  MemL[MsgBase + 4368] := 7566446;
+  { too many arguments }
+  MemL[MsgBase + 4416] := 1869575185;
+  MemL[MsgBase + 4420] := 2003133984;
+  MemL[MsgBase + 4424] := 1735549216;
+  MemL[MsgBase + 4428] := 1852140917;
+  MemL[MsgBase + 4432] := 29556;
+  { too few arguments }
+  MemL[MsgBase + 4480] := 1851876113;
+  MemL[MsgBase + 4484] := 544501614;
+  MemL[MsgBase + 4488] := 1953067639;
+  MemL[MsgBase + 4492] := 1752440933;
+  MemL[MsgBase + 4496] := 29545;
+  { cannot write this }
+  MemL[MsgBase + 4544] := 1684633358;
+  MemL[MsgBase + 4548] := 1696622708;
+  MemL[MsgBase + 4552] := 1667592312;
+  MemL[MsgBase + 4556] := 6579572;
+  { width expected }
+  MemL[MsgBase + 4608] := 1836412443;
+  MemL[MsgBase + 4612] := 544367970;
+  MemL[MsgBase + 4616] := 1679844975;
+  MemL[MsgBase + 4620] := 1835623269;
+  MemL[MsgBase + 4624] := 544435297;
+  MemL[MsgBase + 4628] := 1701869669;
+  MemL[MsgBase + 4632] := 1684370531;
+  { number of decimals expected }
+  MemL[MsgBase + 4672] := 1851876112;
+  MemL[MsgBase + 4676] := 544501614;
+  MemL[MsgBase + 4680] := 1684104562;
+  MemL[MsgBase + 4684] := 1768453152;
+  MemL[MsgBase + 4688] := 115;
+  { cannot read this }
+  MemL[MsgBase + 4736] := 1685221145;
+  MemL[MsgBase + 4740] := 1818324585;
+  MemL[MsgBase + 4744] := 1918989856;
+  MemL[MsgBase + 4748] := 1818386793;
+  MemL[MsgBase + 4752] := 2019893349;
+  MemL[MsgBase + 4756] := 1952671088;
+  MemL[MsgBase + 4760] := 25701;
+  { ordinal variable expected }
+  MemL[MsgBase + 4800] := 1668180271;
+  MemL[MsgBase + 4804] := 543584032;
+  MemL[MsgBase + 4808] := 1869619297;
+  MemL[MsgBase + 4812] := 1702129257;
+  MemL[MsgBase + 4816] := 2036473970;
+  MemL[MsgBase + 4820] := 1981833504;
+  MemL[MsgBase + 4824] := 1634300513;
+  MemL[MsgBase + 4828] := 543517794;
+  MemL[MsgBase + 4832] := 1847620457;
+  MemL[MsgBase + 4836] := 1931506799;
+  MemL[MsgBase + 4840] := 1869639797;
+  MemL[MsgBase + 4844] := 1684370546;
+  { inc of a pointer by a variable is not supported }
+  MemL[MsgBase + 4864] := 540880145;
+  MemL[MsgBase + 4868] := 1713402729;
+  MemL[MsgBase + 4872] := 1847620207;
+  MemL[MsgBase + 4876] := 1700949365;
+  MemL[MsgBase + 4880] := 29554;
+  { -= is for numbers }
+  MemL[MsgBase + 4928] := 540879643;
+  MemL[MsgBase + 4932] := 1948282479;
+  MemL[MsgBase + 4936] := 544434536;
+  MemL[MsgBase + 4940] := 1769103734;
+  MemL[MsgBase + 4944] := 1701601889;
+  MemL[MsgBase + 4948] := 1937055802;
+  MemL[MsgBase + 4952] := 1027219557;
+  { += on this variable: use := }
+  MemL[MsgBase + 4992] := 1920234264;
+  MemL[MsgBase + 4996] := 543649385;
+  MemL[MsgBase + 5000] := 1769103734;
+  MemL[MsgBase + 5004] := 1701601889;
+  MemL[MsgBase + 5008] := 1886938400;
+  MemL[MsgBase + 5012] := 1702126437;
+  MemL[MsgBase + 5016] := 100;
+  { string variable expected }
+  MemL[MsgBase + 5056] := 1836412440;
+  MemL[MsgBase + 5060] := 544367970;
+  MemL[MsgBase + 5064] := 1769103734;
+  MemL[MsgBase + 5068] := 1701601889;
+  MemL[MsgBase + 5072] := 1886938400;
+  MemL[MsgBase + 5076] := 1702126437;
+  MemL[MsgBase + 5080] := 100;
+  { number variable expected }
+  MemL[MsgBase + 5120] := 1818318381;
+  MemL[MsgBase + 5124] := 1953392928;
+  MemL[MsgBase + 5128] := 1752440943;
+  MemL[MsgBase + 5132] := 1981838185;
+  MemL[MsgBase + 5136] := 1634300513;
+  MemL[MsgBase + 5140] := 979725410;
+  MemL[MsgBase + 5144] := 1702065440;
+  MemL[MsgBase + 5148] := 1931501856;
+  MemL[MsgBase + 5152] := 1819307369;
+  MemL[MsgBase + 5156] := 1635131493;
+  MemL[MsgBase + 5160] := 1650551154;
+  MemL[MsgBase + 5164] := 25964;
+  { Val into this variable: use a simple variable }
+  MemL[MsgBase + 5184] := 1953392921;
+  MemL[MsgBase + 5188] := 1919248229;
+  MemL[MsgBase + 5192] := 1918989856;
+  MemL[MsgBase + 5196] := 1818386793;
+  MemL[MsgBase + 5200] := 2019893349;
+  MemL[MsgBase + 5204] := 1952671088;
+  MemL[MsgBase + 5208] := 25701;
+  { integer variable expected }
+  MemL[MsgBase + 5248] := 1768910873;
+  MemL[MsgBase + 5252] := 1919251566;
+  MemL[MsgBase + 5256] := 1918989856;
+  MemL[MsgBase + 5260] := 1818386793;
+  MemL[MsgBase + 5264] := 2019893349;
+  MemL[MsgBase + 5268] := 1952671088;
+  MemL[MsgBase + 5272] := 25701;
+  { pointer variable expected }
+  MemL[MsgBase + 5312] := 1869573143;
+  MemL[MsgBase + 5316] := 1847620464;
+  MemL[MsgBase + 5320] := 1702130533;
+  MemL[MsgBase + 5324] := 1869881444;
+  MemL[MsgBase + 5328] := 1701060719;
+  MemL[MsgBase + 5332] := 2037149797;
+  { loops nested too deeply }
+  MemL[MsgBase + 5376] := 1701344299;
+  MemL[MsgBase + 5380] := 1869573152;
+  MemL[MsgBase + 5384] := 1635131504;
+  MemL[MsgBase + 5388] := 1650551154;
+  MemL[MsgBase + 5392] := 1830839660;
+  MemL[MsgBase + 5396] := 544502645;
+  MemL[MsgBase + 5400] := 1629513058;
+  MemL[MsgBase + 5404] := 1835627296;
+  MemL[MsgBase + 5408] := 543517808;
+  MemL[MsgBase + 5412] := 1769103734;
+  MemL[MsgBase + 5416] := 1701601889;
+  { the loop variable must be a simple variable }
+  MemL[MsgBase + 5440] := 1869573163;
+  MemL[MsgBase + 5444] := 1635131504;
+  MemL[MsgBase + 5448] := 1650551154;
+  MemL[MsgBase + 5452] := 1830839660;
+  MemL[MsgBase + 5456] := 544502645;
+  MemL[MsgBase + 5460] := 1629513058;
+  MemL[MsgBase + 5464] := 1864382496;
+  MemL[MsgBase + 5468] := 909189234;
+  MemL[MsgBase + 5472] := 1953063456;
+  MemL[MsgBase + 5476] := 1685221152;
+  MemL[MsgBase + 5480] := 1818324585;
+  { loop variable must be a 8 or 16 bit ordinal }
+  MemL[MsgBase + 5504] := 542069771;
+  MemL[MsgBase + 5508] := 1701869669;
+  MemL[MsgBase + 5512] := 1684370531;
+  { TO expected }
+  MemL[MsgBase + 5568] := 1864382500;
+  MemL[MsgBase + 5572] := 909189234;
+  MemL[MsgBase + 5576] := 1953063456;
+  MemL[MsgBase + 5580] := 1685221152;
+  MemL[MsgBase + 5584] := 1818324585;
+  MemL[MsgBase + 5588] := 1886938400;
+  MemL[MsgBase + 5592] := 1702126437;
+  MemL[MsgBase + 5596] := 1852383332;
+  MemL[MsgBase + 5600] := 1396785952;
+  MemL[MsgBase + 5604] := 69;
+  { 8 or 16 bit ordinal expected in CASE }
+  MemL[MsgBase + 5632] := 1667592730;
+  MemL[MsgBase + 5636] := 543453807;
+  MemL[MsgBase + 5640] := 1701869669;
+  MemL[MsgBase + 5644] := 1684370531;
+  MemL[MsgBase + 5648] := 1952866592;
+  MemL[MsgBase + 5652] := 1461744229;
+  MemL[MsgBase + 5656] := 4740169;
+  { record expected after WITH }
+  MemL[MsgBase + 5696] := 1414092566;
+  MemL[MsgBase + 5700] := 1701716040;
+  MemL[MsgBase + 5704] := 1684370547;
+  MemL[MsgBase + 5708] := 1869575200;
+  MemL[MsgBase + 5712] := 1701143584;
+  MemL[MsgBase + 5716] := 7957616;
+  { WITH nested too deeply }
+  MemL[MsgBase + 5760] := 1414092586;
+  MemL[MsgBase + 5764] := 1718558792;
+  MemL[MsgBase + 5768] := 1836016416;
+  MemL[MsgBase + 5772] := 1702131056;
+  MemL[MsgBase + 5776] := 1701978212;
+  MemL[MsgBase + 5780] := 1685221219;
+  MemL[MsgBase + 5784] := 1701716083;
+  MemL[MsgBase + 5788] := 1684370547;
+  MemL[MsgBase + 5792] := 1869575200;
+  MemL[MsgBase + 5796] := 1701143584;
+  MemL[MsgBase + 5800] := 7957616;
+  { WITH of computed records nested too deeply }
+  MemL[MsgBase + 5824] := 1953392919;
+  MemL[MsgBase + 5828] := 1634628197;
+  MemL[MsgBase + 5832] := 1847605868;
+  MemL[MsgBase + 5836] := 1230446703;
+  MemL[MsgBase + 5840] := 1931495508;
+  MemL[MsgBase + 5844] := 1937010540;
+  { internal: no WITH slots }
+  MemL[MsgBase + 5888] := 1414481685;
+  MemL[MsgBase + 5892] := 1936269391;
+  MemL[MsgBase + 5896] := 1953459744;
+  MemL[MsgBase + 5900] := 1886745376;
+  MemL[MsgBase + 5904] := 1953656688;
+  MemL[MsgBase + 5908] := 25701;
+  { GOTO is not supported }
+  MemL[MsgBase + 5952] := 1952805653;
+  MemL[MsgBase + 5956] := 1918989856;
+  MemL[MsgBase + 5960] := 1818386793;
+  MemL[MsgBase + 5964] := 2019893349;
+  MemL[MsgBase + 5968] := 1952671088;
+  MemL[MsgBase + 5972] := 25701;
+  { set variable expected }
+  MemL[MsgBase + 6016] := 1685221142;
+  MemL[MsgBase + 6020] := 1818324585;
+  MemL[MsgBase + 6024] := 1818326560;
+  MemL[MsgBase + 6028] := 1696621941;
+  MemL[MsgBase + 6032] := 1667592312;
+  MemL[MsgBase + 6036] := 6579572;
+  { ordinal value expected }
+  MemL[MsgBase + 6080] := 1230521624;
+  MemL[MsgBase + 6084] := 1970217044;
+  MemL[MsgBase + 6088] := 1684632436;
+  MemL[MsgBase + 6092] := 543236197;
+  MemL[MsgBase + 6096] := 1668248176;
+  MemL[MsgBase + 6100] := 1920296037;
+  MemL[MsgBase + 6104] := 101;
+  { EXIT outside a procedure }
+  MemL[MsgBase + 6144] := 1230521634;
+  MemL[MsgBase + 6148] := 1769414740;
+  MemL[MsgBase + 6152] := 1629513844;
+  MemL[MsgBase + 6156] := 1818326560;
+  MemL[MsgBase + 6160] := 1763730805;
+  MemL[MsgBase + 6164] := 1868963955;
+  MemL[MsgBase + 6168] := 1969627250;
+  MemL[MsgBase + 6172] := 1769235310;
+  MemL[MsgBase + 6176] := 7564911;
+  { EXIT with a value is for functions }
+  MemL[MsgBase + 6208] := 1635021586;
+  MemL[MsgBase + 6212] := 1701668212;
+  MemL[MsgBase + 6216] := 1696625774;
+  MemL[MsgBase + 6220] := 1667592312;
+  MemL[MsgBase + 6224] := 6579572;
+  { statement expected }
+  MemL[MsgBase + 6272] := 1701406227;
+  MemL[MsgBase + 6276] := 1847616620;
+  MemL[MsgBase + 6280] := 543518049;
+  MemL[MsgBase + 6284] := 1701869669;
+  MemL[MsgBase + 6288] := 1684370531;
+  { field name expected }
+  MemL[MsgBase + 6336] := 1869575182;
+  MemL[MsgBase + 6340] := 1851878688;
+  MemL[MsgBase + 6344] := 1634607225;
+  MemL[MsgBase + 6348] := 7562605;
+  { too many names }
+  MemL[MsgBase + 6400] := 1734439962;
+  MemL[MsgBase + 6404] := 1701406240;
+  MemL[MsgBase + 6408] := 1864393836;
+  MemL[MsgBase + 6412] := 2037653618;
+  MemL[MsgBase + 6416] := 1696621936;
+  MemL[MsgBase + 6420] := 1667592312;
+  MemL[MsgBase + 6424] := 6579572;
+  { tag field or type expected }
+  MemL[MsgBase + 6464] := 1920234260;
+  MemL[MsgBase + 6468] := 543649385;
+  MemL[MsgBase + 6472] := 1735288172;
+  MemL[MsgBase + 6476] := 824207476;
+  MemL[MsgBase + 6480] := 892481070;
+  MemL[MsgBase + 6484] := 53;
+  { string length 1..255 }
+  MemL[MsgBase + 6528] := 1887007765;
+  MemL[MsgBase + 6532] := 2019893349;
+  MemL[MsgBase + 6536] := 1952671088;
+  MemL[MsgBase + 6540] := 1629512805;
+  MemL[MsgBase + 6544] := 1919251558;
+  MemL[MsgBase + 6548] := 24096;
+  { type expected after ^ }
+  MemL[MsgBase + 6592] := 1869575193;
+  MemL[MsgBase + 6596] := 1851878688;
+  MemL[MsgBase + 6600] := 1868963961;
+  MemL[MsgBase + 6604] := 1918990194;
+  MemL[MsgBase + 6608] := 1869619300;
+  MemL[MsgBase + 6612] := 1702129257;
+  MemL[MsgBase + 6616] := 29554;
+  { too many forward pointers }
+  MemL[MsgBase + 6656] := 544497940;
+  MemL[MsgBase + 6660] := 1953722221;
+  MemL[MsgBase + 6664] := 1679833120;
+  MemL[MsgBase + 6668] := 1852140905;
+  MemL[MsgBase + 6672] := 1852795251;
+  MemL[MsgBase + 6676] := 115;
+  { at most 8 dimensions }
+  MemL[MsgBase + 6720] := 1684103696;
+  MemL[MsgBase + 6724] := 1920098592;
+  MemL[MsgBase + 6728] := 1646295393;
+  MemL[MsgBase + 6732] := 1684960623;
+  MemL[MsgBase + 6736] := 115;
+  { bad array bounds }
+  MemL[MsgBase + 6784] := 1920098583;
+  MemL[MsgBase + 6788] := 1814067553;
+  MemL[MsgBase + 6792] := 1701278305;
+  MemL[MsgBase + 6796] := 1752440946;
+  MemL[MsgBase + 6800] := 908095073;
+  MemL[MsgBase + 6804] := 1112219700;
+  { array larger than 64 KB }
+  MemL[MsgBase + 6848] := 1920098575;
+  MemL[MsgBase + 6852] := 1948285281;
+  MemL[MsgBase + 6856] := 1814065007;
+  MemL[MsgBase + 6860] := 1701278305;
+  { array too large }
+  MemL[MsgBase + 6912] := 1835101709;
+  MemL[MsgBase + 6916] := 2019893349;
+  MemL[MsgBase + 6920] := 1952671088;
+  MemL[MsgBase + 6924] := 25701;
+  { name expected }
+  MemL[MsgBase + 6976] := 1952805663;
+  MemL[MsgBase + 6980] := 543584032;
+  MemL[MsgBase + 6984] := 1864396385;
+  MemL[MsgBase + 6988] := 1852400754;
+  MemL[MsgBase + 6992] := 1948281953;
+  MemL[MsgBase + 6996] := 543518841;
+  MemL[MsgBase + 7000] := 1701869669;
+  MemL[MsgBase + 7004] := 1684370531;
+  { set of an ordinal type expected }
+  MemL[MsgBase + 7040] := 1818846766;
+  MemL[MsgBase + 7044] := 2037653605;
+  MemL[MsgBase + 7048] := 544433520;
+  MemL[MsgBase + 7052] := 543519329;
+  MemL[MsgBase + 7056] := 544501614;
+  MemL[MsgBase + 7060] := 1886418291;
+  MemL[MsgBase + 7064] := 1702130287;
+  MemL[MsgBase + 7068] := 1965046628;
+  MemL[MsgBase + 7072] := 1948280179;
+  MemL[MsgBase + 7076] := 1142973800;
+  MemL[MsgBase + 7080] := 1965060975;
+  MemL[MsgBase + 7084] := 7629166;
+  { file types are not supported; use the Dos unit }
+  MemL[MsgBase + 7104] := 1802401037;
+  MemL[MsgBase + 7108] := 1853321070;
+  MemL[MsgBase + 7112] := 1887007776;
+  MemL[MsgBase + 7116] := 8293;
+  { unknown type  }
+  MemL[MsgBase + 7168] := 1920234255;
+  MemL[MsgBase + 7172] := 543649385;
+  MemL[MsgBase + 7176] := 544173940;
+  MemL[MsgBase + 7180] := 1735290732;
+  { string too long }
+  MemL[MsgBase + 7232] := 544173577;
+  MemL[MsgBase + 7236] := 1818585446;
+  MemL[MsgBase + 7240] := 8292;
+  { no field  }
+  MemL[MsgBase + 7296] := 1396850982;
+  MemL[MsgBase + 7300] := 1414876239;
+  MemL[MsgBase + 7304] := 1936269381;
+  MemL[MsgBase + 7308] := 1919903264;
+  MemL[MsgBase + 7312] := 1701736224;
+  MemL[MsgBase + 7316] := 1918989856;
+  MemL[MsgBase + 7320] := 1818386793;
+  MemL[MsgBase + 7324] := 1952522341;
+  MemL[MsgBase + 7328] := 1948279072;
+  MemL[MsgBase + 7332] := 6647145;
+  { ABSOLUTE is for one variable at a time }
+  MemL[MsgBase + 7360] := 1918989856;
+  MemL[MsgBase + 7364] := 1818386793;
+  MemL[MsgBase + 7368] := 2019893349;
+  MemL[MsgBase + 7372] := 1952671088;
+  MemL[MsgBase + 7376] := 1629512805;
+  MemL[MsgBase + 7380] := 1919251558;
+  MemL[MsgBase + 7384] := 1396850976;
+  MemL[MsgBase + 7388] := 1414876239;
+  MemL[MsgBase + 7392] := 69;
+  { variable expected after ABSOLUTE }
+  MemL[MsgBase + 7424] := 1396850997;
+  MemL[MsgBase + 7428] := 1414876239;
+  MemL[MsgBase + 7432] := 1986994245;
+  MemL[MsgBase + 7436] := 1629516389;
+  MemL[MsgBase + 7440] := 1918987296;
+  MemL[MsgBase + 7444] := 1814062439;
+  MemL[MsgBase + 7448] := 1818321775;
+  MemL[MsgBase + 7452] := 1918989856;
+  MemL[MsgBase + 7456] := 1818386793;
+  MemL[MsgBase + 7460] := 1936269413;
+  MemL[MsgBase + 7464] := 1953459744;
+  MemL[MsgBase + 7468] := 1886745376;
+  MemL[MsgBase + 7472] := 1953656688;
+  MemL[MsgBase + 7476] := 25701;
+  { ABSOLUTE over a large local variable is not supported }
+  MemL[MsgBase + 7488] := 1396851003;
+  MemL[MsgBase + 7492] := 1414876239;
+  MemL[MsgBase + 7496] := 1970217029;
+  MemL[MsgBase + 7500] := 1684632436;
+  MemL[MsgBase + 7504] := 1633820773;
+  MemL[MsgBase + 7508] := 807431022;
+  MemL[MsgBase + 7512] := 544434464;
+  MemL[MsgBase + 7516] := 544370534;
+  MemL[MsgBase + 7520] := 1886218611;
+  MemL[MsgBase + 7524] := 1981834604;
+  MemL[MsgBase + 7528] := 1634300513;
+  MemL[MsgBase + 7532] := 1936026722;
+  MemL[MsgBase + 7536] := 1684955424;
+  MemL[MsgBase + 7540] := 1667592736;
+  MemL[MsgBase + 7544] := 1935962735;
+  { ABSOLUTE outside bank 0 is for simple variables and records }
+  MemL[MsgBase + 7552] := 1768843568;
+  MemL[MsgBase + 7556] := 1818323316;
+  MemL[MsgBase + 7560] := 1818326560;
+  MemL[MsgBase + 7564] := 544433525;
+  MemL[MsgBase + 7568] := 544370534;
+  MemL[MsgBase + 7572] := 543518319;
+  MemL[MsgBase + 7576] := 1651469415;
+  MemL[MsgBase + 7580] := 1981836385;
+  MemL[MsgBase + 7584] := 1634300513;
+  MemL[MsgBase + 7588] := 543517794;
+  MemL[MsgBase + 7592] := 1629516897;
+  MemL[MsgBase + 7596] := 1835627552;
+  MemL[MsgBase + 7600] := 101;
+  { initial values for one global variable at a time }
+  MemL[MsgBase + 7616] := 1918988311;
+  MemL[MsgBase + 7620] := 1952804193;
+  MemL[MsgBase + 7624] := 1847620197;
+  MemL[MsgBase + 7628] := 543518049;
+  MemL[MsgBase + 7632] := 1701869669;
+  MemL[MsgBase + 7636] := 1684370531;
+  { parameter name expected }
+  MemL[MsgBase + 7680] := 1918988311;
+  MemL[MsgBase + 7684] := 1952804193;
+  MemL[MsgBase + 7688] := 1948283493;
+  MemL[MsgBase + 7692] := 543518841;
+  MemL[MsgBase + 7696] := 1701869669;
+  MemL[MsgBase + 7700] := 1684370531;
+  { parameter type expected }
+  MemL[MsgBase + 7744] := 1853187622;
+  MemL[MsgBase + 7748] := 1869182051;
+  MemL[MsgBase + 7752] := 1701978222;
+  MemL[MsgBase + 7756] := 1953265011;
+  MemL[MsgBase + 7760] := 1918967923;
+  MemL[MsgBase + 7764] := 1952522341;
+  MemL[MsgBase + 7768] := 1936682272;
+  MemL[MsgBase + 7772] := 892477556;
+  MemL[MsgBase + 7776] := 2036473910;
+  MemL[MsgBase + 7780] := 7562612;
+  { function results are at most 256 bytes }
+  MemL[MsgBase + 7808] := 1919705360;
+  MemL[MsgBase + 7812] := 2036621669;
+  MemL[MsgBase + 7816] := 1667589152;
+  MemL[MsgBase + 7820] := 1701994860;
+  MemL[MsgBase + 7824] := 100;
+  { already declared }
+  MemL[MsgBase + 7872] := 1869770780;
+  MemL[MsgBase + 7876] := 1969513827;
+  MemL[MsgBase + 7880] := 544433522;
+  MemL[MsgBase + 7884] := 1953719662;
+  MemL[MsgBase + 7888] := 1948279909;
+  MemL[MsgBase + 7892] := 1679847279;
+  MemL[MsgBase + 7896] := 1819305317;
+  MemL[MsgBase + 7900] := 121;
+  { procedures nested too deeply }
+  MemL[MsgBase + 7936] := 1869575204;
+  MemL[MsgBase + 7940] := 1851878688;
+  MemL[MsgBase + 7944] := 1953702009;
+  MemL[MsgBase + 7948] := 1952675186;
+  MemL[MsgBase + 7952] := 1684370037;
+  MemL[MsgBase + 7956] := 1818326560;
+  MemL[MsgBase + 7960] := 1881171317;
+  MemL[MsgBase + 7964] := 1835102817;
+  MemL[MsgBase + 7968] := 1919251557;
+  MemL[MsgBase + 7972] := 115;
+  { too many structured value parameters }
+  MemL[MsgBase + 8000] := 1650551832;
+  MemL[MsgBase + 8004] := 544435301;
+  MemL[MsgBase + 8008] := 543519329;
+  MemL[MsgBase + 8012] := 544501614;
+  MemL[MsgBase + 8016] := 1886418291;
+  MemL[MsgBase + 8020] := 1702130287;
+  MemL[MsgBase + 8024] := 100;
+  { labels are not supported }
+  MemL[MsgBase + 8064] := 1195721230;
+  MemL[MsgBase + 8068] := 1696616009;
+  MemL[MsgBase + 8072] := 1667592312;
+  MemL[MsgBase + 8076] := 6579572;
+  { BEGIN expected }
+  MemL[MsgBase + 8128] := 1869770779;
+  MemL[MsgBase + 8132] := 1969513827;
+  MemL[MsgBase + 8136] := 1847616882;
+  MemL[MsgBase + 8140] := 1763734639;
+  MemL[MsgBase + 8144] := 1701605485;
+  MemL[MsgBase + 8148] := 1953391981;
+  MemL[MsgBase + 8152] := 540697701;
+  { procedure not implemented:  }
+  MemL[MsgBase + 8192] := 1768846610;
+  MemL[MsgBase + 8196] := 1634607220;
+  MemL[MsgBase + 8200] := 1696621933;
+  MemL[MsgBase + 8204] := 1667592312;
+  MemL[MsgBase + 8208] := 6579572;
+  { unit name expected }
+  MemL[MsgBase + 8256] := 1869575182;
+  MemL[MsgBase + 8260] := 1851878688;
+  MemL[MsgBase + 8264] := 1853169785;
+  MemL[MsgBase + 8268] := 7566441;
+  { too many units }
+  MemL[MsgBase + 8320] := 1696611082;
+  MemL[MsgBase + 8324] := 1667592312;
+  MemL[MsgBase + 8328] := 6579572;
+  { ; expected }
+  MemL[MsgBase + 8384] := 1768846626;
+  MemL[MsgBase + 8388] := 1965060980;
+  MemL[MsgBase + 8392] := 1696621939;
+  MemL[MsgBase + 8396] := 543712097;
+  MemL[MsgBase + 8400] := 1701344367;
+  MemL[MsgBase + 8404] := 1852383346;
+  MemL[MsgBase + 8408] := 1663066400;
+  MemL[MsgBase + 8412] := 1818456681;
+  MemL[MsgBase + 8416] := 2112101;
+  { units use each other in a circle:  }
+  MemL[MsgBase + 8448] := 544173585;
+  MemL[MsgBase + 8452] := 1836019570;
+  MemL[MsgBase + 8456] := 1919903264;
+  MemL[MsgBase + 8460] := 1768846624;
+  MemL[MsgBase + 8464] := 8308;
+  { no room for unit  }
+  MemL[MsgBase + 8512] := 1768846608;
+  MemL[MsgBase + 8516] := 1869488244;
+  MemL[MsgBase + 8520] := 1868963956;
+  MemL[MsgBase + 8524] := 979660405;
+  MemL[MsgBase + 8528] := 32;
+  { unit not found:  }
+  MemL[MsgBase + 8576] := 1229870349;
+  MemL[MsgBase + 8580] := 2019893332;
+  MemL[MsgBase + 8584] := 1952671088;
+  MemL[MsgBase + 8588] := 25701;
+  { UNIT expected }
+  MemL[MsgBase + 8640] := 1701344268;
+  MemL[MsgBase + 8644] := 1768846624;
+  MemL[MsgBase + 8648] := 1852383348;
+  MemL[MsgBase + 8652] := 32;
+  { the unit in  }
+  MemL[MsgBase + 8704] := 1414416658;
+  MemL[MsgBase + 8708] := 1095127621;
+  MemL[MsgBase + 8712] := 1696613699;
+  MemL[MsgBase + 8716] := 1667592312;
+  MemL[MsgBase + 8720] := 6579572;
+  { INTERFACE expected }
+  MemL[MsgBase + 8768] := 1347242263;
+  MemL[MsgBase + 8772] := 1162691916;
+  MemL[MsgBase + 8776] := 1413567566;
+  MemL[MsgBase + 8780] := 542003017;
+  MemL[MsgBase + 8784] := 1701869669;
+  MemL[MsgBase + 8788] := 1684370531;
+  { IMPLEMENTATION expected }
+  MemL[MsgBase + 8832] := 1696607777;
+  MemL[MsgBase + 8836] := 1667592312;
+  MemL[MsgBase + 8840] := 543450484;
+  MemL[MsgBase + 8844] := 1948284001;
+  MemL[MsgBase + 8848] := 1696621928;
+  MemL[MsgBase + 8852] := 1864393838;
+  MemL[MsgBase + 8856] := 1752440934;
+  MemL[MsgBase + 8860] := 1853169765;
+  MemL[MsgBase + 8864] := 29801;
+  { . expected at the end of the unit }
+  MemL[MsgBase + 8896] := 1869770773;
+  MemL[MsgBase + 8900] := 1835102823;
+  MemL[MsgBase + 8904] := 1835101728;
+  MemL[MsgBase + 8908] := 2019893349;
+  MemL[MsgBase + 8912] := 1952671088;
+  MemL[MsgBase + 8916] := 25701;
+  { program name expected }
+  MemL[MsgBase + 8960] := 1696607780;
+  MemL[MsgBase + 8964] := 1667592312;
+  MemL[MsgBase + 8968] := 543450484;
+  MemL[MsgBase + 8972] := 1948284001;
+  MemL[MsgBase + 8976] := 1696621928;
+  MemL[MsgBase + 8980] := 1864393838;
+  MemL[MsgBase + 8984] := 1752440934;
+  MemL[MsgBase + 8988] := 1919950949;
+  MemL[MsgBase + 8992] := 1634887535;
+  MemL[MsgBase + 8996] := 109;
+  { . expected at the end of the program }
+  msgsBuilt := true;
+end;
+
+{ message n from the table, then extra }
+procedure ErrorN(n: integer; const extra: string);
+var i, k: integer;
+    a: longint;
+begin
+  if not msgsBuilt then BuildMessages;
+  a := MsgBase + longint(n) * 64;
+  k := Mem[a];
+  ErrMsg[0] := chr(k);
+  for i := 1 to k do ErrMsg[i] := chr(Mem[a + i]);
+  if extra <> '' then ErrMsg := ErrMsg + extra;
+  ErrUnit := curFile;
+  ErrLine := tokLine;
+  ErrCol := tokCol;
+  ThrowError;
+end;
+
 { ================================================================ scanner }
+const
+  { directives: the defined names (16 bytes each) and the stack of open
+    include files (32 bytes a level) are in expansion RAM, not in bank 0 }
+  DefBase = $3D0000;  MaxDef = 32;
+  IncBase = $3D0400;  MaxInc = 8;
+
+{ the end of an include file: back to the text that included it }
+procedure IncludeEnd;
+var a: longint;
+    k: integer;
+begin
+  incDepth := incDepth - 1;
+  a := IncBase + longint(incDepth) * 32;
+  curBase := MemL[a]; srcPos := MemL[a + 4]; srcEnd := MemL[a + 8];
+  line := MemW[a + 12]; col := MemW[a + 14]; ch := chr(Mem[a + 16]);
+  for k := 0 to Mem[a + 17] do curFile[k] := chr(Mem[a + 17 + k]);
+end;
+
 procedure NextCh;
 begin
   if srcPos < srcEnd then begin
@@ -228,7 +1325,8 @@ begin
     else col := col + 1;
     if ch = #13 then ch := ' ';
     if ch = #9 then ch := ' ';
-  end else ch := #0;
+  end else if incDepth > 0 then IncludeEnd
+  else ch := #0;
 end;
 
 procedure InitKeywords;
@@ -261,13 +1359,157 @@ begin
   end;
 end;
 
+{ a directive's word, in upper case (built char by char: no string
+  temporaries, Next can run deep in an expression) }
+procedure DirWord(var s: TName);
+var n: integer;
+begin
+  n := 0;
+  while ((ch >= 'A') and (ch <= 'Z')) or ((ch >= 'a') and (ch <= 'z')) or ((ch >= '0') and (ch <= '9')) or
+        (ch = '_') or (ch = '.') or (ch = '-') or (ch = '~') do begin
+    if n < 15 then begin n := n + 1; s[n] := UpCase(ch); end;
+    NextCh;
+  end;
+  s[0] := chr(n);
+end;
+
+function DefIndex(const n: TName): integer;
+var i, k: integer;
+    a: longint;
+    ok: boolean;
+begin
+  DefIndex := 0;
+  for i := 1 to nDef do begin
+    a := DefBase + longint(i - 1) * 16;
+    if Mem[a] = length(n) then begin
+      ok := true;
+      for k := 1 to length(n) do if Mem[a + k] <> ord(n[k]) then ok := false;
+      if ok then begin DefIndex := i; exit; end;
+    end;
+  end;
+end;
+
+procedure DefineName(const n: TName);
+var k: integer;
+    a: longint;
+begin
+  if (n = '') or (DefIndex(n) <> 0) then exit;
+  if nDef >= MaxDef then ErrorN(1, '');
+  a := DefBase + longint(nDef) * 16;
+  nDef := nDef + 1;
+  for k := 0 to length(n) do Mem[a + k] := ord(n[k]);
+end;
+
+procedure UndefName(const n: TName);
+var i, k: integer;
+begin
+  i := DefIndex(n);
+  if i = 0 then exit;
+  { the last one takes its place }
+  for k := 0 to 15 do Mem[DefBase + longint(i - 1) * 16 + k] := Mem[DefBase + longint(nDef - 1) * 16 + k];
+  nDef := nDef - 1;
+end;
+
+{ skip the text of a false branch, up to the matching ELSE (when elseOk)
+  or ENDIF; IFDEFs inside are skipped whole, comments and strings too }
+procedure SkipBranch(elseOk: boolean);
+var nest: integer;
+    d: TName;
+begin
+  nest := 0;
+  while ch <> #0 do begin
+    if ch = '{' then begin
+      NextCh;
+      if ch = '$' then begin
+        NextCh;
+        DirWord(d);
+        if (d = 'IFDEF') or (d = 'IFNDEF') or (d = 'IFOPT') then nest := nest + 1
+        else if d = 'ENDIF' then begin
+          if nest = 0 then begin SkipComment('}'); condDepth := condDepth - 1; exit; end;
+          nest := nest - 1;
+        end
+        else if (d = 'ELSE') and (nest = 0) and elseOk then begin SkipComment('}'); exit; end;
+      end;
+      SkipComment('}');
+    end
+    else if ch = '''' then begin
+      NextCh;
+      while (ch <> '''') and (ch <> #10) and (ch <> #0) do NextCh;
+      NextCh;
+    end
+    else if ch = '(' then begin
+      NextCh;
+      if ch = '*' then begin NextCh; SkipComment(')'); end;
+    end
+    else NextCh;
+  end;
+  ErrorN(2, '');
+end;
+
+{ include file: the text goes on in the file; NextCh comes back at its end }
+procedure IncludeFile(const n: TName);
+var a, got: longint;
+    k: integer;
+    fname: string[12];
+begin
+  if incDepth >= MaxInc then ErrorN(3, '');
+  fname := n;
+  if Pos('.', fname) = 0 then fname := fname + '.PAS';
+  if unitTop >= $2F0000 then ErrorN(4, fname);
+  got := LoadFile(fname, unitTop, $300000 - unitTop);
+  if got < 0 then ErrorN(5, fname + ' (' + DosErrorText(DosError) + ')');
+  a := IncBase + longint(incDepth) * 32;
+  MemL[a] := curBase; MemL[a + 4] := srcPos; MemL[a + 8] := srcEnd;
+  MemW[a + 12] := line; MemW[a + 14] := col; Mem[a + 16] := ord(ch);
+  for k := 0 to length(curFile) do Mem[a + 17 + k] := ord(curFile[k]);
+  incDepth := incDepth + 1;
+  curFile := fname;
+  curBase := unitTop; srcPos := 0; srcEnd := got; line := 1; col := 0;
+  unitTop := (unitTop + got + 255) and $FFFF00;
+  NextCh;
+end;
+
+{ after the dollar of a directive: DEFINE UNDEF IFDEF IFNDEF ELSE ENDIF and
+  I / INCLUDE; the others (SCHUB, R+ ...) are skipped like comments }
+procedure Directive;
+var d, a: TName;
+    yes: boolean;
+begin
+  DirWord(d);
+  while ch = ' ' do NextCh;
+  if (d = 'I') and (ch <> '+') and (ch <> '-') then d := 'INCLUDE';
+  DirWord(a);
+  if d = 'DEFINE' then DefineName(a)
+  else if d = 'UNDEF' then UndefName(a)
+  else if (d = 'IFDEF') or (d = 'IFNDEF') then begin
+    condDepth := condDepth + 1;
+    yes := DefIndex(a) <> 0;
+    if d = 'IFNDEF' then yes := not yes;
+    if not yes then begin SkipComment('}'); SkipBranch(true); exit; end;
+  end
+  else if d = 'ELSE' then begin
+    if condDepth = 0 then ErrorN(6, '');
+    SkipComment('}'); SkipBranch(false); exit;
+  end
+  else if d = 'ENDIF' then begin
+    if condDepth = 0 then ErrorN(7, '');
+    condDepth := condDepth - 1;
+  end
+  else if d = 'INCLUDE' then begin
+    SkipComment('}');
+    IncludeFile(a);
+    exit;
+  end;
+  SkipComment('}');
+end;
+
 { IEEE single bits of a real written as text }
 function RealOf(const t: string): longint;
 var u: TRealBits;
     code: integer;
 begin
   Val(t, u.r, code);
-  if code <> 0 then Error('bad real number ' + t);
+  if code <> 0 then ErrorN(8, t);
   RealOf := u.l;
 end;
 
@@ -293,7 +1535,11 @@ begin
   repeat
     done := true;
     while (ch = ' ') or (ch = #10) do NextCh;
-    if ch = '{' then begin SkipComment('}'); done := false; end;
+    if ch = '{' then begin
+      NextCh;
+      if ch = '$' then begin NextCh; Directive; end else SkipComment('}');
+      done := false;
+    end;
   until done;
   tokLine := line; tokCol := col;
   case ch of
@@ -348,7 +1594,7 @@ begin
         if ch = '''' then begin
           NextCh;
           repeat
-            if (ch = #0) or (ch = #10) then Error('string not closed');
+            if (ch = #0) or (ch = #10) then ErrorN(9, '');
             if ch = '''' then begin
               NextCh;
               if ch = '''' then begin str := str + ''''; NextCh; end
@@ -410,7 +1656,7 @@ begin
     '^': begin sym := sCaret; NextCh; end;
     '@': begin sym := sAt; NextCh; end;
   else
-    Error('unexpected character ''' + ch + '''');
+    ErrorN(10, ch + '''');
   end;
 end;
 
@@ -450,8 +1696,8 @@ end;
 { ================================================================ code }
 procedure Gen(b: integer);
 begin
-  if rv then begin if pc > $1FFF0 then Error('program code larger than 128 KB'); end
-  else if pc > $FFF0 then Error('program code larger than 64 KB');
+  if rv then begin if pc > $1FFF0 then ErrorN(11, ''); end
+  else if pc > $FFF0 then ErrorN(12, '');
   Mem[cBase + pc] := b;
   pc := pc + 1;
 end;
@@ -687,7 +1933,7 @@ end;
 { ================================================================ tables }
 function NewType(form: byte; size: word): integer;
 begin
-  if nType >= MaxType then Error('too many types');
+  if nType >= MaxType then ErrorN(13, '');
   nType := nType + 1;
   types[nType].form := form;
   types[nType].size := size;
@@ -702,7 +1948,7 @@ end;
 
 function NewSym(const n: TName; kind: byte; typ: integer): integer;
 begin
-  if nSym >= MaxSym then Error('too many identifiers');
+  if nSym >= MaxSym then ErrorN(14, '');
   nSym := nSym + 1;
   with syms[nSym] do begin
     name := n; next := 0; first := 0; npar := 0; parsz := 0; flags := 0;
@@ -819,7 +2065,7 @@ function RtAdr(const n: TName): longint;
 var i: integer;
 begin
   i := ExpFind(n);
-  if i < 0 then Error('cartridge runtime incomplete: ' + n);
+  if i < 0 then ErrorN(15, n);
   RtAdr := ExpValue(i);
 end;
 
@@ -979,7 +2225,7 @@ function LibProc(const n: TName): integer;
 var s: integer;
 begin
   s := Find(n);
-  if (s = 0) or (syms[s].kind <> skProc) then Error('library routine missing: ' + n);
+  if (s = 0) or (syms[s].kind <> skProc) then ErrorN(16, n);
   LibProc := s;
 end;
 
@@ -1007,8 +2253,8 @@ var i: longint;
 begin
   if rv then begin
     if size >= 2 then dataTop := (dataTop + 3) and not longint(3);
-    if dataTop + size > $50000 then Error('too many global variables');
-  end else if UserData + dataTop + size > $9000 then Error('too many global variables');
+    if dataTop + size > $50000 then ErrorN(17, '');
+  end else if UserData + dataTop + size > $9000 then ErrorN(17, '');
   AllocData := dataOrg + dataTop;
   if size > 16 then ZeroMem(DataImg + dataTop, size)
   else for i := 0 to size - 1 do Mem[DataImg + dataTop + i] := 0;
@@ -1029,7 +2275,7 @@ function WithSz: integer; begin if rv then WithSz := 16 else WithSz := 8; end;
 
 function AllocLocal(size: integer): integer;
 begin
-  if ctxFrozen[curLev] then Error('declare variables before nested procedures');
+  if ctxFrozen[curLev] then ErrorN(18, '');
   if rv then ctxLoc[curLev] := (ctxLoc[curLev] + 3) and $FFFC;
   AllocLocal := ctxLoc[curLev];
   ctxLoc[curLev] := ctxLoc[curLev] + size;
@@ -1040,8 +2286,8 @@ procedure LocalVar(s: integer);
 begin
   if types[syms[s].typ].size <= 8 then syms[s].adr := AllocLocal(types[syms[s].typ].size)
   else begin
-    if ctxFrozen[curLev] then Error('declare variables before nested procedures');
-    if defN[curLev] >= 24 then Error('too many large local variables');
+    if ctxFrozen[curLev] then ErrorN(18, '');
+    if defN[curLev] >= 24 then ErrorN(19, '');
     defN[curLev] := defN[curLev] + 1;
     defSym[curLev, defN[curLev]] := s;
   end;
@@ -1119,7 +2365,7 @@ begin
       mStk: begin RPop(rA0); RAddi(rA0, rA0, x.a); end;
       mReg: ;
     else
-      Error('variable expected');
+      ErrorN(20, '');
     end;
     x.mode := mReg; x.a := 0;
     exit;
@@ -1130,7 +2376,7 @@ begin
     mInd: if x.a <> 0 then begin Gen($18); Op16($69, x.a); end;
     mReg: ;
   else
-    Error('variable expected');
+    ErrorN(20, '');
   end;
   x.mode := mReg;
   x.a := 0;
@@ -1161,7 +2407,7 @@ begin
         x.typ := tBool;
       end;
     else
-      Error('value expected');
+      ErrorN(21, '');
     end;
     x.mode := mReg;
     exit;
@@ -1206,7 +2452,7 @@ begin
       exit;
     end;
   else
-    Error('value expected');
+    ErrorN(21, '');
   end;
   if (sz = 1) and (x.mode <> mConst) and (x.mode <> mReg) then begin
     if sg then SignExt8 else Op16($29, $FF);
@@ -1219,9 +2465,9 @@ procedure CondTrue(c, skip: integer);
 var b: integer;
 begin
   if rv then begin
-    if skip <> 3 then Error('internal: condition skip');
+    if skip <> 3 then ErrorN(22, '');
     if c = cEq then RB(0, rA0, rZero, 8) else if c = cNe then RB(1, rA0, rZero, 8)
-    else Error('internal: condition code');
+    else ErrorN(23, '');
     exit;
   end;
   if c > 10 then begin
@@ -1319,7 +2565,7 @@ end;
   so that every path that jumps away leaves the temporary stack balanced }
 procedure ToCond(var x: TItem; n0: integer);
 begin
-  if x.typ <> tBool then Error('boolean expected');
+  if x.typ <> tBool then ErrorN(24, '');
   if x.mode <> mCond then begin
     Load(x);
     ReleaseN(nTmp - n0, false, true);
@@ -1331,7 +2577,7 @@ end;
 { jump if false: adds to the forward chain }
 procedure JumpFalse(var x: TItem; var chain: longint);
 begin
-  if x.typ <> tBool then Error('boolean expression expected');
+  if x.typ <> tBool then ErrorN(25, '');
   if x.mode = mConst then begin
     ReleaseTmp(false, false);
     if x.a = 0 then BrlFwd(chain);
@@ -1346,7 +2592,7 @@ end;
 
 procedure JumpFalseTo(var x: TItem; target: longint);
 begin
-  if x.typ <> tBool then Error('boolean expression expected');
+  if x.typ <> tBool then ErrorN(25, '');
   if x.mode = mConst then begin
     ReleaseTmp(false, false);
     if x.a = 0 then BrlTo(target);
@@ -1403,7 +2649,7 @@ begin
     x.mode := mReg; x.typ := tString; x.tmp := true;
     exit;
   end;
-  if types[x.typ].form <> fStr then Error('string expected');
+  if types[x.typ].form <> fStr then ErrorN(26, '');
   LoadAdr(x);
 end;
 
@@ -1421,7 +2667,7 @@ end;
 procedure LoadReal(var x: TItem);
 begin
   if IsReal(x.typ) then begin Load(x); exit; end;
-  if not IsInt(x.typ) then Error('number expected');
+  if not IsInt(x.typ) then ErrorN(27, '');
   if x.mode = mConst then begin
     x.a := IntToRealBits(x.a); x.typ := tReal; Load(x); exit;
   end;
@@ -1440,7 +2686,7 @@ begin
     LoadReal(x); exit;
   end;
   if tf = fInt then begin
-    if xf <> fInt then Error('integer expected');
+    if xf <> fInt then ErrorN(28, '');
     if (types[t].size = 4) and (types[x.typ].size < 4) then begin
       if x.mode = mConst then begin
         if rv then RLi(rA0, x.a) else begin LdaImm(x.a); LdxImm(x.a shr 16); end;
@@ -1451,22 +2697,22 @@ begin
     Load(x); exit;
   end;
   if tf = fBool then begin
-    if xf <> fBool then Error('boolean expected');
+    if xf <> fBool then ErrorN(24, '');
     LoadBool(x); exit;
   end;
   if tf = fChar then begin
-    if xf <> fChar then Error('char expected');
+    if xf <> fChar then ErrorN(29, '');
     Load(x); exit;
   end;
   if tf = fEnum then begin
-    if x.typ <> t then if not ((xf = fEnum) and (types[x.typ].base = t)) then Error('incompatible types');
+    if x.typ <> t then if not ((xf = fEnum) and (types[x.typ].base = t)) then ErrorN(30, '');
     Load(x); exit;
   end;
   if tf = fPtr then begin
-    if not (xf in [fPtr, fNil]) then Error('pointer expected');
+    if not (xf in [fPtr, fNil]) then ErrorN(31, '');
     Load(x); exit;
   end;
-  Error('incompatible types');
+  ErrorN(30, '');
 end;
 
 { store A (/X) into x }
@@ -1484,7 +2730,7 @@ begin
         RPop(rT1); RLi(rT0, longint($80000000)); RR(0, 6, rT1, rT1, rT0); RSt(sz, rA0, rT1, x.a);
       end;
     else
-      Error('cannot assign to this');
+      ErrorN(32, '');
     end;
     exit;
   end;
@@ -1517,7 +2763,7 @@ begin
       if sz = 1 then Jsl(aStf8) else if sz = 2 then Jsl(aStf16) else Jsl(aStf32);
     end;
   else
-    Error('cannot assign to this');
+    ErrorN(32, '');
   end;
 end;
 
@@ -1527,12 +2773,12 @@ begin
   if rv then begin
     if x.mode = mInd then begin RPush(rA0); x.mode := mStk; end
     else if x.mode = mFar then begin RPush(rA0); x.mode := mFarStk; end
-    else if not (x.mode in [mGlob, mLoc, mFarC]) then Error('variable expected');
+    else if not (x.mode in [mGlob, mLoc, mFarC]) then ErrorN(20, '');
     exit;
   end;
   if x.mode = mInd then begin Gen($48); x.mode := mStk; end
   else if x.mode = mFar then begin Gen($DA); Gen($48); x.mode := mFarStk; end
-  else if not (x.mode in [mGlob, mLoc, mFarC]) then Error('variable expected');
+  else if not (x.mode in [mGlob, mLoc, mFarC]) then ErrorN(20, '');
 end;
 
 { ================================================================ expressions }
@@ -1544,7 +2790,7 @@ function ConstExpr: longint;
 var x: TItem;
 begin
   Expression(x);
-  if x.mode <> mConst then Error('constant expected');
+  if x.mode <> mConst then ErrorN(33, '');
   ConstExpr := x.a;
 end;
 
@@ -1552,9 +2798,9 @@ procedure ParseTypeIdent(var t: integer);
 var s: integer;
 begin
   if sym = sStringKw then begin Next; t := tString; exit; end;
-  if sym <> sIdent then Error('type expected');
+  if sym <> sIdent then ErrorN(34, '');
   s := Find(id);
-  if (s = 0) or (syms[s].kind <> skType) then Error('type expected: ' + id);
+  if (s = 0) or (syms[s].kind <> skType) then ErrorN(35, id);
   t := syms[s].typ;
   Next;
 end;
@@ -1563,7 +2809,7 @@ end;
 procedure Cast(var x: TItem; t: integer);
 begin
   if IsStruct(t) or IsStruct(x.typ) then begin
-    if types[t].size <> types[x.typ].size then Error('invalid type cast');
+    if types[t].size <> types[x.typ].size then ErrorN(36, '');
     x.typ := t; exit;
   end;
   if x.mode = mConst then begin
@@ -1600,14 +2846,14 @@ begin
   repeat
     if sym = sPeriod then begin
       Next;
-      if types[x.typ].form <> fRec then Error('record expected');
-      if sym <> sIdent then Error('field expected');
+      if types[x.typ].form <> fRec then ErrorN(37, '');
+      if sym <> sIdent then ErrorN(38, '');
       f := types[x.typ].fields;
       while (f <> 0) and (syms[f].name <> id) do f := syms[f].next;
-      if f = 0 then Error('unknown field ' + id);
+      if f = 0 then ErrorN(39, id);
       Next;
       if x.mode in [mGlob, mLoc, mInd, mFarC] then x.a := x.a + syms[f].adr
-      else Error('field of this not supported');
+      else ErrorN(40, '');
       x.typ := syms[f].typ;
       if not rv and (x.mode = mLoc) and (x.a + types[x.typ].size > 255) then begin LoadAdr(x); x.mode := mInd; x.a := 0; end;
     end else if sym = sLbrak then begin
@@ -1617,12 +2863,12 @@ begin
         if types[t].form = fStr then begin esz := 1; x.typ := tChar; k := 0; end
         else if types[t].form = fArr then begin
           esz := types[types[t].base].size; x.typ := types[t].base; k := types[t].lo;
-        end else Error('array expected');
-        if not (x.mode in [mGlob, mLoc, mInd]) then Error('cannot index this');
+        end else ErrorN(41, '');
+        if not (x.mode in [mGlob, mLoc, mInd]) then ErrorN(42, '');
         { a computed base address must survive the index expression }
         if x.mode = mInd then begin PushA(2); x.mode := mStk; end;
         Expression(y);
-        if not IsOrd(y.typ) then Error('index must be ordinal');
+        if not IsOrd(y.typ) then ErrorN(43, '');
         if (y.mode = mConst) then begin
           if x.mode = mStk then begin if rv then RPop(rA0) else Gen($68); x.mode := mInd; end;
           x.a := x.a + (y.a - k) * esz;
@@ -1655,7 +2901,7 @@ begin
             mGlob: begin Gen($18); Op16($69, x.a); x.a := 0; end;
             mLoc: begin StaAbs(aT0); Gen($7B); Gen($18); Op16($69, x.a); Gen($18); Op16($6D, aT0); x.a := 0; end;
             mStk: begin Gen($18); Op8($63, 1); Gen($7A); end;      { clc / adc 1,s / ply }
-            mInd: Error('internal: index');
+            mInd: ErrorN(44, '');
           end;
           x.mode := mInd;
         end;
@@ -1664,8 +2910,8 @@ begin
       Expect(sRbrak);
     end else if sym = sCaret then begin
       Next;
-      if types[x.typ].form <> fPtr then Error('pointer expected');
-      if types[x.typ].base = 0 then Error('typed pointer expected');
+      if types[x.typ].form <> fPtr then ErrorN(31, '');
+      if types[x.typ].base = 0 then ErrorN(45, '');
       t := types[x.typ].base;
       Load(x);
       x.mode := mInd; x.a := 0; x.typ := t;
@@ -1709,7 +2955,7 @@ begin
   Expect(sLbrak);
   Expression(y);
   Expect(sRbrak);
-  if not IsInt(y.typ) then Error('address expected');
+  if not IsInt(y.typ) then ErrorN(46, '');
   if sz = 1 then x.typ := tByte else if sz = 2 then x.typ := tWord else x.typ := tLong;
   x.tmp := false;
   if y.mode = mConst then begin x.mode := mFarC; x.a := y.a; end
@@ -1750,10 +2996,10 @@ end;
 procedure VarDesignator(var x: TItem);
 var s: integer;
 begin
-  if sym <> sIdent then Error('variable expected');
+  if sym <> sIdent then ErrorN(20, '');
   if WithField(x) then exit;
   s := Find(id);
-  if (s = 0) or (syms[s].kind <> skVar) then Error('variable expected: ' + id);
+  if (s = 0) or (syms[s].kind <> skVar) then ErrorN(47, id);
   Next;
   Designator(x, s);
 end;
@@ -1767,7 +3013,7 @@ begin
     sPlus: u.r := u.r + v.r;
     sMinus: u.r := u.r - v.r;
     sTimes: u.r := u.r * v.r;
-    sSlash: begin if v.r = 0.0 then Error('division by zero'); u.r := u.r / v.r; end;
+    sSlash: begin if v.r = 0.0 then ErrorN(48, ''); u.r := u.r / v.r; end;
   end;
   RealFold := u.l;
 end;
@@ -1824,14 +3070,14 @@ end;
 procedure RealArith(op: integer; var x, y: TItem);
 var n: TName;
 begin
-  if not IsNum(x.typ) or not IsNum(y.typ) then Error('numbers expected');
+  if not IsNum(x.typ) or not IsNum(y.typ) then ErrorN(49, '');
   case op of
     sPlus: n := '_addreal';
     sMinus: n := '_subreal';
     sTimes: n := '_mulreal';
     sSlash: n := '_divreal';
   else
-    Error('this operator needs integers');
+    ErrorN(50, '');
   end;
   if (x.mode = mConst) and (y.mode = mConst) then begin
     if IsInt(x.typ) then x.a := IntToRealBits(x.a);
@@ -1847,7 +3093,7 @@ end;
 { ---- sets ---- }
 procedure SetAdr(var x: TItem);
 begin
-  if types[x.typ].form <> fSet then Error('set expected');
+  if types[x.typ].form <> fSet then ErrorN(51, '');
   LoadAdr(x);
 end;
 
@@ -1867,11 +3113,11 @@ begin
     repeat
       LdaSlot(1); PushA(2);                            { the set }
       Expression(e);
-      if not IsOrd(e.typ) then Error('ordinal value expected in a set');
+      if not IsOrd(e.typ) then ErrorN(52, '');
       LoadBool(e); PushA(2);
       if sym = sDotdot then begin
         Next; Expression(h);
-        if not IsOrd(h.typ) then Error('ordinal value expected in a set');
+        if not IsOrd(h.typ) then ErrorN(52, '');
         LoadBool(h); PushA(2);
         LibCallPop('_setrange');
       end else LibCallPop('_setincl');
@@ -1919,7 +3165,7 @@ begin
   end;
   Expression(x);
   if n = 'ord' then begin
-    if not IsOrd(x.typ) then Error('ordinal expected');
+    if not IsOrd(x.typ) then ErrorN(53, '');
     if x.mode = mCond then LoadBool(x);
     if x.typ <> tLong then x.typ := tInteger;
   end else if n = 'chr' then begin
@@ -1934,8 +3180,12 @@ begin
         if n = 'succ' then RAddi(rA0, rA0, 1) else RAddi(rA0, rA0, -1);
         RNormSz(rA0, types[t].size, types[t].sgn);
       end else begin
-        if IsLong(t) then Error('succ/pred of longint not supported');
-        if n = 'succ' then Gen($1A) else Gen($3A);
+        if IsLong(t) then begin
+          { clc adc #1 bcc +1 inx / sec sbc #1 bcs +1 dex }
+          if n = 'succ' then begin Gen($18); Op16($69, 1); Op8($90, 1); Gen($E8); end
+          else begin Gen($38); Op16($E9, 1); Op8($B0, 1); Gen($CA); end;
+        end
+        else if n = 'succ' then Gen($1A) else Gen($3A);
       end;
       x.typ := t;
     end;
@@ -1957,7 +3207,7 @@ begin
       if not IsLong(x.typ) then begin RNormSz(rA0, 2, true); x.typ := tInteger; end;
       x.mode := mReg;
     end else begin
-      if IsLong(x.typ) then Error('abs of longint: use the expression');
+      if IsLong(x.typ) then ErrorN(54, '');
       Load(x); Op16($C9, $8000); Op8($90, 4); Op16($49, $FFFF); Gen($1A);
       x.typ := tInteger;
     end;
@@ -1989,7 +3239,7 @@ begin
   end else if n = 'length' then begin
     if types[x.typ].form = fChar then MakeConst(x, 1, tInteger)
     else begin
-      if types[x.typ].form <> fStr then Error('string expected');
+      if types[x.typ].form <> fStr then ErrorN(26, '');
       StrAdr(x);
       if rv then RLd(1, false, rA0, rA0, 0) else begin Gen($AA); Op16($BD, 0); Op16($29, $FF); end;
       x.mode := mReg; x.typ := tInteger;
@@ -2008,7 +3258,25 @@ begin
     x.typ := tByte;
   end else if n = 'assigned' then begin
     Load(x); if not rv then Op16($C9, 0); x.mode := mCond; x.a := cNe; x.typ := tBool; x.tj := 0; x.fj := 0;
-  end else Error('unknown function ' + n);
+  end else if n = 'swap' then begin
+    { the two bytes of the low word, as the PC compiler does: a word
+      (an integer for an integer) }
+    if not IsInt(x.typ) then ErrorN(28, '');
+    t := x.typ;
+    if types[t].size <> 2 then t := tWord;
+    if x.mode = mConst then begin
+      x.a := ((x.a shr 8) and 255) or ((x.a and 255) shl 8);
+      if types[t].sgn and (x.a > 32767) then x.a := x.a - 65536;
+    end else begin
+      Load(x);
+      if rv then begin
+        RI($13, 7, rT0, rA0, 255); RSlli(rT0, rT0, 8); RSrli(rA0, rA0, 8); RI($13, 7, rA0, rA0, 255);
+        RR(0, 6, rA0, rA0, rT0); RNormSz(rA0, 2, types[t].sgn);
+      end else Gen($EB);                                                 { xba }
+      x.mode := mReg;
+    end;
+    x.typ := t;
+  end else ErrorN(55, n);
   Expect(sRparen);
 end;
 
@@ -2025,12 +3293,12 @@ begin
     if sym <> sRbrak then
       repeat
         Expression(lo);
-        if not IsOrd(lo.typ) then Error('ordinal value expected in a set');
+        if not IsOrd(lo.typ) then ErrorN(52, '');
         if lo.mode <> mConst then begin LoadBool(lo); RPush(rA0); end;
         single := sym <> sDotdot;
         if not single then begin
           Next; Expression(hi);
-          if not IsOrd(hi.typ) then Error('ordinal value expected in a set');
+          if not IsOrd(hi.typ) then ErrorN(52, '');
           if hi.mode <> mConst then begin LoadBool(hi); RMv(rA2, rA0); end else RLi(rA2, hi.a);
         end;
         if lo.mode = mConst then RLi(rA1, lo.a) else RPop(rA1);
@@ -2053,12 +3321,12 @@ begin
   if sym <> sRbrak then
     repeat
       Expression(lo);
-      if not IsOrd(lo.typ) then Error('ordinal value expected in a set');
+      if not IsOrd(lo.typ) then ErrorN(52, '');
       if lo.mode <> mConst then begin LoadBool(lo); StaAbs(aSpare + 14); end;
       single := sym <> sDotdot;
       if not single then begin
         Next; Expression(hi);
-        if not IsOrd(hi.typ) then Error('ordinal value expected in a set');
+        if not IsOrd(hi.typ) then ErrorN(52, '');
         if hi.mode <> mConst then begin LoadBool(hi); StaAbs(aSpare + 8); end;
       end;
       LdaAbs(aSpare + 12);
@@ -2079,6 +3347,38 @@ begin
   LdaImm(1);
   FixChain(no, pc);
   x.mode := mReg; x.typ := tBool;
+end;
+
+{ Concat(a, b, ...): the strings one after another in a temporary, like + }
+procedure StdConcat(var x: TItem);
+var y: TItem;
+begin
+  Expect(sLparen);
+  Expression(x);
+  if not IsStrish(x.typ) then ErrorN(26, '');
+  while sym = sComma do begin
+    Next;
+    if not x.tmp then begin
+      StrAdr(x); PushA(2);                       { source }
+      AllocTmp; PushA(2);                        { keep the temporary }
+      PushA(2);                                  { destination }
+      LdaSlot(3); PushA(2);                      { source again }
+      PeaW(255);
+      LibCallPop('_strasg');
+      PopA; DropSlot; PushA(2);                  { the temporary / drop the source / keep it }
+    end else PushA(2);
+    Expression(y);
+    if not IsStrish(y.typ) then ErrorN(26, '');
+    StrAdr(y);
+    SaveB;                                        { source }
+    LdaSlot(1); PushA(2);                         { destination }
+    PushB;                                        { source }
+    PeaW(255);
+    LibCallPop('_strcat');
+    PopA;                                         { the temporary }
+    x.mode := mReg; x.typ := tString; x.tmp := true;
+  end;
+  Expect(sRparen);
 end;
 
 procedure Factor(var x: TItem);
@@ -2111,12 +3411,18 @@ begin
         else if rv then begin
           Load(x); RI($13, 4, rA0, rA0, -1); RNormSz(rA0, types[x.typ].size, types[x.typ].sgn);
         end else begin
-          if IsLong(x.typ) then Error('not of longint not supported');
           Load(x); Op16($49, $FFFF);
+          { the high word: pha txa eor #$FFFF tax pla }
+          if IsLong(x.typ) then begin Gen($48); Gen($8A); Op16($49, $FFFF); Gen($AA); Gen($68); end;
         end;
-      end else Error('boolean expected after NOT');
+      end else ErrorN(56, '');
     end;
     sNil: begin MakeConst(x, 0, tNil); Next; end;
+    sStringKw: begin
+      { string(s): a cast that leaves a string as it is }
+      Next; Expect(sLparen); Expression(x); Expect(sRparen);
+      if not IsStrish(x.typ) then ErrorN(26, '');
+    end;
     sAt: begin
       Next;
       VarDesignator(x);
@@ -2132,11 +3438,21 @@ begin
       if (id = 'ord') or (id = 'chr') or (id = 'succ') or (id = 'pred') or (id = 'odd') or (id = 'abs') or
          (id = 'sqr') or (id = 'length') or (id = 'sizeof') or (id = 'lo') or (id = 'hi') or
          (id = 'assigned') or (id = 'low') or (id = 'high') or (id = 'trunc') or (id = 'round') or
-         (id = 'int') or (id = 'frac') or (id = 'sqrt') then begin
+         (id = 'int') or (id = 'frac') or (id = 'sqrt') or (id = 'swap') then begin
         str := id; Next; StdFunc(str, x); exit;
       end;
+      if (id = 'addr') and (Find(id) = 0) then begin
+        { Addr(v) = @v }
+        Next; Expect(sLparen);
+        VarDesignator(x);
+        LoadAdr(x);
+        x.typ := tPointer;
+        Expect(sRparen);
+        exit;
+      end;
+      if (id = 'concat') and (Find(id) = 0) then begin Next; StdConcat(x); exit; end;
       s := Find(id);
-      if s = 0 then Error('unknown identifier ' + id);
+      if s = 0 then ErrorN(57, id);
       Next;
       case syms[s].kind of
         skConst: begin
@@ -2152,9 +3468,9 @@ begin
           Selector(x);
         end;
         skProc: begin
-          if syms[s].typ = 0 then Error('procedure has no value');
+          if syms[s].typ = 0 then ErrorN(58, '');
           if (syms[s].flags and 4 = 0) and (sym <> sLparen) and (s = ctxProc[curLev]) then
-            Error('use Result for the function value');
+            ErrorN(59, '');
           CallProc(s, x);
           if types[x.typ].form in [fRec, fArr] then begin
             x.mode := mInd; x.a := 0; x.tmp := false;   { the buffer is released with the statement }
@@ -2162,11 +3478,11 @@ begin
           end;
         end;
       else
-        Error('value expected');
+        ErrorN(21, '');
       end;
     end;
   else
-    Error('expression expected');
+    ErrorN(60, '');
   end;
 end;
 
@@ -2210,8 +3526,8 @@ begin
     sPlus: Fold := a + b;
     sMinus: Fold := a - b;
     sTimes: Fold := a * b;
-    sDiv: begin if b = 0 then Error('division by zero'); Fold := a div b; end;
-    sMod: begin if b = 0 then Error('division by zero'); Fold := a mod b; end;
+    sDiv: begin if b = 0 then ErrorN(48, ''); Fold := a div b; end;
+    sMod: begin if b = 0 then ErrorN(48, ''); Fold := a mod b; end;
     sAnd: Fold := a and b;
     sOr: Fold := a or b;
     sXor: Fold := a xor b;
@@ -2227,7 +3543,7 @@ var long, sg: boolean;
     rt: integer;
 begin
   if IsReal(x.typ) or IsReal(y.typ) then begin RealArith(op, x, y); exit; end;
-  if not IsInt(x.typ) or not IsInt(y.typ) then Error('integers expected');
+  if not IsInt(x.typ) or not IsInt(y.typ) then ErrorN(61, '');
   if (x.mode = mConst) and (y.mode = mConst) then begin
     MakeConst(x, Fold(op, x.a, y.a), tInteger);
     x.typ := IntTypeFor(x.a);
@@ -2360,7 +3676,7 @@ begin
   if types[x.typ].form = fSet then begin
     { x was pushed as an address }
     SetAdr(y); PushA(2);
-    if (op = sLss) or (op = sGtr) then Error('sets compare with = <> <= >=');
+    if (op = sLss) or (op = sGtr) then ErrorN(62, '');
     if op = sGeq then begin                                        { swap: y <= x }
       if rv then begin RPop(rA0); RPop(rA1); RPush(rA0); RPush(rA1); end
       else begin Gen($68); Gen($FA); Gen($48); Gen($DA); end;
@@ -2380,7 +3696,7 @@ begin
     exit;
   end;
   if IsReal(x.typ) or IsReal(y.typ) then begin
-    if not IsNum(x.typ) or not IsNum(y.typ) then Error('numbers expected');
+    if not IsNum(x.typ) or not IsNum(y.typ) then ErrorN(49, '');
     if (x.mode = mConst) and (y.mode = mConst) then begin
       if IsInt(x.typ) then x.a := IntToRealBits(x.a);
       if IsInt(y.typ) then y.a := IntToRealBits(y.a);
@@ -2408,7 +3724,7 @@ begin
     exit;
   end;
   if rv then begin
-    if IsInt(x.typ) <> IsInt(y.typ) then Error('incompatible types in comparison');
+    if IsInt(x.typ) <> IsInt(y.typ) then ErrorN(63, '');
     sg := IsInt(x.typ) and (types[x.typ].sgn or types[y.typ].sgn or IsLong(x.typ) or IsLong(y.typ));
     if x.mode = mConst then begin LoadBool(y); RLi(rA1, x.a); end
     else if y.mode = mConst then begin RPop(rA1); RLi(rA0, y.a); end
@@ -2423,7 +3739,7 @@ begin
     CondResult(x, c + 10);
     exit;
   end;
-  if IsInt(x.typ) <> IsInt(y.typ) then Error('incompatible types in comparison');
+  if IsInt(x.typ) <> IsInt(y.typ) then ErrorN(63, '');
   sg := IsInt(x.typ) and (types[x.typ].sgn or types[y.typ].sgn);
   if x.mode = mConst then begin
     { x op A  <=>  A op' x }
@@ -2459,7 +3775,7 @@ begin
     if (op = sAnd) and (x.typ = tBool) then begin
       if x.mode = mConst then begin
         Factor(y);
-        if y.typ <> tBool then Error('boolean expected');
+        if y.typ <> tBool then ErrorN(24, '');
         if x.a = 0 then begin LoadBool(y); MakeConst(x, 0, tBool); end else x := y;
       end else begin
         { short circuit: a false left side skips the right side }
@@ -2490,7 +3806,7 @@ begin
   n0 := nTmp;
   if sym = sMinus then begin
     Next; Term(x);
-    if not IsNum(x.typ) then Error('number expected');
+    if not IsNum(x.typ) then ErrorN(27, '');
     if rv and (x.mode <> mConst) then begin
       Load(x);
       if IsReal(x.typ) then begin RLi(rT1, longint($80000000)); RR(0, 4, rA0, rA0, rT1); end
@@ -2540,7 +3856,7 @@ begin
     end else if (op = sOr) and (x.typ = tBool) then begin
       if x.mode = mConst then begin
         Term(y);
-        if y.typ <> tBool then Error('boolean expected');
+        if y.typ <> tBool then ErrorN(24, '');
         if x.a <> 0 then begin LoadBool(y); MakeConst(x, 1, tBool); end else x := y;
       end else begin
         { short circuit: a true left side skips the right side }
@@ -2555,7 +3871,7 @@ begin
     end else if (op = sXor) and (x.typ = tBool) then begin
       Push(x);
       Term(y);
-      if y.typ <> tBool then Error('boolean expected');
+      if y.typ <> tBool then ErrorN(24, '');
       LoadBool(y);
       if rv then begin RPop(rA1); RR(0, 4, rA0, rA0, rA1); end
       else begin Op8($43, 1); Gen($7A); end;
@@ -2579,7 +3895,7 @@ begin
   SimpleExpr(x);
   if sym = sIn then begin
     Next;
-    if not IsOrd(x.typ) then Error('ordinal value expected before IN');
+    if not IsOrd(x.typ) then ErrorN(64, '');
     if sym = sLbrak then begin SetTest(x); exit; end;
     LoadBool(x); PushA(2);
     SimpleExpr(y);
@@ -2596,7 +3912,7 @@ begin
     else Push(x);
     SimpleExpr(y);
     if (types[x.typ].form = fChar) and (types[y.typ].form = fStr) then
-      Error('put the string first when comparing a string with a char');
+      ErrorN(65, '');
     Relation(op, x, y);
   end;
 end;
@@ -2619,9 +3935,9 @@ begin
       Expression(x); SetAdr(x); PushA(2); exit;
     end;
     { var parameter / untyped: an address }
-    if (id = 'mem') or (id = 'memw') or (id = 'meml') then Error('Mem[] cannot be a var parameter');
+    if (id = 'mem') or (id = 'memw') or (id = 'meml') then ErrorN(66, '');
     VarDesignator(x);
-    if (types[pt].form <> fUntyped) and (types[pt].size <> types[x.typ].size) then Error('wrong variable type');
+    if (types[pt].form <> fUntyped) and (types[pt].size <> types[x.typ].size) then ErrorN(67, '');
     LoadAdr(x); PushA(2);
     exit;
   end;
@@ -2651,7 +3967,7 @@ begin
     Next;
     if sym <> sRparen then
       repeat
-        if p = 0 then Error('too many arguments');
+        if p = 0 then ErrorN(68, '');
         PushArg(p);
         p := syms[p].next;
         n := n + 1;
@@ -2659,7 +3975,7 @@ begin
       until false;
     Expect(sRparen);
   end;
-  if p <> 0 then Error('too few arguments');
+  if p <> 0 then ErrorN(69, '');
   if (syms[s].flags and 4 = 0) and (syms[s].lev >= 2) then begin
     { static link: frame of the procedure that declares the callee }
     if syms[s].lev - 1 = curLev then begin if rv then RMv(rA0, rS0) else Gen($7B); end
@@ -2725,16 +4041,16 @@ begin
         else if f = fInt then begin Load(x); Extend(x.typ); PushA(4); end
         else if f = fEnum then begin Load(x); if not rv then LdxImm(0); PushA(4); f := fInt; end
         else if f = fReal then begin Load(x); PushA(4); end
-        else Error('cannot write this');
+        else ErrorN(70, '');
         if sym = sColon then begin
           Next; Expression(w);
-          if not IsInt(w.typ) then Error('width expected');
+          if not IsInt(w.typ) then ErrorN(71, '');
           Load(w); PushA(2);
         end else PeaW(0);
         if f = fReal then begin
           if sym = sColon then begin
             Next; Expression(w);
-            if not IsInt(w.typ) then Error('number of decimals expected');
+            if not IsInt(w.typ) then ErrorN(72, '');
             Load(w); PushA(2);
           end else PeaW($FFFF);
           LibCallPop('_writereal');
@@ -2770,7 +4086,7 @@ begin
           if f = fInt then CallLib('_readint')
           else if f = fReal then CallLib('_readreal')
           else if f = fChar then CallLib('_readchar')
-          else Error('cannot read this');
+          else ErrorN(73, '');
           Store(x);
         end;
         if sym = sComma then Next else break;
@@ -2787,7 +4103,7 @@ var x, y: TItem;
 begin
   Expect(sLparen);
   VarDesignator(x);
-  if not IsOrd(x.typ) and (types[x.typ].form <> fPtr) then Error('ordinal variable expected');
+  if not IsOrd(x.typ) and (types[x.typ].form <> fPtr) then ErrorN(74, '');
   sz := types[x.typ].size;
   LoadAdr(x); PushA(2);
   k := 1;
@@ -2796,7 +4112,7 @@ begin
     Next; Expression(y);
     if y.mode = mConst then k := y.a * k
     else begin
-      if k <> 1 then Error('inc of a pointer by a variable is not supported');
+      if k <> 1 then ErrorN(75, '');
       Load(y); Extend(y.typ);
       if rv then RMv(rA3, rA0) else begin StaAbs(aT0); Op16($8E, aT0 + 2); end;
       k := 0;
@@ -2829,14 +4145,43 @@ begin
   Gen($7A);                                { ply }
 end;
 
-procedure Assignment(var x: TItem);
+{ v += e, v -= e (strings: s += e); v is reached once }
+procedure AddAssign(var x: TItem);
+var y, z: TItem;
+    op, t: integer;
+begin
+  op := sym; Next; Expect(sEql);
+  t := x.typ;
+  if types[t].form = fStr then begin
+    if op <> sPlus then ErrorN(76, '');
+    LoadAdr(x); PushA(2);                          { destination }
+    Expression(y);
+    if not IsStrish(y.typ) then ErrorN(26, '');
+    StrAdr(y); PushA(2);                           { source }
+    PeaW(types[t].hi);
+    LibCallPop('_strcat');
+    exit;
+  end;
+  if not IsNum(t) then ErrorN(27, '');
+  y := x;                                          { the old value, through the same designator }
+  PrepStore(x);
+  if x.mode = mFarStk then ErrorN(77, '');
+  Push(y);
+  Expression(z);
+  Arith(op, y, z);
+  LoadAs(y, t);
+  Store(x);
+end;
+
+procedure AssignTo(var x: TItem; becomes: boolean);
 var y: TItem;
     sp, t: integer;
 begin
+  if becomes and ((sym = sPlus) or (sym = sMinus)) then begin AddAssign(x); exit; end;
   t := x.typ;
   if types[t].form = fStr then begin
     LoadAdr(x); PushA(2);
-    Expect(sBecomes);
+    if becomes then Expect(sBecomes);
     Expression(y);
     StrAdr(y); PushA(2);
     PeaW(types[t].hi);
@@ -2845,11 +4190,11 @@ begin
   end;
   if types[t].form in [fArr, fRec, fSet] then begin
     LoadAdr(x); PushA(2);
-    Expect(sBecomes);
+    if becomes then Expect(sBecomes);
     Expression(y);
     if types[t].form = fSet then SetAdr(y)
     else begin
-      if y.typ <> t then Error('incompatible types');
+      if y.typ <> t then ErrorN(30, '');
       LoadAdr(y);
     end;
     if rv then begin
@@ -2862,10 +4207,15 @@ begin
     exit;
   end;
   PrepStore(x);
-  Expect(sBecomes);
+  if becomes then Expect(sBecomes);
   Expression(y);
   LoadAs(y, t);
   Store(x);
+end;
+
+procedure Assignment(var x: TItem);
+begin
+  AssignTo(x, true);
 end;
 
 procedure StdNewDispose(isNew: boolean);
@@ -2875,7 +4225,7 @@ begin
   Expect(sLparen);
   VarDesignator(x);
   t := x.typ;
-  if (types[t].form <> fPtr) or (types[t].base = 0) then Error('typed pointer expected');
+  if (types[t].form <> fPtr) or (types[t].base = 0) then ErrorN(45, '');
   if isNew then begin
     PrepStore(x);
     PeaW(types[types[t].base].size);
@@ -2894,7 +4244,7 @@ var x, w, v: TItem;
 begin
   Expect(sLparen);
   Expression(x);
-  if not IsNum(x.typ) then Error('number expected');
+  if not IsNum(x.typ) then ErrorN(27, '');
   isR := IsReal(x.typ);
   Load(x); if not isR then Extend(x.typ); PushA(4);
   if sym = sColon then begin Next; Expression(w); Load(w); PushA(2); end else PeaW(0);
@@ -2903,9 +4253,65 @@ begin
   end;
   Expect(sComma);
   VarDesignator(v);
-  if types[v.typ].form <> fStr then Error('string variable expected');
+  if types[v.typ].form <> fStr then ErrorN(78, '');
   LoadAdr(v); PushA(2); PeaW(types[v.typ].hi);
   if isR then LibCallPop('_strreal') else LibCallPop('_strint');
+  Expect(sRparen);
+end;
+
+{ Val(s, v, code): _valint / _valreal(s, var code) and the result into v }
+procedure StdVal;
+var x, v, c, y: TItem;
+    pushed: boolean;
+begin
+  Expect(sLparen);
+  Expression(x);
+  if not IsStrish(x.typ) then ErrorN(26, '');
+  StrAdr(x); PushA(2);
+  Expect(sComma);
+  VarDesignator(v);
+  if not IsNum(v.typ) then ErrorN(79, '');
+  if v.mode = mFar then ErrorN(80, '');
+  pushed := v.mode = mInd;
+  PrepStore(v);                                     { an indexed v keeps its address on the stack }
+  Expect(sComma);
+  VarDesignator(c);
+  if not IsInt(c.typ) then ErrorN(81, '');
+  LoadAdr(c); PushA(2);
+  if pushed then begin
+    { s, @v, @code -> @v, s, @code: the arguments together, @v under them }
+    if rv then begin RPop(rA0); RPop(rA1); RPop(rA2); RPush(rA1); RPush(rA2); RPush(rA0); end
+    else begin Gen($68); Gen($FA); Gen($7A); Gen($DA); Gen($5A); Gen($48); end;
+  end;
+  if IsReal(v.typ) then begin LibCallPop('_valreal'); y.typ := tReal; end
+  else begin LibCallPop('_valint'); y.typ := tLong; end;
+  y.mode := mReg; y.tmp := false; y.tj := 0; y.fj := 0;
+  LoadAs(y, v.typ);
+  Store(v);
+  Expect(sRparen);
+end;
+
+{ GetMem(p, size), FreeMem(p, size) }
+procedure StdGetFree(isGet: boolean);
+var x, y: TItem;
+begin
+  Expect(sLparen);
+  if isGet then begin
+    VarDesignator(x);
+    if types[x.typ].form <> fPtr then ErrorN(82, '');
+    PrepStore(x);
+    Expect(sComma);
+    Expression(y); LoadAs(y, tWord); PushA(2);
+    LibCallPop('_getmem');
+    Store(x);
+  end else begin
+    Expression(x);
+    if types[x.typ].form <> fPtr then ErrorN(31, '');
+    Load(x); PushA(PtrSz);
+    Expect(sComma);
+    Expression(y); LoadAs(y, tWord); PushA(2);
+    LibCallPop('_freemem');
+  end;
   Expect(sRparen);
 end;
 
@@ -2941,7 +4347,7 @@ begin
   Next;
   top := pc;
   nLoop := nLoop + 1;
-  if nLoop > MaxLoop then Error('loops nested too deeply');
+  if nLoop > MaxLoop then ErrorN(83, '');
   loopBreak[nLoop] := 0; loopCont[nLoop] := 0; loopContAdr[nLoop] := top;
   Expression(x);
   JumpFalse(x, loopBreak[nLoop]);
@@ -2959,7 +4365,7 @@ begin
   Next;
   top := pc;
   nLoop := nLoop + 1;
-  if nLoop > MaxLoop then Error('loops nested too deeply');
+  if nLoop > MaxLoop then ErrorN(83, '');
   loopBreak[nLoop] := 0; loopCont[nLoop] := 0; loopContAdr[nLoop] := -1;
   StatSeq;
   Expect(sUntil);
@@ -2987,8 +4393,8 @@ var v, x, lim: TItem;
 begin
   Next;
   VarDesignator(v);
-  if not (v.mode in [mGlob, mLoc]) then Error('the loop variable must be a simple variable');
-  if not IsOrd(v.typ) or not rv and (types[v.typ].size = 4) then Error('loop variable must be a 8 or 16 bit ordinal');
+  if not (v.mode in [mGlob, mLoc]) then ErrorN(84, '');
+  if not IsOrd(v.typ) or not rv and (types[v.typ].size = 4) then ErrorN(85, '');
   sg := types[v.typ].sgn;
   sz := types[v.typ].size;
   Expect(sBecomes);
@@ -2997,7 +4403,7 @@ begin
   lim := v;
   Store(lim);
   down := sym = sDownto;
-  if (sym <> sTo) and (sym <> sDownto) then Error('TO expected');
+  if (sym <> sTo) and (sym <> sDownto) then ErrorN(86, '');
   Next;
   Expression(lim);
   LoadAs(lim, v.typ);
@@ -3010,7 +4416,7 @@ begin
   ReleaseTmp(false, false);
   Expect(sDo);
   nLoop := nLoop + 1;
-  if nLoop > MaxLoop then Error('loops nested too deeply');
+  if nLoop > MaxLoop then ErrorN(83, '');
   loopBreak[nLoop] := 0; loopCont[nLoop] := 0; loopContAdr[nLoop] := -1;
   { first test }
   if rv then begin
@@ -3053,7 +4459,7 @@ var x: TItem;
 begin
   Next;
   Expression(x);
-  if not IsOrd(x.typ) or not rv and (types[x.typ].size = 4) then Error('8 or 16 bit ordinal expected in CASE');
+  if not IsOrd(x.typ) or not rv and (types[x.typ].size = 4) then ErrorN(87, '');
   sg := types[x.typ].sgn;
   LoadBool(x);
   if x.mode <> mReg then Load(x);
@@ -3118,8 +4524,8 @@ begin
   n0 := nWith;
   repeat
     VarDesignator(x);
-    if types[x.typ].form <> fRec then Error('record expected after WITH');
-    if nWith >= 8 then Error('WITH nested too deeply');
+    if types[x.typ].form <> fRec then ErrorN(88, '');
+    if nWith >= 8 then ErrorN(89, '');
     nWith := nWith + 1;
     withTyp[nWith] := x.typ;
     if x.mode in [mGlob, mLoc] then begin
@@ -3128,8 +4534,8 @@ begin
       { the record's address goes into one of the frame's WITH slots }
       slots := 0;
       for i := 1 to nWith - 1 do if withMode[i] = mInd then slots := slots + 1;
-      if slots >= 4 then Error('WITH of computed records nested too deeply');
-      if ctxWith[curLev] < 0 then Error('internal: no WITH slots');
+      if slots >= 4 then ErrorN(90, '');
+      if ctxWith[curLev] < 0 then ErrorN(91, '');
       LoadAdr(x);
       if rv then begin
         RSt(4, rA0, rS0, ctxWith[curLev] + 4 * slots);
@@ -3162,7 +4568,7 @@ begin
     sFor: ForStat;
     sCase: CaseStat;
     sWith: WithStat;
-    sGoto: Error('GOTO is not supported');
+    sGoto: ErrorN(92, '');
     sIdent: begin
       n := id;
       if WithField(x) then Assignment(x)
@@ -3170,11 +4576,11 @@ begin
       else if (n = 'include') or (n = 'exclude') then begin
         Next; Expect(sLparen);
         VarDesignator(x);
-        if types[x.typ].form <> fSet then Error('set variable expected');
+        if types[x.typ].form <> fSet then ErrorN(93, '');
         LoadAdr(x); PushA(2);
         Expect(sComma);
         Expression(x);
-        if not IsOrd(x.typ) then Error('ordinal value expected');
+        if not IsOrd(x.typ) then ErrorN(94, '');
         LoadBool(x); PushA(2);
         if n = 'include' then LibCallPop('_setincl') else LibCallPop('_setexcl');
         Expect(sRparen);
@@ -3183,9 +4589,26 @@ begin
       else if (n = 'inc') or (n = 'dec') then begin Next; StdIncDec(n = 'dec'); end
       else if (n = 'new') or (n = 'dispose') then begin Next; StdNewDispose(n = 'new'); end
       else if n = 'str' then begin Next; StdStr; end
+      else if (n = 'val') and (Find(n) = 0) then begin Next; StdVal; end
+      else if ((n = 'getmem') or (n = 'freemem')) and (Find(n) = 0) then begin Next; StdGetFree(n = 'getmem'); end
       else if n = 'exit' then begin
         Next;
-        if curLev = 0 then Error('EXIT outside a procedure');
+        if curLev = 0 then ErrorN(95, '');
+        if sym = sLparen then begin
+          { Exit(value): the function's result, then out }
+          s := ctxProc[curLev];
+          if syms[s].typ = 0 then ErrorN(96, '');
+          Next;
+          if syms[s].flags and 1 <> 0 then begin
+            LdaDp(ParDp(curLev, syms[s].hid));
+            x.mode := mInd; x.a := 0; x.typ := ResultType(s);
+          end else begin
+            x.mode := mLoc; x.a := ctxRes[curLev]; x.typ := syms[s].typ;
+          end;
+          x.tmp := false; x.tj := 0; x.fj := 0;
+          AssignTo(x, false);
+          Expect(sRparen);
+        end;
         BrlFwd(ctxExit[curLev]);
       end else if (n = 'break') or (n = 'continue') then begin
         Next;
@@ -3203,7 +4626,7 @@ begin
         Assignment(x);
       end else begin
         s := Find(n);
-        if s = 0 then Error('unknown identifier ' + n);
+        if s = 0 then ErrorN(57, n);
         Next;
         case syms[s].kind of
           skVar: begin Designator(x, s); Assignment(x); end;
@@ -3222,7 +4645,7 @@ begin
             end;
           end;
         else
-          Error('statement expected');
+          ErrorN(97, '');
         end;
       end;
     end;
@@ -3243,8 +4666,8 @@ begin
   while sym = sIdent do begin
     nid := 0;
     repeat
-      if sym <> sIdent then Error('field name expected');
-      if nid >= 16 then Error('too many names');
+      if sym <> sIdent then ErrorN(98, '');
+      if nid >= 16 then ErrorN(99, '');
       nid := nid + 1; ids[nid] := id; Next;
       if sym = sComma then Next else break;
     until false;
@@ -3265,7 +4688,7 @@ begin
   end;
   if sym = sCase then begin
     Next;
-    if sym <> sIdent then Error('tag field or type expected');
+    if sym <> sIdent then ErrorN(100, '');
     n := id; Next;
     if sym = sColon then begin
       Next; TypeDef(tt);
@@ -3301,7 +4724,7 @@ end;
 procedure TypeDef(var t: integer);
 var s, f, prev, k: integer;
     lo, hi: longint;
-    bLo, bHi: array[1..4] of longint;
+    bLo, bHi: array[1..8] of longint;
     off: longint;
     ids: array[1..16] of TName;
     nid, i, ft: integer;
@@ -3313,18 +4736,18 @@ begin
       Next;
       if sym = sLbrak then begin
         Next; lo := ConstExpr; Expect(sRbrak);
-        if (lo < 1) or (lo > 255) then Error('string length 1..255');
+        if (lo < 1) or (lo > 255) then ErrorN(101, '');
         t := NewType(fStr, lo + 1); types[t].hi := lo;
       end else t := tString;
     end;
     sCaret: begin
       Next;
-      if sym <> sIdent then Error('type expected after ^');
+      if sym <> sIdent then ErrorN(102, '');
       t := NewType(fPtr, PtrSz);
       s := Find(id);
       if (s <> 0) and (syms[s].kind = skType) then types[t].base := syms[s].typ
       else begin
-        if nPend >= 16 then Error('too many forward pointers');
+        if nPend >= 16 then ErrorN(103, '');
         nPend := nPend + 1; pendPtr[nPend] := t; pendName[nPend] := id;
       end;
       Next;
@@ -3334,7 +4757,7 @@ begin
       k := 0;
       repeat
         k := k + 1;
-        if k > 4 then Error('at most 4 dimensions');
+        if k > 8 then ErrorN(104, '');
         if sym = sIdent then begin
           s := Find(id);
           if (s <> 0) and (syms[s].kind = skType) and IsOrd(syms[s].typ) then begin
@@ -3342,7 +4765,7 @@ begin
             if syms[s].typ = tChar then begin lo := 0; hi := 255; end;
           end else begin lo := ConstExpr; Expect(sDotdot); hi := ConstExpr; end;
         end else begin lo := ConstExpr; Expect(sDotdot); hi := ConstExpr; end;
-        if hi < lo then Error('bad array bounds');
+        if hi < lo then ErrorN(105, '');
         bLo[k] := lo; bHi[k] := hi;
         if sym = sComma then Next else break;
       until false;
@@ -3351,8 +4774,8 @@ begin
       for i := k downto 1 do begin
         lo := bLo[i]; hi := bHi[i];
         t := NewType(fArr, 0);
-        if rv then begin if (hi - lo + 1) * types[ft].size > 65535 then Error('array larger than 64 KB'); end
-        else if (hi - lo + 1) * types[ft].size > 40000 then Error('array too large');
+        if rv then begin if (hi - lo + 1) * types[ft].size > 65535 then ErrorN(106, ''); end
+        else if (hi - lo + 1) * types[ft].size > 40000 then ErrorN(107, '');
         types[t].size := (hi - lo + 1) * types[ft].size;
         types[t].lo := lo; types[t].hi := hi; types[t].base := ft;
         ft := t;
@@ -3372,7 +4795,7 @@ begin
       t := NewType(fEnum, 1);
       k := 0;
       repeat
-        if sym <> sIdent then Error('name expected');
+        if sym <> sIdent then ErrorN(108, '');
         s := NewSym(id, skConst, t); syms[s].adr := k; k := k + 1;
         Next;
         if sym = sComma then Next else break;
@@ -3383,11 +4806,11 @@ begin
     sSet: begin
       Next; Expect(sOf);
       TypeDef(ft);
-      if not IsOrd(ft) then Error('set of an ordinal type expected');
+      if not IsOrd(ft) then ErrorN(109, '');
       t := NewType(fSet, 32);
       types[t].base := ft;
     end;
-    sFile: Error('file types are not supported; use the Dos unit');
+    sFile: ErrorN(110, '');
   else
     if sym = sIdent then begin
       s := Find(id);
@@ -3419,21 +4842,18 @@ begin
   end;
   for i := 1 to nPend do begin
     k := Find(pendName[i]);
-    if (k = 0) or (syms[k].kind <> skType) then Error('unknown type ' + pendName[i]);
+    if (k = 0) or (syms[k].kind <> skType) then ErrorN(111, pendName[i]);
     types[pendPtr[i]].base := syms[k].typ;
   end;
   nPend := 0;
 end;
 
-procedure ConstSection;
-var s, t, i: integer;
-    n: TName;
-    x: TItem;
-    a: longint;
+{ the value of a typed constant or an initialised variable, written into
+  the data image at a: (a, b) for arrays, (f: v; g: w) for records }
 procedure InitValue(t: integer; a: longint);
 var x: TItem;
     i: longint;
-    k: integer;
+    k, f: integer;
 begin
   if types[t].form = fArr then begin
     Expect(sLparen);
@@ -3445,18 +4865,37 @@ begin
     exit;
   end;
   if types[t].form = fStr then begin
-    if sym <> sString then Error('string expected');
-    if length(str) > types[t].hi then Error('string too long');
+    if sym <> sString then ErrorN(26, '');
+    if length(str) > types[t].hi then ErrorN(112, '');
     Mem[DataImg + a - dataOrg] := length(str);
     for k := 1 to length(str) do Mem[DataImg + a - dataOrg + k] := ord(str[k]);
     Next;
     exit;
   end;
-  if types[t].form in [fRec] then Error('record constants are not supported');
+  if types[t].form = fRec then begin
+    Expect(sLparen);
+    while sym = sIdent do begin
+      f := types[t].fields;
+      while (f <> 0) and (syms[f].name <> id) do f := syms[f].next;
+      if f = 0 then ErrorN(113, id);
+      Next; Expect(sColon);
+      InitValue(syms[f].typ, a + syms[f].adr);
+      if sym = sSemi then Next else break;
+    end;
+    Expect(sRparen);
+    exit;
+  end;
   Expression(x);
-  if x.mode <> mConst then Error('constant expected');
+  if x.mode <> mConst then ErrorN(33, '');
+  if IsReal(t) and not IsReal(x.typ) then x.a := IntToRealBits(x.a);
   for k := 0 to types[t].size - 1 do Mem[DataImg + a - dataOrg + k] := (x.a shr (8 * k)) and 255;
 end;
+
+procedure ConstSection;
+var s, t: integer;
+    n: TName;
+    x: TItem;
+    a: longint;
 begin
   Next;
   while sym = sIdent do begin
@@ -3476,7 +4915,7 @@ begin
         Next;
       end else begin
         Expression(x);
-        if x.mode <> mConst then Error('constant expected');
+        if x.mode <> mConst then ErrorN(33, '');
         s := NewSym(n, skConst, x.typ); syms[s].adr := x.a;
       end;
     end;
@@ -3493,8 +4932,8 @@ begin
   while sym = sIdent do begin
     n := 0;
     repeat
-      if sym <> sIdent then Error('name expected');
-      n := n + 1; if n > 16 then Error('too many names');
+      if sym <> sIdent then ErrorN(108, '');
+      n := n + 1; if n > 16 then ErrorN(99, '');
       ids[n] := id; Next;
       if sym = sComma then Next else break;
     until false;
@@ -3502,13 +4941,13 @@ begin
     TypeDef(t);
     if (sym = sIdent) and (id = 'absolute') then begin
       Next;
-      if n <> 1 then Error('ABSOLUTE is for one variable at a time');
+      if n <> 1 then ErrorN(114, '');
       if sym = sIdent then begin
         v := Find(id);
-        if (v = 0) or (syms[v].kind <> skVar) then Error('variable expected after ABSOLUTE');
+        if (v = 0) or (syms[v].kind <> skVar) then ErrorN(115, '');
         Next;
         if (syms[v].lev > 0) and not syms[v].isPar and (types[syms[v].typ].size > 8) and not defPlaced[syms[v].lev] then
-          Error('ABSOLUTE over a large local variable is not supported');
+          ErrorN(116, '');
         s := NewSym(ids[1], skVar, t);
         syms[s].lev := syms[v].lev; syms[s].adr := syms[v].adr;
         syms[s].isPar := syms[v].isPar; syms[s].isRef := syms[v].isRef;
@@ -3518,10 +4957,17 @@ begin
         s := NewSym(ids[1], skVar, t);
         syms[s].lev := 0; syms[s].adr := a;
         if rv or (a < 0) or (a > $FFFF) then begin
-          if types[t].form in [fStr, fArr, fSet] then Error('ABSOLUTE outside bank 0 is for simple variables and records');
+          if types[t].form in [fStr, fArr, fSet] then ErrorN(117, '');
           syms[s].flags := 32;     { far: reached with long addressing }
         end;
       end;
+    end else if sym = sEql then begin
+      { an initialised variable: global, like a typed constant }
+      if (n <> 1) or (curLev > 0) then ErrorN(118, '');
+      Next;
+      s := NewSym(ids[1], skVar, t);
+      syms[s].adr := AllocData(types[t].size);
+      InitValue(t, syms[s].adr);
     end else
       for i := 1 to n do begin
         s := NewSym(ids[i], skVar, t);
@@ -3546,7 +4992,7 @@ var isFunc: boolean;
 begin
   isFunc := sym = sFunction;
   Next;
-  if sym <> sIdent then Error('name expected');
+  if sym <> sIdent then ErrorN(108, '');
   n := id; Next;
   { existing forward declaration? }
   s := 0;
@@ -3572,12 +5018,12 @@ begin
           else if sym = sConst then begin mode := 2; Next; end;
           np := 0;
           repeat
-            if sym <> sIdent then Error('parameter name expected');
+            if sym <> sIdent then ErrorN(119, '');
             np := np + 1; parIds[np] := id; Next;
             if sym = sComma then Next else break;
           until false;
           if sym = sColon then begin Next; ParseTypeIdent(pt); end
-          else begin if mode = 0 then Error('parameter type expected'); pt := tUntyped; end;
+          else begin if mode = 0 then ErrorN(120, ''); pt := tUntyped; end;
           for i := 1 to np do begin
             p := NewSym(parIds[i], skPar, pt);
             syms[p].isRef := (mode = 1) or IsStruct(pt) or (pt = tUntyped);
@@ -3594,7 +5040,7 @@ begin
     if isFunc then begin
       Expect(sColon); ParseTypeIdent(rt);
       if (types[rt].form in [fArr, fRec, fSet]) and (types[rt].size > 256) then
-        Error('function results are at most 256 bytes');
+        ErrorN(121, '');
       syms[s].typ := rt;
       if types[rt].form in [fStr, fArr, fRec, fSet] then syms[s].flags := 1;
     end;
@@ -3618,9 +5064,9 @@ begin
     if inInterface then exit;              { the body follows in the implementation }
     if (sym = sIdent) and (id = 'forward') then begin Next; Expect(sSemi); exit; end;
   end;
-  if (sym = sIdent) and (id = 'forward') then Error('already declared');
+  if (sym = sIdent) and (id = 'forward') then ErrorN(122, '');
   { body }
-  if curLev >= MaxLev - 1 then Error('procedures nested too deeply');
+  if curLev >= MaxLev - 1 then ErrorN(123, '');
   if curLev > 0 then PlaceLocals;      { nested procedures address our frame through ctxFS }
   lv := curLev;
   curLev := syms[s].lev;
@@ -3651,7 +5097,7 @@ begin
     q := NewSym(syms[p].name, skVar, syms[p].typ);
     if IsStruct(syms[p].typ) and (syms[p].flags = 0) then begin
       { value parameter: a local copy }
-      if cpN[curLev] >= 8 then Error('too many structured value parameters');
+      if cpN[curLev] >= 8 then ErrorN(124, '');
       cpN[curLev] := cpN[curLev] + 1;
       LocalVar(q);
       cpSrc[curLev, cpN[curLev]] := syms[p].adr;
@@ -3682,12 +5128,12 @@ begin
       sType: TypeSection;
       sVar: VarSection;
       sProcedure, sFunction: ProcDecl;
-      sLabel: Error('labels are not supported');
+      sLabel: ErrorN(125, '');
     else
       break;
     end;
   until false;
-  if sym <> sBegin then Error('BEGIN expected');
+  if sym <> sBegin then ErrorN(126, '');
   { procedure entry }
   PlaceLocals;
   fs := ctxLoc[curLev];
@@ -3769,6 +5215,9 @@ begin
           ScanWith := true; exit;
         end;
       end;
+    { an include file may hold a WITH: room for it, to be safe }
+    if (c = ord('{') or $20) and (Mem[base + p + 1] = ord('$')) and ((Mem[base + p + 2] or $20) = ord('i')) and
+       ((Mem[base + p + 3] = 32) or ((Mem[base + p + 3] or $20) = ord('n'))) then begin ScanWith := true; exit; end;
     prevId := ((c >= ord('a')) and (c <= ord('z'))) or ((c >= ord('0')) and (c <= ord('9'))) or (c = ord('_'));
     p := p + 1;
   end;
@@ -3783,7 +5232,7 @@ begin
       sType: TypeSection;
       sVar: VarSection;
       sProcedure, sFunction: ProcDecl;
-      sLabel: Error('labels are not supported');
+      sLabel: ErrorN(125, '');
     else
       break;
     end;
@@ -3794,7 +5243,7 @@ procedure CheckForwards(from: integer);
 var i: integer;
 begin
   for i := from to nSym do
-    if (syms[i].kind = skProc) and (syms[i].flags and 6 = 0) then Error('procedure not implemented: ' + syms[i].name);
+    if (syms[i].kind = skProc) and (syms[i].flags and 6 = 0) then ErrorN(127, syms[i].name);
 end;
 
 function BuiltinUnit(const n: TName): boolean;
@@ -3816,12 +5265,12 @@ begin
   k := 0;
   repeat
     Next;
-    if sym <> sIdent then Error('unit name expected');
-    if k >= 8 then Error('too many units');
+    if sym <> sIdent then ErrorN(128, '');
+    if k >= 8 then ErrorN(129, '');
     k := k + 1; names[k] := id;
     Next;
   until sym <> sComma;
-  if sym <> sSemi then Error('; expected');
+  if sym <> sSemi then ErrorN(130, '');
   sPos := srcPos; sEnd := srcEnd; sBase := curBase; sLine := line; sCol := col; sCh := ch;
   for i := 1 to k do
     if not BuiltinUnit(names[i]) then begin
@@ -3840,33 +5289,33 @@ begin
   for i := 1 to nUnit do
     if unitName[i] = n then begin
       if unitDone[i] then exit;
-      Error('units use each other in a circle: ' + n);
+      ErrorN(131, n);
     end;
-  if nUnit >= 12 then Error('too many units');
+  if nUnit >= 12 then ErrorN(129, '');
   nUnit := nUnit + 1; u := nUnit;
   unitName[u] := n; unitDone[u] := false;
   fname := UpperCase(Copy(n, 1, 8)) + '.PAS';
-  if unitTop >= $2F0000 then Error('no room for unit ' + fname);
+  if unitTop >= $2F0000 then ErrorN(132, fname);
   got := LoadFile(fname, unitTop, $300000 - unitTop);
-  if got < 0 then Error('unit not found: ' + fname + ' (' + DosErrorText(DosError) + ')');
+  if got < 0 then ErrorN(133, fname + ' (' + DosErrorText(DosError) + ')');
   saveFile := curFile; saveWith := hasWith;
   curFile := fname;
   curBase := unitTop; srcPos := 0; srcEnd := got; line := 1; col := 0;
   unitTop := (unitTop + got + 255) and $FFFF00;
   hasWith := ScanWith(curBase, got);
   NextCh; Next;
-  if (sym <> sIdent) or (id <> 'unit') then Error('UNIT expected');
+  if (sym <> sIdent) or (id <> 'unit') then ErrorN(134, '');
   Next;
-  if (sym <> sIdent) or (id <> n) then Error('the unit in ' + fname + ' must be called ' + n);
+  if (sym <> sIdent) or (id <> n) then ErrorN(135, fname + ' must be called ' + n);
   Next; Expect(sSemi);
-  if (sym <> sIdent) or (id <> 'interface') then Error('INTERFACE expected');
+  if (sym <> sIdent) or (id <> 'interface') then ErrorN(136, '');
   Next;
   if sym = sUses then UsesClause;
   first := nSym + 1;
   inInterface := true;
   Declarations;
   inInterface := false;
-  if (sym <> sIdent) or (id <> 'implementation') then Error('IMPLEMENTATION expected');
+  if (sym <> sIdent) or (id <> 'implementation') then ErrorN(137, '');
   ifaceEnd := nSym;
   Next;
   if sym = sUses then UsesClause;
@@ -3883,7 +5332,7 @@ begin
     Block;
     curLev := 0;
   end else Expect(sEnd);
-  if sym <> sPeriod then Error('. expected at the end of the unit');
+  if sym <> sPeriod then ErrorN(138, '');
   { what the implementation declared is private to the unit }
   for i := ifaceEnd + 1 to nSym do
     if (syms[i].kind in [skConst, skVar, skType, skProc, skAsm]) and (syms[i].flags and (128 + 64) = 0) and
@@ -3920,9 +5369,16 @@ begin
   ErrLine := 0; ErrCol := 0;
   nUnit := 0; nInit := 0; unitTop := $220000; inInterface := false;
   if not CartPresent then begin ErrMsg := 'PASCAL cartridge directory missing'; exit; end;
+  { the messages again for every compile: a program may have used that memory }
+  msgsBuilt := false; BuildMessages;
   if CatchError <> 0 then exit;
   rv := WantSchub or SchubDirective(srcLen);
   IsSchub := rv;
+  { the names the PC compiler defines for the target }
+  nDef := 0; condDepth := 0; incDepth := 0;
+  DefineName('MERIDIAN');
+  if rv then begin DefineName('SCHUB'); DefineName('CPURV32'); end
+  else begin DefineName('M816'); DefineName('CPU65C816'); end;
   if rv then begin cBase := RvCode; RunEntry := RvStub; end
   else begin cBase := CodeBase; RunEntry := CodeBase; end;
   curBase := SrcBase; srcPos := 0; srcEnd := srcLen; line := 1; col := 0;
@@ -3968,7 +5424,7 @@ begin
   Next;
   if sym = sProgram then begin
     Next;
-    if sym <> sIdent then Error('program name expected');
+    if sym <> sIdent then ErrorN(139, '');
     Next;
     if sym = sLparen then begin while (sym <> sRparen) and (sym <> sEOF) do Next; Next; end;
     Expect(sSemi);
@@ -3979,7 +5435,7 @@ begin
   ctxProc[1] := 0;
   { the main program block: globals at level 0, its body at level 1 }
   Declarations;
-  if sym <> sBegin then Error('BEGIN expected');
+  if sym <> sBegin then ErrorN(126, '');
   CheckForwards(1);
   curLev := 1;
   ctxLoc[1] := 0; ctxFrozen[1] := false; ctxProc[1] := 0; ctxExit[1] := 0;
@@ -3994,7 +5450,7 @@ begin
   for i := 1 to nInit do Jsl(cBase + unitInit[i]);   { unit initialisation, then the body }
   if rv and (nInit > 0) then RPop(rRa);
   Block;
-  if sym <> sPeriod then Error('. expected at the end of the program');
+  if sym <> sPeriod then ErrorN(140, '');
   if not rv then begin
     Put16(lenAt, dataTop - 1);
     Put16(heapAt, UserData + dataTop);
