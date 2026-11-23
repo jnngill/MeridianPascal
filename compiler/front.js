@@ -1406,10 +1406,10 @@ export class Front {
           const idx = this.parseExpr();
           if (e.type.k === 'string') {
             if (!isOrdinal(idx.type)) this.err('index must be ordinal');
-            e = { n: 'index', base: e, idx, type: T.char, lv: e.lv, lo: 0, esz: 1 };
+            e = { n: 'index', base: e, idx, type: T.char, lv: e.lv, lo: 0, hi: e.type.max, esz: 1 };
           } else if (e.type.k === 'array') {
             this.checkIndex(e.type, idx, t.pos);
-            e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: e.type.lo, esz: e.type.elem.size };
+            e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: e.type.lo, hi: e.type.hi, esz: e.type.elem.size };
           } else if (e.type.k === 'ptr' && e.type.to) {
             // p[i] on typed pointers (pointer arithmetic)
             if (!isInt(idx.type)) this.err('integer index expected');
@@ -1850,7 +1850,13 @@ export class Front {
     }
     const mt = this.mtOf(dt);
     const d = this.lvalDesc(lhs);
-    this.genValue(this.conv(rhs, dt));
+    if (this.sw.R && isOrdinal(dt) && isOrdinal(rhs.type) && rhs.n !== 'const' &&
+        (rhs.type.lo < dt.lo || rhs.type.hi > dt.hi)) {
+      // {$R+}: the value within the range of the variable's type
+      this.genValue(rhs);
+      this.genRangeCheck(dt.lo, dt.hi, this.clsOf(rhs.type), !this.signedOf(rhs.type), 201);
+      this.genValue({ n: 'cvt', e: { n: 'onstack', type: rhs.type }, type: dt, explicit: true });
+    } else this.genValue(this.conv(rhs, dt));
     this.storeDesc(d, mt);
   }
 
@@ -1889,11 +1895,15 @@ export class Front {
         let ie = e.idx;
         if (ie.type.k !== 'int') ie = { n: 'cvt', e: ie, type: T.word, explicit: true };
         const P = this.P;
+        // {$R+}: the index within the bounds (pointer indexing has none)
+        const chk = this.sw.R && e.hi !== undefined;
         if (P === 'W') {
           this.genValue(ie);
+          if (chk) this.genRangeCheck(e.lo, e.hi, this.clsOf(ie.type), !this.signedOf(ie.type), 201);
           if (this.clsOf(ie.type) === 'L') this.emit({ o: 'trunc', mt: 'u16' });
         } else {
           this.genValue(this.conv(ie, T.longint));
+          if (chk) this.genRangeCheck(e.lo, e.hi, 'L', false, 201);
         }
         if (e.esz !== 1) this.genMulConst(e.esz, P);
         this.emit({ o: 'add', s: P, u: true });
@@ -2100,9 +2110,86 @@ export class Front {
   }
 
   // push a scalar value
+  // ---- {$R+} {$Q+}: checks that stop the program with a runtime error
+  get sw() { return (this.tk && this.tk.pos && this.tk.pos.sw) || {}; }
+
+  genRunError(code) {
+    const sys = this.units.get('system');
+    const s = sys && sys.iface.syms.get('runerror');
+    if (!s) this.err('internal: RunError missing in System');
+    this.genCall(this.checkCall(s, [this.cint(code)], this.tk.pos));
+  }
+
+  // the value on top of the stack (class cls, unsigned u) within lo..hi,
+  // else runtime error code; the value stays
+  genRangeCheck(lo, hi, cls, u, code) {
+    const min = cls === 'L' ? (u ? 0 : -2147483648) : (u ? 0 : -32768);
+    const max = cls === 'L' ? (u ? 4294967295 : 2147483647) : (u ? 65535 : 32767);
+    const needLo = lo > min, needHi = hi < max;
+    if (!needLo && !needHi) return;
+    const bad = this.newLabel(), ok = this.newLabel();
+    if (needLo) {
+      this.emit({ o: 'dup' }); this.emit({ o: 'lit', s: cls, v: lo });
+      this.emit({ o: 'cmp', c: 'lt', s: cls, u }); this.emit({ o: 'jnz', l: bad });
+    }
+    if (needHi) {
+      this.emit({ o: 'dup' }); this.emit({ o: 'lit', s: cls, v: hi });
+      this.emit({ o: 'cmp', c: 'gt', s: cls, u }); this.emit({ o: 'jnz', l: bad });
+    }
+    this.emit({ o: 'jmp', l: ok });
+    this.emit({ o: 'label', l: bad });
+    this.genRunError(code);
+    this.emit({ o: 'label', l: ok });
+  }
+
+  // + - * with {$Q+}: runtime error 215 when the result does not fit
+  genOverflowOp(e, ot) {
+    const op = { '+': 'add', '-': 'sub', '*': 'mul' }[e.op];
+    const u = !this.signedOf(ot);
+    if (this.clsOf(ot) === 'W') {
+      // 16 bit: in 32 bits, then the range of the type
+      const wide = u ? T.longword : T.longint;
+      this.genValue(this.conv(e.l, wide));
+      this.genValue(this.conv(e.r, wide));
+      this.emit({ o: op, s: 'L', u });
+      this.genRangeCheck(ot.lo, ot.hi, 'L', u, 215);
+      this.emit({ o: 'trunc', mt: this.mtOf(ot) });
+      return;
+    }
+    // 32 bit: operands and result in temporaries
+    const mt = this.mtOf(ot);
+    const ta = this.allocTemp(4, 4), tb = this.allocTemp(4, 4), tr = this.allocTemp(4, 4);
+    const st = (off) => this.emit({ o: 'stl', hops: 0, off, kind: 'loc', mt });
+    const ld = (off) => this.emit({ o: 'ldl', hops: 0, off, kind: 'loc', mt });
+    const E = (o, x = {}) => this.emit({ o, s: 'L', u, ...x });
+    this.genValue(e.l); st(ta);
+    this.genValue(e.r); st(tb);
+    ld(ta); ld(tb); E(op); st(tr);
+    const ok = this.newLabel();
+    if (op === 'mul') {
+      // a = 0, or r div a = b
+      ld(ta); E('lit', { v: 0 }); E('cmp', { c: 'eq' }); this.emit({ o: 'jnz', l: ok });
+      ld(tr); ld(ta); E('div'); ld(tb); E('cmp', { c: 'eq' }); this.emit({ o: 'jnz', l: ok });
+    } else if (u) {
+      // unsigned: no carry (r >= a) / no borrow (a >= b)
+      if (op === 'add') { ld(tr); ld(ta); } else { ld(ta); ld(tb); }
+      E('cmp', { c: 'ge' }); this.emit({ o: 'jnz', l: ok });
+    } else {
+      // signed: (a xor r) and (b xor r) >= 0 / (a xor b) and (a xor r) >= 0
+      if (op === 'add') { ld(ta); ld(tr); E('xor'); ld(tb); ld(tr); E('xor'); }
+      else { ld(ta); ld(tb); E('xor'); ld(ta); ld(tr); E('xor'); }
+      E('and'); this.emit({ o: 'lit', s: 'L', v: 0 }); this.emit({ o: 'cmp', c: 'ge', s: 'L', u: false });
+      this.emit({ o: 'jnz', l: ok });
+    }
+    this.genRunError(215);
+    this.emit({ o: 'label', l: ok });
+    ld(tr);
+  }
+
   genValue(e) {
     const t = e.type;
     switch (e.n) {
+      case 'onstack': return;     // a value already computed (see assign)
       case 'const': {
         if (t.k === 'real') { this.emit({ o: 'lit', s: 'L', v: realBits(e.v) }); return; }
         if (t.k === 'string') this.err('string constant used as a value');
@@ -2143,6 +2230,7 @@ export class Front {
         const cls = this.clsOf(ot);
         const u = !this.signedOf(ot);
         const rel = { '=': 'eq', '<>': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge' }[e.op];
+        if (this.sw.Q && ot.k === 'int' && (e.op === '+' || e.op === '-' || e.op === '*')) { this.genOverflowOp(e, ot); return; }
         if (e.op === 'shl' || e.op === 'shr') {
           this.genValue(e.l);
           if (e.r.n === 'const') this.emit({ o: 'lit', s: 'W', v: e.r.v & 31 });

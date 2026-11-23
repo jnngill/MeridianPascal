@@ -49,6 +49,7 @@ a { color: var(--accent); }
   <a href="#builtins">Built-in routines</a>
   <a href="#mem">Memory and hardware access</a>
   <a href="#cond">Conditional compilation</a>
+  <a href="#checks">Range and overflow checks</a>
   <a href="#units">Units</a>
   <a href="#diff">Differences from Turbo Pascal</a>
   <a class="h" href="#targets">Targets</a>
@@ -239,6 +240,13 @@ x := MemL[$03F000];         { chip RAM bank 3 }</pre>
 
 <h3 id="cond">Conditional compilation</h3>
 <p><code>{$IFDEF x}</code>, <code>{$IFNDEF x}</code>, <code>{$ELSE}</code>, <code>{$ENDIF}</code>, <code>{$DEFINE x}</code>, <code>{$UNDEF x}</code> and <code>{$I file}</code>. Predefined: <code>MERIDIAN</code>, and <code>M816</code> + <code>CPU65C816</code> or <code>SCHUB</code> + <code>CPURV32</code>. At run time, <code>Target</code> returns <code>TargetM816</code> or <code>TargetSchub</code>.</p>
+<h3 id="checks">Range and overflow checks</h3>
+<p>As in Turbo Pascal, <code>{$R+}</code> turns range checks on and <code>{$R-}</code> off again, <code>{$Q+}</code> and <code>{$Q-}</code> the same for overflow checks (also together: <code>{$R+,Q+}</code>). Both are off at the start, and they count from where they stand in the text, on the PC and on the MERIDIAN, for both CPUs.</p>
+<ul>
+<li><code>{$R+}</code>: array and string indexes must be within their bounds, and a value assigned to an ordinal variable must fit its type (<code>byte</code>, <code>0..9</code>, an enumeration ...); else the program stops with <code>RUNTIME ERROR 201</code>.</li>
+<li><code>{$Q+}</code>: the result of <code>+ - *</code> on integers, and of <code>Inc</code>/<code>Dec</code>, must fit its type; else <code>RUNTIME ERROR 215</code>. Arithmetic on <code>word</code>s (with constants that are not negative) is checked against 0..65535, on <code>integer</code>s against -32768..32767, on <code>longint</code>s against 32 bits.</li>
+</ul>
+<p>The checks cost code and time; turn them on while a program is being written, and off around the parts that must be fast.</p>
 
 <h3 id="units">Units</h3>
 <pre>unit Tools;
@@ -255,7 +263,7 @@ end.</pre>
 <ul>
 <li>No <code>goto</code>/<code>label</code>, no <code>asm</code> blocks, no procedural types, no objects/classes, no open array parameters (declare a named array type), no file types (use the <a href="#l-dos">Dos</a> unit), no dynamic arrays.</li>
 <li><code>real</code> is IEEE single precision (Turbo Pascal's is 6 bytes).</li>
-<li>Range and overflow checks are not generated; division by zero stops the program with runtime error 200.</li>
+<li>Range and overflow checks only with <code>{$R+}</code> and <code>{$Q+}</code> (<a href="#checks">above</a>); division by zero always stops the program with runtime error 200.</li>
 <li><code>Read</code>/<code>ReadLn</code> read from the keyboard only, with a small line editor (Backspace, Return; Esc ends the program).</li>
 </ul>
 

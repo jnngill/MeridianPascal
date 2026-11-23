@@ -207,6 +207,7 @@ var
   nPend: integer;
   { directives: defined names, open IFDEFs, open include files }
   nDef, condDepth, incDepth: integer;
+  swR, swQ, swI: boolean;              { the switches R+ Q+ I+ }
   msgsBuilt: boolean;
 
 const
@@ -1473,8 +1474,24 @@ end;
   I / INCLUDE; the others (SCHUB, R+ ...) are skipped like comments }
 procedure Directive;
 var d, a: TName;
-    yes: boolean;
+    yes, on: boolean;
+    c: char;
 begin
+  { switches: R+ Q- I+, several with commas }
+  if (((ch >= 'A') and (ch <= 'Z')) or ((ch >= 'a') and (ch <= 'z'))) and (srcPos < srcEnd) and
+     ((Mem[curBase + srcPos] = ord('+')) or (Mem[curBase + srcPos] = ord('-'))) then begin
+    repeat
+      c := UpCase(ch); NextCh;
+      on := ch = '+'; NextCh;
+      if c = 'R' then swR := on else if c = 'Q' then swQ := on else if c = 'I' then swI := on;
+      while ch = ' ' do NextCh;
+      if ch <> ',' then break;
+      NextCh;
+      while ch = ' ' do NextCh;
+    until false;
+    SkipComment('}');
+    exit;
+  end;
   DirWord(d);
   while ch = ' ' do NextCh;
   if (d = 'I') and (ch <> '+') and (ch <> '-') then d := 'INCLUDE';
@@ -2219,6 +2236,7 @@ begin
   aV := RtAdr('rt_v'); aStp := RtAdr('rt_stp'); aHeapbase := RtAdr('rt_heapbase');
   aSavesp := RtAdr('rt_savesp');
   aSpare := RtAdr('rt_spare');
+  aRtError := RtAdr('rt_error');
 end;
 
 function LibProc(const n: TName): integer;
@@ -2838,9 +2856,77 @@ begin
   x.typ := t;
 end;
 
+{ ---- the switches R+ and Q+: runtime errors 201 and 215 }
+{ the jump to the runtime error: 65C816 rep #$30 / lda #code / jml rt_error
+  (9 bytes, from any register width), RISC-V li a0 / call rt_error (12) }
+procedure ErrJump(code: integer);
+begin
+  if rv then begin RLi(rA0, code); RCall(aRtError); end
+  else begin Op8($C2, $30); Op16($A9, code); Op24($5C, aRtError); end;
+end;
+
+{ the value just loaded (type t: A, X:A for a 32-bit one; RISC-V a0) within
+  lo..hi, else runtime error code; the value stays }
+procedure RangeCheck(t: integer; lo, hi: longint; code: integer);
+var sg: boolean;
+begin
+  if (lo <= types[t].lo) and (hi >= types[t].hi) then exit;
+  sg := types[t].sgn;
+  if rv then begin
+    if lo > types[t].lo then begin
+      RLi(rT1, lo); if sg then RB(5, rA0, rT1, 16) else RB(7, rA0, rT1, 16); ErrJump(code);
+    end;
+    if hi < types[t].hi then begin
+      RLi(rT1, hi); if sg then RB(5, rT1, rA0, 16) else RB(7, rT1, rA0, 16); ErrJump(code);
+    end;
+    exit;
+  end;
+  if IsLong(t) then begin
+    if lo >= 0 then begin
+      { the high word 0, then the low one unsigned }
+      Op16($E0, 0); Op8($F0, 9); ErrJump(code);         { cpx #0 / beq ok }
+      sg := false;
+    end else begin
+      { the high word the sign of the low one, then the low one signed }
+      Op16($E0, 0); Op8($D0, 5); Op16($C9, $8000); Op8($90, 19);
+      Op16($E0, $FFFF); Op8($D0, 5); Op16($C9, $8000); Op8($B0, 9);
+      ErrJump(code);
+      sg := true;
+    end;
+  end;
+  if sg then begin
+    if lo < -32768 then lo := -32768;
+    if hi > 32767 then hi := 32767;
+    Gen($48);                                            { pha }
+    if lo > -32768 then begin
+      { sec / sbc #lo / bvc +3 / eor #$8000 / bpl ok }
+      Gen($38); Op16($E9, lo); Op8($50, 3); Op16($49, $8000); Op8($10, 9); ErrJump(code);
+    end;
+    if hi < 32767 then begin
+      { lda #hi / sec / sbc 1,s / bvc +3 / eor #$8000 / bpl ok }
+      Op16($A9, hi); Gen($38); Op8($E3, 1); Op8($50, 3); Op16($49, $8000); Op8($10, 9); ErrJump(code);
+    end;
+    Gen($68);                                            { pla }
+  end else begin
+    if lo < 0 then lo := 0;
+    if hi > 65535 then hi := 65535;
+    if lo > 0 then begin Op16($C9, lo); Op8($B0, 9); ErrJump(code); end;          { cmp #lo / bcs ok }
+    if hi < 65535 then begin Op16($C9, hi + 1); Op8($90, 9); ErrJump(code); end;  { cmp #hi+1 / bcc ok }
+  end;
+end;
+
+{ RISC-V: a0 holds a 16-bit result as 32 bits: it must be what its 16 bits say }
+procedure RvFits16(sgn: boolean);
+begin
+  RSlli(rT0, rA0, 16);
+  if sgn then RSrai(rT0, rT0, 16) else RSrli(rT0, rT0, 16);
+  RB(0, rT0, rA0, 16); ErrJump(215);
+end;
+
 procedure Selector(var x: TItem);
 var y: TItem;
     t, f, esz, k: integer;
+    khi: longint;
     s: TName;
 begin
   repeat
@@ -2860,9 +2946,9 @@ begin
       Next;
       repeat
         t := x.typ;
-        if types[t].form = fStr then begin esz := 1; x.typ := tChar; k := 0; end
+        if types[t].form = fStr then begin esz := 1; x.typ := tChar; k := 0; khi := types[t].hi; end
         else if types[t].form = fArr then begin
-          esz := types[types[t].base].size; x.typ := types[t].base; k := types[t].lo;
+          esz := types[types[t].base].size; x.typ := types[t].base; k := types[t].lo; khi := types[t].hi;
         end else ErrorN(41, '');
         if not (x.mode in [mGlob, mLoc, mInd]) then ErrorN(42, '');
         { a computed base address must survive the index expression }
@@ -2876,6 +2962,7 @@ begin
         end else if rv then begin
           LoadBool(y);
           if y.mode <> mReg then Load(y);
+          if swR then RangeCheck(y.typ, k, khi, 201);
           RAddi(rA0, rA0, -k);
           if esz = 2 then RSlli(rA0, rA0, 1)
           else if esz = 4 then RSlli(rA0, rA0, 2)
@@ -2892,6 +2979,7 @@ begin
           { index in A, scaled, plus the base }
           LoadBool(y);
           if y.mode <> mReg then Load(y);
+          if swR then RangeCheck(y.typ, k, khi, 201);
           if k <> 0 then begin Gen($38); Op16($E9, k); end;
           if esz = 2 then Gen($0A)
           else if esz = 4 then begin Gen($0A); Gen($0A); end
@@ -3167,6 +3255,9 @@ begin
   if n = 'ord' then begin
     if not IsOrd(x.typ) then ErrorN(53, '');
     if x.mode = mCond then LoadBool(x);
+    { a 1-byte value is loaded as it is before it becomes an integer (else
+      two bytes would be read) }
+    if (x.mode <> mConst) and (types[x.typ].size = 1) then Load(x);
     if x.typ <> tLong then x.typ := tInteger;
   end else if n = 'chr' then begin
     if x.mode = mConst then x.a := x.a and 255
@@ -3539,8 +3630,9 @@ begin
 end;
 
 procedure Arith(op: integer; var x, y: TItem);
-var long, sg: boolean;
-    rt: integer;
+var long, sg, ovfMul, uq: boolean;
+    rt, resT: integer;
+    at: longint;
 begin
   if IsReal(x.typ) or IsReal(y.typ) then begin RealArith(op, x, y); exit; end;
   if not IsInt(x.typ) or not IsInt(y.typ) then ErrorN(61, '');
@@ -3552,11 +3644,32 @@ begin
   long := IsLong(x.typ) or IsLong(y.typ) or (x.mode = mConst) and (IntTypeFor(x.a) = tLong) or
           (y.mode = mConst) and (IntTypeFor(y.a) = tLong);
   sg := types[x.typ].sgn or types[y.typ].sgn;
+  { the overflow check is unsigned when both sides are (a constant that is not
+    negative counts as unsigned), as in the PC compiler }
+  uq := (not types[x.typ].sgn or ((x.mode = mConst) and (x.a >= 0))) and
+        (not types[y.typ].sgn or ((y.mode = mConst) and (y.a >= 0)));
   if rv then begin
     if x.mode = mConst then begin Load(y); RLi(rA1, x.a); end
     else if y.mode = mConst then begin RPop(rA1); RLi(rA0, y.a); end
     else begin Load(y); RPop(rA1); end;
     if not long and (op = sShr) then RNormSz(rA1, 2, false);
+    if swQ and long and ((op = sPlus) or (op = sMinus) or (op = sTimes)) then begin
+      { 32 bit: the result in t2, checked, then a0 }
+      if op = sPlus then begin
+        RR(0, 0, rT2, rA1, rA0); RR(0, 4, rT0, rA1, rT2); RR(0, 4, rT1, rA0, rT2);
+      end else if op = sMinus then begin
+        RR($20, 0, rT2, rA1, rA0); RR(0, 4, rT0, rA1, rA0); RR(0, 4, rT1, rA1, rT2);
+      end;
+      if op = sTimes then begin
+        RR(1, 0, rT2, rA1, rA0); RR(1, 1, rT0, rA1, rA0); RSrai(rT1, rT2, 31);
+        RB(0, rT0, rT1, 16); ErrJump(215);                 { mulh = the sign of mul }
+      end else begin
+        RR(0, 7, rT0, rT0, rT1); RB(5, rT0, rZero, 16); ErrJump(215);
+      end;
+      RMv(rA0, rT2);
+      x.mode := mReg; x.typ := tLong;
+      exit;
+    end;
     case op of
       sPlus: RR(0, 0, rA0, rA1, rA0);
       sMinus: RR($20, 0, rA0, rA1, rA0);
@@ -3576,9 +3689,16 @@ begin
     if long then x.typ := tLong
     else begin
       if not types[x.typ].sgn and not types[y.typ].sgn then x.typ := tWord else x.typ := tInteger;
+      if swQ and ((op = sPlus) or (op = sMinus) or (op = sTimes)) then RvFits16(not uq);
       RNormSz(rA0, 2, types[x.typ].sgn);
     end;
     exit;
+  end;
+  { 65C816, 16-bit multiplication with $Q+: in 32 bits, then the range }
+  ovfMul := swQ and not long and (op = sTimes);
+  if ovfMul then begin
+    if uq then resT := tWord else resT := tInteger;
+    long := true;
   end;
   if long then begin
     ToAB(x, y);
@@ -3590,15 +3710,40 @@ begin
         LdaAbs(aA);
         if op = sPlus then Gen($18) else if op = sMinus then Gen($38);
         Op16(rt, aB); Gen($A8);
-        LdaAbs(aA + 2); Op16(rt, aB + 2); Gen($AA); Gen($98);
+        LdaAbs(aA + 2); Op16(rt, aB + 2);
+        if swQ and ((op = sPlus) or (op = sMinus)) then begin Op8($50, 9); ErrJump(215); end;   { bvc ok }
+        Gen($AA); Gen($98);
       end;
-      sTimes: Jsl(aMul32);
+      sTimes: if not swQ then Jsl(aMul32)
+        else begin
+          { a * b, then (when a <> 0) r div a must give b again: a, b, r in rt_spare }
+          LdaAbs(aA); StaAbs(aSpare); LdaAbs(aA + 2); StaAbs(aSpare + 2);
+          LdaAbs(aB); StaAbs(aSpare + 4); LdaAbs(aB + 2); StaAbs(aSpare + 6);
+          Jsl(aMul32);
+          StaAbs(aSpare + 8); Op16($8E, aSpare + 10);                  { stx }
+          if ovfMul then begin
+            { a 16-bit product: the 32-bit result in the range }
+            RangeCheck(tLong, types[resT].lo, types[resT].hi, 215);
+          end else begin
+            LdaAbs(aSpare); Op16($0D, aSpare + 2);                     { ora: a = 0? }
+            at := pc; Op8($F0, 0);
+            LdaAbs(aSpare + 8); StaAbs(aA); LdaAbs(aSpare + 10); StaAbs(aA + 2);
+            LdaAbs(aSpare); StaAbs(aB); LdaAbs(aSpare + 2); StaAbs(aB + 2);
+            Jsl(aDiv32s);
+            Op16($CD, aSpare + 4); Op8($D0, 5);                        { cmp / bne bad }
+            Op16($EC, aSpare + 6); Op8($F0, 9);                        { cpx / beq ok }
+            ErrJump(215);
+            Mem[cBase + at + 1] := (pc - at - 2) and 255;
+            LdaAbs(aSpare + 8); Op16($AE, aSpare + 10);                { lda / ldx: r }
+          end;
+        end;
       sDiv: Jsl(aDiv32s);
       sMod: Jsl(aMod32s);
       sShl: Jsl(aShl32);
       sShr: Jsl(aShr32);
     end;
     x.mode := mReg; x.typ := tLong;
+    if ovfMul then x.typ := resT;
     exit;
   end;
   if x.mode = mConst then begin
@@ -3623,8 +3768,8 @@ begin
   end else if y.mode = mConst then begin
     Gen($68);   { pla: x }
     case op of
-      sPlus: if y.a = 1 then Gen($1A) else begin Gen($18); Op16($69, y.a); end;
-      sMinus: if y.a = 1 then Gen($3A) else begin Gen($38); Op16($E9, y.a); end;
+      sPlus: if (y.a = 1) and not swQ then Gen($1A) else begin Gen($18); Op16($69, y.a); end;
+      sMinus: if (y.a = 1) and not swQ then Gen($3A) else begin Gen($38); Op16($E9, y.a); end;
       sAnd: Op16($29, y.a);
       sOr: Op16($09, y.a);
       sXor: Op16($49, y.a);
@@ -3652,6 +3797,11 @@ begin
   end;
   x.mode := mReg;
   if not types[x.typ].sgn and not types[y.typ].sgn then x.typ := tWord else x.typ := tInteger;
+  if swQ and ((op = sPlus) or (op = sMinus)) then begin
+    { signed: no overflow (V); unsigned: no carry (+) / no borrow (-) }
+    if not uq then Op8($50, 9) else if op = sPlus then Op8($90, 9) else Op8($B0, 9);
+    ErrJump(215);
+  end;
 end;
 
 function RelCode(op: integer): integer;
@@ -4100,6 +4250,7 @@ procedure StdIncDec(dec: boolean);
 var x, y: TItem;
     s, sz: integer;
     k: longint;
+    chk: boolean;
 begin
   Expect(sLparen);
   VarDesignator(x);
@@ -4119,11 +4270,30 @@ begin
     end;
   end;
   Expect(sRparen);
+  chk := swQ and (types[x.typ].form <> fPtr);
   if rv then begin
     RPop(rT1);
     RLd(sz, types[x.typ].sgn, rA0, rT1, 0);
+    if chk then begin
+      { keep the variable's address (t1 is needed) and the old value }
+      RPush(rT1); RMv(rA2, rA0);
+      if k = 0 then RMv(rA1, rA3) else RLi(rA1, k);
+    end;
     if k = 0 then begin if dec then RR($20, 0, rA0, rA0, rA3) else RR(0, 0, rA0, rA0, rA3); end
     else if dec then RAddi(rA0, rA0, -k) else RAddi(rA0, rA0, k);
+    if chk then begin
+      if sz < 4 then begin
+        { what the variable's bytes say }
+        RSlli(rT0, rA0, 32 - 8 * sz);
+        if types[x.typ].sgn then RSrai(rT0, rT0, 32 - 8 * sz) else RSrli(rT0, rT0, 32 - 8 * sz);
+        RB(0, rT0, rA0, 16); ErrJump(215);
+      end else begin
+        if dec then begin RR(0, 4, rT0, rA2, rA1); RR(0, 4, rT1, rA2, rA0); end
+        else begin RR(0, 4, rT0, rA2, rA0); RR(0, 4, rT1, rA1, rA0); end;
+        RR(0, 7, rT0, rT0, rT1); RB(5, rT0, rZero, 16); ErrJump(215);
+      end;
+      RPop(rT1);
+    end;
     RSt(sz, rA0, rT1, 0);
     exit;
   end;
@@ -4134,12 +4304,20 @@ begin
   if k = 0 then begin if dec then Op16($ED, aT0) else Op16($6D, aT0); end
   else if sz = 1 then begin if dec then Op8($E9, k) else Op8($69, k); end
   else begin if dec then Op16($E9, k) else Op16($69, k); end;
+  if chk and (sz < 4) then begin
+    if types[x.typ].sgn then Op8($50, 9) else if dec then Op8($B0, 9) else Op8($90, 9);
+    ErrJump(215);
+  end;
   Op16($9D, 0);                           { sta 0,x }
   if sz = 1 then Rep;
   if sz = 4 then begin
     Op16($BD, 2);
     if k = 0 then begin if dec then Op16($ED, aT0 + 2) else Op16($6D, aT0 + 2); end
     else begin if dec then Op16($E9, k shr 16) else Op16($69, k shr 16); end;
+    if chk then begin
+      if types[x.typ].sgn then Op8($50, 9) else if dec then Op8($B0, 9) else Op8($90, 9);
+      ErrJump(215);
+    end;
     Op16($9D, 2);
   end;
   Gen($7A);                                { ply }
@@ -4209,6 +4387,12 @@ begin
   PrepStore(x);
   if becomes then Expect(sBecomes);
   Expression(y);
+  if swR and IsOrd(t) and IsOrd(y.typ) and (y.mode <> mConst) and
+     ((types[y.typ].lo < types[t].lo) or (types[y.typ].hi > types[t].hi)) then begin
+    LoadBool(y);
+    if y.mode <> mReg then Load(y);
+    RangeCheck(y.typ, types[t].lo, types[t].hi, 201);
+  end;
   LoadAs(y, t);
   Store(x);
 end;
@@ -5376,6 +5560,7 @@ begin
   IsSchub := rv;
   { the names the PC compiler defines for the target }
   nDef := 0; condDepth := 0; incDepth := 0;
+  swR := false; swQ := false; swI := true;
   DefineName('MERIDIAN');
   if rv then begin DefineName('SCHUB'); DefineName('CPURV32'); end
   else begin DefineName('M816'); DefineName('CPU65C816'); end;
