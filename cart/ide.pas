@@ -34,7 +34,7 @@ function RunMerFile: integer; external 'runmer';
 { fast loops in assembler (compiler/cart.js); text offsets are below 64 KB }
 function FindLF(p, limit: word): word; external 'findlf';
 function LineStartAt(p: word): word; external 'linestart';
-procedure DrawRow(scr, text, n, attr, plain: word); external 'drawrow';
+procedure DrawRow(scr, text, n: word; attr: pointer; plain: word); external 'drawrow';
 
 var
   Scr: array[0..2399] of word absolute $0400;
@@ -414,9 +414,9 @@ begin
   if n < 0 then n := 0;
   if n > Cols then n := Cols;
   if colours and (left + Cols <= 512) then
-    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, word(@lineAttr[left]), (word(aText) shl 8) or 32)
+    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, @lineAttr[left], (word(aText) shl 8) or 32)
   else
-    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, word(@plainAttr[0]), (word(aText) shl 8) or 32);
+    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, @plainAttr[0], (word(aText) shl 8) or 32);
   if not colours then st := stNormal;
   DrawLine := st;
 end;
@@ -1101,7 +1101,11 @@ end;
 begin
   for r := 2 to Rows + 1 do PutStr(1, r, '', aText, Cols);
   r := 2;
+{$IFDEF SCHUB}
+  L('MERIDIAN PASCAL - THE EDITOR ON SCHUB.  CTRL+F10: THE 65C816 EDITOR');
+{$ELSE}
   L('MERIDIAN PASCAL - ON THE MERIDIAN 816');
+{$ENDIF}
   L('');
   L('F1  THIS HELP          F2  SAVE              F3  LOAD');
   L('F4  NEW TEXT           F5  COMPILE AND RUN   F6  NEXT DRIVE (1, 2, 3)');
@@ -1212,7 +1216,13 @@ begin
     7: MakeMer;
     8: Directory;
     9: i := ord(Compile);
-    10: if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then quit := true;
+    10: if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then begin
+          quit := true;
+{$IFDEF SCHUB}
+          { Ctrl+F10: the cartridge starts the 65C816 editor (compiler/cart.js) }
+          if Ctrl then Mem[$B00000] := 1;
+{$ENDIF}
+        end;
   end;
 end;
 
@@ -1407,7 +1417,11 @@ begin
   for i := 0 to 255 do Mem[KeyWas + i] := 0;
   SetDrive(1);
   findText := '';
+{$IFDEF SCHUB}
+  msg := 'WELCOME TO MERIDIAN PASCAL ON SCHUB. F1 FOR HELP.';
+{$ELSE}
   msg := 'WELCOME TO MERIDIAN PASCAL. F1 FOR HELP.';
+{$ENDIF}
   if not CartPresent then msg := 'CARTRIDGE DIRECTORY MISSING';
   NewText;
   DrawTitle;

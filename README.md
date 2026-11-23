@@ -49,6 +49,11 @@ all. See [Start](#start) for the PC side and
   SCHUB with `.schub`), with the same F9/F5/F7 and the syntax of the PC
   assemblers (examples/hello.asm, examples/hellorv.asm; both also show
   the mouse position until a click or Esc).
+  On a core with SCHUB the cartridge starts a SCHUB build of the same
+  editor, compiler and assembler: it compiles about ten times faster and
+  scrolls about three times faster, with the same results. The welcome line
+  says "ON SCHUB"; Ctrl+F10 switches to the 65C816 editor. On a core without
+  SCHUB the cartridge starts the 65C816 editor.
 
 ## Start
 
@@ -92,16 +97,18 @@ ready-made one. To build your own from the sources here, you need Node.js
    ```
 
    This compiles the editor (`cart/ide.pas`), the on-device compiler
-   (`cart/ncomp.pas`) and every library unit in `lib/`, and writes
-   `PASCAL.MOD` (about 310 KB) to the repository folder. When it works it
-   prints one line, for example:
+   (`cart/ncomp.pas`), the assembler (`cart/nasm.pas`) and every library
+   unit in `lib/`, for the 65C816, and the editor, compiler and assembler
+   once more for SCHUB (`compiler/mkschubide.js`). It writes `PASCAL.MOD`
+   (about 700 KB) to the repository folder. When it works it prints one
+   line, for example:
 
    ```
-   .../MeridianPascal/PASCAL.MOD: 315481 bytes ROM, 391 library symbols, bank 0 data up to $992B, programs from $2671
+   .../MeridianPascal/PASCAL.MOD: 712088 bytes ROM, 406 library symbols, bank 0 data up to $A08F, programs from $2672
    ```
 
    Options: `-o FILE` writes somewhere else, `-l` also writes a listing
-   (`PASCAL.lst`). Compile errors are printed as `file(line,col): error: ...`
+   (`PASCAL.lst`), `--no-schub` leaves the SCHUB editor out (about 390 KB). Compile errors are printed as `file(line,col): error: ...`
    and nothing is written.
 
    Instead of the command line you can use the *PASCAL cartridge* button in
@@ -142,6 +149,7 @@ node tests/ncrun.js      # the on-device compiler (inside the cartridge, in the 
 node tests/cartide.js    # the cartridge IDE, driven through the keyboard
 node tests/ncrun.js --schub  # the same programs compiled on the MERIDIAN for SCHUB
 node tests/standalone.js # standalone .MER files saved by the cartridge IDE (65C816 and SCHUB)
+node tests/schubide.js   # the editor on SCHUB: same output as on the 65C816, F5, F7, Ctrl+F10
 ```
 
 ## Layout

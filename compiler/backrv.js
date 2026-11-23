@@ -58,7 +58,9 @@ export function genRV(prog, opts = {}) {
 
   for (const p of prog.procs) genProc(p);
 
-  let rt = RUNTIME_RV.replace(/MBOXADDR/g, h((RVLAYOUT.MBOX | RVLAYOUT.UNCACHED) >>> 0));
+  // opts.layout { LOAD, MBOX, CODE }: a program that does not live at $04:0000
+  const layout = opts.layout || RVLAYOUT;
+  let rt = RUNTIME_RV.replace(/MBOXADDR/g, h((layout.MBOX | RVLAYOUT.UNCACHED) >>> 0));
   // the heap starts where the loader says (programs compiled on the MERIDIAN)
   if (opts.heapVar) rt = rt.replace(/rt_heaporg:\n\tla a0, PAS_HEAP\n/, `rt_heaporg:\n\tli t0, ${h(opts.heapVar)}\n\tlw a0, 0(t0)\n`);
   out.push(rt);
@@ -81,7 +83,7 @@ export function genRV(prog, opts = {}) {
   LBL('PAS_BSS_END');
   LBL('PAS_HEAP');
 
-  return { asm: out.join('\n') + '\n', stub: buildStub() };
+  return { asm: out.join('\n') + '\n', stub: buildStub(layout) };
 
   // ================================================================
   function genProc(p) {
@@ -626,15 +628,116 @@ rt_error:
 	.align 4
 `;
 
+// Request 8, only in the stub of the SCHUB build of the PASCAL editor
+// (layout.RUN): run a program while the editor waits. a1 (+8) is the entry
+// (JSL), or $FFFFFF to load and run the .MER that the DOS parameter block at
+// $16C0 names; +12 is where SCHUB carries on afterwards. SCHUB is stopped
+// meanwhile (its data cache writes through, so nothing is lost), as the
+// program may be a SCHUB program itself. Bank 0 $2000-$B7FF is kept in bank
+// $B0 while it runs (bank $31 may hold the 65C816 editor's copy). Then SCHUB
+// restarts at +12, with the result (a DOS error, or 0) in +12.
+const RUN_REQUEST = String.raw`
+c_run
+	ldx #0
+-	lda @l MBOX+8,x
+	sta @l run_par,x
+	inx
+	cpx #8
+	bne -
+	jsr @w stop
+	lda #0
+	ldx #0
+-	sta @l MBOX,x
+	inx
+	cpx #16
+	bne -
+	rep #$30
+	.al
+	phb
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$00,#$B0
+	plb
+	lda #0
+	tcd
+	sep #$20
+	.as
+	lda @l run_par+2
+	cmp #$FF
+	bne run_direct
+	lda #0                  ; A = 0: load the file
+	phb
+	jsl $FF4000
+	plb
+	sta @l run_res
+	cmp #0                  ; (plb set the flags from the bank)
+	bne run_back
+	bra run_go
+run_direct
+	lda @l run_par          ; the entry, where the DOS would put a loaded file
+	sta @w $16E4
+	lda @l run_par+1
+	sta @w $16E5
+	lda @l run_par+2
+	sta @w $16E6
+run_go
+	phk
+	pea run_ret-1
+	jml [$16E4]
+run_ret
+	sep #$20
+	rep #$10
+	.as
+	.xl
+	lda #0
+	sta @l run_res
+run_back
+	rep #$30
+	.al
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$B0,#$00
+	lda #0
+	tcd
+	sep #$20
+	.as
+	pha
+	plb
+	lda @l run_res
+	sta @l MBOX+12
+	lda #0
+	sta @l MBOX+13
+	sta @l MBOX+14
+	sta @l MBOX+15
+	sta @l escn
+	lda @l run_par+4
+	sta @w SCHUB_START
+	lda @l run_par+5
+	sta @w SCHUB_START+1
+	lda @l run_par+6
+	sta @w SCHUB_START+2
+	lda #0
+	sta @w SCHUB_START+3
+	lda #3                  ; enable + run
+	sta @w SCHUB_CTL
+	jmp @w loop
+run_par
+	.fill 8
+run_res
+	.byte 0
+`;
+
 // --------------------------------------------------------------------------
 // 65C816 host stub: loaded with the program at $04:0000, started with JSL.
 // It starts SCHUB at the RV code and serves its requests through the mailbox.
-export function buildStub() {
-  const MB = RVLAYOUT.MBOX;
+export function buildStub(layout = RVLAYOUT) {
+  const MB = layout.MBOX;
   const hex6 = (v) => '$' + v.toString(16).padStart(6, '0');
   const asm = String.raw`
 	.cpu "65816"
-	* = ${hex6(RVLAYOUT.LOAD)}
+	* = ${hex6(layout.LOAD)}
 	.as
 	.xl
 SCHUB_ID   = $CD00
@@ -658,11 +761,11 @@ stub
 	cmp #$43                ; "C"
 	bne nosch
 	jsr @w stop
-	lda #<${RVLAYOUT.CODE}
+	lda #<${layout.CODE}
 	sta @w SCHUB_START
-	lda #>${RVLAYOUT.CODE}
+	lda #>${layout.CODE}
 	sta @w SCHUB_START+1
-	lda #${(RVLAYOUT.CODE >> 16) & 255}
+	lda #${(layout.CODE >> 16) & 255}
 	sta @w SCHUB_START+2
 	lda #0
 	sta @w SCHUB_START+3
@@ -713,6 +816,10 @@ request
 	beq c_reset
 	cmp #7
 	beq c_dos
+${layout.RUN ? `	cmp #8
+	bne +
+	jmp @w c_run
++` : ''}
 	lda #0
 	bra answer
 c_put
@@ -792,6 +899,7 @@ stop
 	and #$06
 	bne -
 	rts
+${layout.RUN ? RUN_REQUEST : ''}
 escn
 	.byte 0
 lastf
@@ -809,6 +917,6 @@ t_adr
 	.byte 13,0
 `;
   const a = assemble816(asm, { listing: true });
-  if (a.bytes.length > MB - RVLAYOUT.LOAD) throw new Error('stub too large');
+  if (a.bytes.length > MB - layout.LOAD) throw new Error('stub too large');
   return { bytes: a.bytes, asm, listing: formatListing(a.listing) };
 }

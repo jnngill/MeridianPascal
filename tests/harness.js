@@ -36,3 +36,12 @@ export function run(res, { frames = 600, keys = '', untilIdle = true } = {}) {
   }
   return { screen: m.screenText(), output: m.output, state: m.state, message: m.message, frames: f, m };
 }
+
+// start the PASCAL cartridge's 65C816 editor: with SCHUB (which the emulator
+// has) the cartridge starts the SCHUB editor unless Ctrl is held down
+export function startPascal816(m) {
+  m.keyState(0x14, true);
+  m.startCartridge();
+  m.runFrame();
+  m.keyState(0x14, false);
+}

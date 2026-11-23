@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildCart } from './cart.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let cached = null;
@@ -28,7 +28,7 @@ export function ncRun(src, { frames = 3000, keys = '', files = {} } = {}) {
   for (const [name, text] of Object.entries(files)) {
     for (const d of m.drives) d.set(name, new Uint8Array(Buffer.from(text, 'latin1')));
   }
-  m.startCartridge();
+  startPascal816(m);
   let k = 0, f = 0;
   for (; f < frames && m.state === 'running'; f++) {
     if (keys && k < keys.length && f % 3 === 0) m.pushKey(keys.charCodeAt(k++));

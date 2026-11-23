@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildSchubIde } from './mkschubide.js';
 import { buildCartridge } from './cart.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,8 @@ export function buildPascalCart(opts = {}) {
     libUnits: LIB_UNITS,
     name: 'PASCAL',
     listing: !!opts.listing,
+    // the SCHUB build of the editor, started instead when the core has SCHUB
+    schubEditor: opts.schub === false ? undefined : buildSchubIde(),
   });
 }
 
@@ -32,7 +35,7 @@ if (process.argv[1] && process.argv[1].endsWith('mkcart.js')) {
   const args = process.argv.slice(2);
   const oi = args.indexOf('-o');
   const out = oi >= 0 ? args[oi + 1] : path.join(root, 'PASCAL.MOD');
-  const r = buildPascalCart({ listing: args.includes('-l') });
+  const r = buildPascalCart({ listing: args.includes('-l'), schub: !args.includes('--no-schub') });
   if (!r.ok) {
     for (const e of r.errors) console.error(`${e.file ? path.relative(process.cwd(), e.file) : ''}${e.line ? `(${e.line},${e.col})` : ''}: error: ${e.msg}`);
     process.exit(1);

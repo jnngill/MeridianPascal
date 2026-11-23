@@ -751,7 +751,7 @@ end;
 
 { ------------------------------------------------------------ symbols }
 { entry: name (len + 15) at 0, value at 16, next at 20, line at 22,
-  pass defined at 24, flags at 25 (1: unknown in pass 1), pass-1 value at 26 }
+  pass defined at 24, flags at 25 (1: unknown in pass 1), pass-1 value at 28 (aligned for SCHUB) }
 function SymAdr(i: integer): longint;
 begin
   SymAdr := SymBase + 512 + (longint(i - 1) shl 5);
@@ -816,13 +816,13 @@ begin
   end else begin
     a := SymAdr(i);
     if Mem[a + 24] = pass then FailN(2, rawName);
-    if (pass = 2) and (MemL[a + 26] <> v) and (Mem[a + 25] and 1 = 0) then FailN(3, rawName);
+    if (pass = 2) and (MemL[a + 28] <> v) and (Mem[a + 25] and 1 = 0) then FailN(3, rawName);
   end;
   MemL[a + 16] := v;
   MemW[a + 22] := curLine;
   Mem[a + 24] := pass;
   if pass = 1 then begin
-    MemL[a + 26] := v;
+    MemL[a + 28] := v;
     if unknown then Mem[a + 25] := 1 else Mem[a + 25] := 0;
   end;
 end;
@@ -1790,7 +1790,7 @@ end;
 
 function AssembleSource(srcLen: longint; schub: boolean): boolean;
 var p, e: longint;
-    n: integer;
+    n{$IFDEF SCHUB}, k{$ENDIF}: integer;
 begin
   AssembleSource := false;
   ErrMsg := ''; ErrUnit := ''; ErrLine := 0; ErrCol := 0;
@@ -1818,7 +1818,12 @@ begin
       if e - p > 250 then begin ip := 1; FailN(37, ''); end;
       n := e - p;
       AsmWorkPtr^.lne[0] := chr(n);
+{$IFDEF SCHUB}
+      { the blitter would write behind SCHUB's data cache }
+      for k := 1 to n do AsmWorkPtr^.lne[k] := chr(Mem[SrcBase + p + k - 1]);
+{$ELSE}
       if n > 0 then CopyMem(SrcBase + p, longint(@AsmWorkPtr^.lne[1]), n);
+{$ENDIF}
       DoLine;
       p := e + 1;
     end;
@@ -1834,6 +1839,13 @@ begin
   AssembleSource := true;
 end;
 
+{ where the cartridge keeps the SCHUB host stub (byte by byte: the address
+  is odd, and SCHUB reads words only at even addresses) }
+function StubAdr: longint;
+begin
+  StubAdr := Mem[$40005B] or (Mem[$40005C] shl 8) or (longint(Mem[$40005D]) shl 16);
+end;
+
 function AsmPrepareRun: boolean;
 var stubLen, t: longint;
 begin
@@ -1842,7 +1854,7 @@ begin
   if AsmIsSchub then begin
     { the cartridge's host stub at $04:0000, the code behind it }
     stubLen := Mem[$40005E] or (Mem[$40005F] shl 8);
-    CopyMem(MemL[$40005B] and $FFFFFF, RvStubAt, stubLen);
+    CopyMem(StubAdr, RvStubAt, stubLen);
     CopyMem(Stage, RvOrg, AsmSize);
     RunAt := RvStubAt;
     AsmPrepareRun := true;
@@ -1864,7 +1876,7 @@ begin
   Mem[t] := $C2; Mem[t + 1] := $30;                                   { rep #$30 }
   Mem[t + 2] := $8B;                                                  { phb }
   Mem[t + 3] := $A9; MemW[t + 4] := AsmSize - 1;                      { lda #len-1 }
-  Mem[t + 6] := $A2; MemW[t + 7] := Stage and $FFFF;                  { ldx #src }
+  Mem[t + 6] := $A2; Mem[t + 7] := Stage and 255; Mem[t + 8] := (Stage shr 8) and 255;   { ldx #src }
   Mem[t + 9] := $A0; MemW[t + 10] := AsmOrigin and $FFFF;             { ldy #dst }
   Mem[t + 12] := $54; Mem[t + 13] := (AsmOrigin shr 16) and 255;      { mvn dst,src }
   Mem[t + 14] := (Stage shr 16) and 255;
@@ -1886,7 +1898,7 @@ begin
     { host stub, the mailbox page, then the code at $04:0400 }
     stubLen := Mem[$40005E] or (Mem[$40005F] shl 8);
     FillMem(MerBuf + 16, RvOrg - RvStubAt, 0);
-    CopyMem(MemL[$40005B] and $FFFFFF, MerBuf + 16, stubLen);
+    CopyMem(StubAdr, MerBuf + 16, stubLen);
     CopyMem(Stage, MerBuf + 16 + (RvOrg - RvStubAt), AsmSize);
     len := (RvOrg - RvStubAt) + AsmSize;
     load := RvStubAt; start := RvStubAt;
