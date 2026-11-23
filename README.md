@@ -44,7 +44,8 @@ all. See [Start](#start) for the PC side and
   Ctrl+R runs a `.MER` from a drive,
   Ctrl+T switches between 65C816 and SCHUB code, Ctrl+K turns the syntax
   colours on or off. After F5 a runtime error names its line and the
-  cursor goes there. With a mouse: click to place the cursor, the wheel
+  cursor goes there. Debugger: Ctrl+B breakpoint, Ctrl+F7 trace; when
+  stopped F5 go, F7 into, F8 over, F4 to the cursor, Ctrl+W watch. With a mouse: click to place the cursor, the wheel
   scrolls, and the F-key names on the top line can be clicked.
   It also assembles: a NAME.ASM text is 65C816 assembly (or RV32IM for
   SCHUB with `.schub`), with the same F9/F5/F7 and the syntax of the PC

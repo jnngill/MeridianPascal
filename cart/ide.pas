@@ -16,6 +16,16 @@ uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, NCom
 
 const
   RtText = 'RUNTIME ERROR ';  { what rt_error writes }
+  { the debugger: its state (DbgLineAdr in NComp, see compiler/cart.js),
+    the breakpoints (a bit a line), the watches (16 bytes a name), the
+    program's screen while it is stopped }
+  DbgBase = $3D7F00;
+  DbgBits = $3D7000;
+  WatchBase = $3D7400;
+  MaxWatch = 6;
+  ScrSave = $3E0000;
+  aStopLine = $51;            { the line the program stopped at: white on green }
+  aBreakLine = $21;           { a breakpoint: white on red }
   TB = $200000;               { text buffer (= NComp.SrcBase) }
   Stage = $280000;            { loading area }
   MaxText = 60000;
@@ -36,6 +46,10 @@ function RunMerFile: integer; external 'runmer';
 function FindLF(p, limit: word): word; external 'findlf';
 function LineStartAt(p: word): word; external 'linestart';
 procedure DrawRow(scr, text, n: word; attr: pointer; plain: word); external 'drawrow';
+{ the debugger (compiler/cart.js, DEBUG_ASM): continue a stopped 65C816
+  program; let its stops come back to this editor }
+procedure DbgResume; external 'dbgresume';
+procedure DbgSetVec; external 'dbgsetvec';
 
 var
   Scr: array[0..2399] of word absolute $0400;
@@ -48,6 +62,11 @@ var
   msg: string;
   findText: string[40];
   rtLine: integer;                   { the line of the last runtime error, 0 = none }
+  dbgActive: boolean;                { a program is stopped in the debugger }
+  dbgLine: integer;                  { its line (in the program, not a unit) }
+  dbgSchub: boolean;                 { it is a SCHUB program }
+  dbgCols: integer;                  { its screen: 40 or 80 columns }
+  nWatch: integer;
   aText, aBar, aStat: byte;
   repT: longint;
   lastRow: integer;
@@ -114,6 +133,7 @@ procedure TextChanged(p: longint);
 begin
   if p < ckValid then ckValid := p;
   rowsValid := false;
+  if dbgActive then begin dbgActive := false; msg := 'PROGRAM RESET: THE TEXT CHANGED.'; end;
 end;
 
 procedure InsertChars(const s: string);
@@ -393,6 +413,25 @@ begin
   StateAt := st;
 end;
 
+function BreakAt(line: integer): boolean;
+begin
+  BreakAt := (line < 4096) and (Mem[DbgBits + (line shr 3)] and (1 shl (line and 7)) <> 0);
+end;
+
+{ the debugger's colours on a row: the line the program stopped at, a
+  breakpoint }
+procedure MarkRow(row: integer);
+var line, c, a: integer;
+    o: word;
+begin
+  line := topLine + row - 2;
+  if dbgActive and (line = dbgLine) then a := aStopLine
+  else if BreakAt(line) then a := aBreakLine
+  else exit;
+  o := (row - 1) * Cols;
+  for c := 0 to Cols - 1 do Scr[o + c] := (Scr[o + c] and $FF) or (a shl 8);
+end;
+
 function DrawLine(row: integer; p: longint; st: byte): byte;
 { draw the text line starting at p on screen row (2..28); st is the state at
   p, the result the state at the start of the next line }
@@ -420,6 +459,7 @@ begin
   else
     DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, @plainAttr[0], (word(aText) shl 8) or 32);
   if not colours then st := stNormal;
+  MarkRow(row);
   DrawLine := st;
 end;
 
@@ -645,6 +685,19 @@ begin
   rowsValid := false;
 end;
 
+{ the watches, at the bottom of the text while a program is stopped }
+procedure DrawWatches;
+var i, k: integer;
+    n: string[16];
+begin
+  if not dbgActive then exit;
+  for i := 1 to nWatch do begin
+    n[0] := chr(Mem[WatchBase + (i - 1) * 16]);
+    for k := 1 to length(n) do n[k] := chr(Mem[WatchBase + (i - 1) * 16 + k]);
+    PutStr(1, Rows + 1 - nWatch + i, ' ' + n + ' = ' + DebugValue(n), aBar, Cols);
+  end;
+end;
+
 procedure Refresh;
 var row: integer;
     p: longint;
@@ -681,6 +734,7 @@ begin
   lastRow := row;
   lastMsg := msg;
   lastCur := cur;
+  DrawWatches;
   DrawStatus;
   ShowCursor(true);
   ShowPointer;
@@ -1112,12 +1166,117 @@ begin
   else begin rtLine := dl and $FFF; GoToLine(rtLine, 1); end;
 end;
 
+{ the program's screen while it is stopped: kept, and back before it goes on }
+procedure SaveUserScreen;
+begin
+  dbgCols := Mem[$15];
+  CopyMem($0400, ScrSave, 4800);
+  Mem[ScrSave + 4800] := Mem[$10]; Mem[ScrSave + 4801] := Mem[$11]; Mem[ScrSave + 4802] := Mem[$12];
+end;
+
+procedure RestoreUserScreen;
+var r: integer;
+begin
+  r := KernelMode(dbgCols);
+  CopyMem(ScrSave, $0400, 4800);
+  Mem[$10] := Mem[ScrSave + 4800]; Mem[$11] := Mem[ScrSave + 4801]; Mem[$12] := Mem[ScrSave + 4802];
+end;
+
+function AnyBreak: boolean;
+var i: integer;
+begin
+  AnyBreak := false;
+  for i := 0 to 511 do if Mem[DbgBits + i] <> 0 then AnyBreak := true;
+end;
+
+{ after the program ran: it ended, or the debugger stopped it }
+procedure AfterRun;
+var r, err: integer;
+    dl: word;
+begin
+  dl := MemW[DbgLineAdr];
+  if Mem[DbgBase + 3] = 1 then begin
+    { stopped: the editor shows where }
+    SaveUserScreen;
+    dbgActive := true;
+    ResetDisplay;
+    r := KernelMode(80);
+    EditorMouse(true);
+    DrawTitle;
+    redrawAll := true;
+    rtLine := 0;
+    if dl shr 12 <> 0 then begin
+      dbgLine := 0;
+      msg := 'STOPPED IN '; Add(DebugUnitName(dl shr 12)); Add(' LINE '); AddNum(dl and $FFF);
+    end else begin
+      dbgLine := dl and $FFF;
+      GoToLine(dbgLine, 1);
+      msg := 'STOPPED AT LINE '; AddNum(dbgLine);
+    end;
+    Add(': F5 GO F7 INTO F8 OVER F4 TO CURSOR CTRL+F2 END');
+    exit;
+  end;
+  dbgActive := false;
+  err := ScreenError;
+  WriteLn;
+  Write('-- PRESS A KEY --');
+  WaitAnyKey;
+  ResetDisplay;
+  r := KernelMode(80);
+  EditorMouse(true);
+  DrawTitle;
+  redrawAll := true;
+  RunResult(dl, err);
+end;
+
+{ the stopped program goes on: mode 0 to the next breakpoint, 1 into the
+  next line, 2 over calls, 3 to the cursor's line }
+procedure DbgGo(mode: integer);
+begin
+  Mem[DbgBase + 2] := mode;
+  MemW[DbgBase + 8] := curLine;
+  dbgActive := false;
+  EditorMouse(false);
+  RestoreUserScreen;
+  if dbgSchub then RunUser(RunEntry + 2) else DbgResume;
+  AfterRun;
+end;
+
+{ start the program: hooks when there are breakpoints or it is traced }
+procedure StartRun(hooks: boolean; mode: integer);
+var r: integer;
+    isA: boolean;
+begin
+  DebugLines := true;
+  DebugHooks := hooks;
+  if not Compile then exit;
+  isA := IsAsm;
+  if isA then if not AsmPrepareRun then begin msg := UpperCase(ErrMsg); exit; end;
+  dbgSchub := IsSchub;
+  Mem[DbgBase + 2] := mode;
+  Mem[DbgBase + 3] := 0;
+  MemW[DbgBase + 8] := curLine;
+  DbgSetVec;
+  EditorMouse(false);
+  r := KernelMode(40);
+  MemW[DbgLineAdr] := $FFFF;                { assembly: no lines }
+  if isA then RunUser(RunAt)
+  else begin
+    PrepareRun;
+    RunUser(RunEntry);
+  end;
+  AfterRun;
+end;
+
 procedure RunProgram;
 var r, err: integer;
     isA: boolean;
     dl: word;
 begin
+  if dbgActive then begin DbgGo(0); exit; end;
+  if AnyBreak then begin StartRun(true, 0); exit; end;
   DebugLines := true;
+  DebugHooks := false;
   if not Compile then exit;
   isA := IsAsm;
   if isA then if not AsmPrepareRun then begin msg := UpperCase(ErrMsg); exit; end;
@@ -1178,8 +1337,8 @@ begin
   L('ASSEMBLER: NAME.ASM OR ; ON TOP. 65C816 (ENDS WITH RTL); .SCHUB: RISC-V');
   L('YOUR OWN UNITS: USES MYUNIT READS MYUNIT.PAS FROM THE CURRENT DRIVE');
   L('(UNIT, INTERFACE, IMPLEMENTATION, BEGIN OR INITIALIZATION ... END.).');
-  L('SCHUB PROGRAMS RUN ON THE RISC-V CO-PROCESSOR (SDRAM MODULE, SCHUB ON):');
-  L('32-BIT POINTERS, VARIABLES AND HEAP UP TO ABOUT 1 MB.');
+  L('DEBUG: CTRL+B BREAKPOINT, CTRL+F7 TRACE FROM THE START, CTRL+W WATCH;');
+  L('STOPPED: F5 GO, F7 INTO, F8 OVER, F4 TO THE CURSOR, CTRL+F2 END.');
   L('PROGRAMS RUN IN 40 COLUMNS; ESC IN READKEY OR READLN ENDS THEM.');
   L('');
   L('PRESS A KEY.');
@@ -1252,6 +1411,15 @@ end;
 procedure FKey(n: integer);
 var d, i: integer;
 begin
+  if dbgActive then
+    case n of
+      4: begin DbgGo(3); exit; end;
+      5: begin DbgGo(0); exit; end;
+      7: begin DbgGo(1); exit; end;
+      8: begin DbgGo(2); exit; end;
+      2: if Ctrl then begin dbgActive := false; redrawAll := true; msg := 'PROGRAM ENDED (CTRL+F2).'; exit; end;
+    end
+  else if Ctrl and (n = 7) then begin StartRun(true, 1); exit; end;
   case n of
     1: Help;
     2: SaveText;
@@ -1275,6 +1443,24 @@ begin
 {$ENDIF}
         end;
   end;
+end;
+
+{ Ctrl+W: a variable to watch; an empty name takes the last one away }
+procedure WatchKey;
+var n: string;
+    k: integer;
+begin
+  n := '';
+  if not Prompt('WATCH (VARIABLE, R.FIELD, A[3]; EMPTY: REMOVE THE LAST):', n, 15) then exit;
+  if n = '' then begin
+    if nWatch > 0 then nWatch := nWatch - 1;
+  end else begin
+    if nWatch >= MaxWatch then nWatch := MaxWatch - 1;
+    nWatch := nWatch + 1;
+    Mem[WatchBase + (nWatch - 1) * 16] := length(n);
+    for k := 1 to length(n) do Mem[WatchBase + (nWatch - 1) * 16 + k] := ord(UpCase(n[k]));
+  end;
+  redrawAll := true;
 end;
 
 procedure CommandKeys;
@@ -1306,6 +1492,15 @@ begin
       else if SchubDirective(len) then msg := 'TARGET: SCHUB ($SCHUB AT THE TOP OF THE TEXT)'
       else msg := 'TARGET: 65C816';
     end;
+    if Pressed(scB) then begin                                     { Ctrl+B: breakpoint }
+      if curLine < 4096 then begin
+        Mem[DbgBits + (curLine shr 3)] := Mem[DbgBits + (curLine shr 3)] xor (1 shl (curLine and 7));
+        if BreakAt(curLine) then msg := 'BREAKPOINT AT LINE ' else msg := 'NO BREAKPOINT AT LINE ';
+        AddNum(curLine);
+        redrawAll := true;
+      end;
+    end;
+    if Pressed(scW) then WatchKey;                                 { Ctrl+W: watch }
     if Pressed(scK) then begin                                     { Ctrl+K }
       colours := not colours;
       rowsValid := false;
@@ -1467,6 +1662,8 @@ begin
   mouseSeen := false; ptrMoved := false; clickLatch := false; fLatch := 0;
   EditorMouse(true);
   for i := 0 to 255 do Mem[KeyWas + i] := 0;
+  FillMem(DbgBits, 512, 0);
+  nWatch := 0; dbgActive := false;
   SetDrive(1);
   findText := '';
 {$IFDEF SCHUB}

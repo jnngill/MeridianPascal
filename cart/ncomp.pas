@@ -50,6 +50,9 @@ var
     unit in bits 12-15, 0 = the program, the line in bits 0-11), the end of
     the program $FFFF; so the editor can tell where a runtime error was }
   DebugLines: boolean;
+  { with breakpoints or stepping: every statement that stores its line also
+    calls the debugger hook (rt_dbghook, see compiler/cart.js) }
+  DebugHooks: boolean;
 
 const
   DbgLineAdr = $3D7F00;
@@ -65,6 +68,10 @@ function SaveStandalone(const name: string): boolean;
 procedure PrepareRun;
 { the file of unit u (as DebugLines numbers them) }
 function DebugUnitName(u: integer): string;
+{ the value of a global variable of the program compiled last, as text:
+  name, name.field, name[n] (a 65C816 program's bank 0 is in bank $34 while
+  it is stopped) }
+function DebugValue(const name: string): string;
 
 implementation
 
@@ -202,7 +209,7 @@ var
   { target }
   rv: boolean;
   cBase, dataOrg: longint;
-  aRtError, aMemmove: longint;
+  aRtError, aMemmove, aDbgHook: longint;
   { units of your own }
   curFile: string[12];
   inInterface: boolean;
@@ -2229,7 +2236,8 @@ begin
     ExpCount := Mem[$40004D] or (Mem[$40004E] shl 8);
     ParBase := Far24($40004F);
     TypBase := Far24($400052);
-    aRtError := RtAdr('rt_error'); aMemmove := RtAdr('rt_memmove');
+    aRtError := RtAdr('rt_error');
+    aMemmove := RtAdr('rt_memmove'); aDbgHook := RtAdr('rt_dbghook');
     exit;
   end;
   ExpBase := Far24($400025);
@@ -2249,6 +2257,7 @@ begin
   aSavesp := RtAdr('rt_savesp');
   aSpare := RtAdr('rt_spare');
   aRtError := RtAdr('rt_error');
+  aDbgHook := RtAdr('rt_dbghook');
 end;
 
 function LibProc(const n: TName): integer;
@@ -4764,6 +4773,7 @@ begin
   lastDbg := v;
   if rv then begin RLi(rT0, v); RSt(2, rT0, 3, 0); end
   else begin Op16($A9, v); Op24($8F, DbgLineAdr); end;
+  if DebugHooks then begin if rv then RCall(aDbgHook) else Op24($22, aDbgHook); end;
 end;
 
 { DebugLines with $D-: the line is not known ($FFFE), once until a line is
@@ -5789,6 +5799,124 @@ function DebugUnitName(u: integer): string;
 begin
   if (u < 1) or (u > nUnit) then DebugUnitName := ''
   else DebugUnitName := UpperCase(Copy(unitName[u], 1, 8)) + '.PAS';
+end;
+
+{ ---- the debugger's watches }
+function LowerC(c: char): char;
+begin
+  if (c >= 'A') and (c <= 'Z') then LowerC := chr(ord(c) + 32) else LowerC := c;
+end;
+
+function DbgHex(v: longint; n: integer): string;
+var s: string[8];
+    k, d: integer;
+begin
+  s[0] := chr(n);
+  for k := n downto 1 do begin
+    d := v and 15;
+    if d < 10 then s[k] := chr(48 + d) else s[k] := chr(55 + d);
+    v := v shr 4;
+  end;
+  DbgHex := '$' + s;
+end;
+
+function DebugValue(const name: string): string;
+var n: TName;
+    i, s, t, f, k, len: integer;
+    a, v, idx: longint;
+    far, neg: boolean;
+    u: TRealBits;
+    r: string;
+  function B(o: longint): longint;
+  begin
+    if far or IsSchub then B := Mem[a + o] else B := Mem[$340000 + (a + o) and $FFFF];
+  end;
+  procedure Word1;
+  begin
+    n[0] := chr(0);
+    while (i <= length(name)) and ((UpCase(name[i]) in ['A'..'Z', '0'..'9']) or (name[i] = '_')) do begin
+      if length(n) < 15 then begin n[0] := chr(length(n) + 1); n[length(n)] := LowerC(name[i]); end;
+      i := i + 1;
+    end;
+  end;
+begin
+  DebugValue := '?';
+  i := 1;
+  Word1;
+  s := 0;
+  for k := nSym downto 1 do
+    if (s = 0) and (syms[k].kind = skVar) and (syms[k].lev = 0) and (syms[k].name = n) then s := k;
+  if s = 0 then begin DebugValue := 'UNKNOWN'; exit; end;
+  t := syms[s].typ; a := syms[s].adr; far := syms[s].flags and 32 <> 0;
+  { .field and [n] }
+  while i <= length(name) do begin
+    if name[i] = '.' then begin
+      i := i + 1; Word1;
+      if types[t].form <> fRec then exit;
+      f := types[t].fields;
+      while (f <> 0) and (syms[f].name <> n) do f := syms[f].next;
+      if f = 0 then exit;
+      a := a + syms[f].adr; t := syms[f].typ;
+    end else if name[i] = '[' then begin
+      i := i + 1; idx := 0; neg := false;
+      if (i <= length(name)) and (name[i] = '-') then begin neg := true; i := i + 1; end;
+      while (i <= length(name)) and (name[i] in ['0'..'9']) do begin idx := idx * 10 + ord(name[i]) - 48; i := i + 1; end;
+      if neg then idx := -idx;
+      if (i > length(name)) or (name[i] <> ']') then exit;
+      i := i + 1;
+      if types[t].form = fStr then begin a := a + idx; t := tChar; end
+      else if types[t].form = fArr then begin
+        if (idx < types[t].lo) or (idx > types[t].hi) then begin DebugValue := 'OUT OF RANGE'; exit; end;
+        a := a + (idx - types[t].lo) * types[types[t].base].size; t := types[t].base;
+      end else exit;
+    end else exit;
+  end;
+  { the value }
+  case types[t].form of
+    fInt, fEnum, fBool, fChar, fPtr, fNil: begin
+      v := 0;
+      for k := types[t].size - 1 downto 0 do v := (v shl 8) or B(k);
+      if types[t].sgn then begin
+        if (types[t].size = 1) and (v > 127) then v := v - 256
+        else if (types[t].size = 2) and (v > 32767) then v := v - 65536;
+      end;
+      case types[t].form of
+        fBool: if v <> 0 then r := 'TRUE' else r := 'FALSE';
+        fChar: if (v >= 32) and (v < 127) then r := '''' + chr(v) + '''' else r := '#' + IntToStr(v);
+        fPtr, fNil: if v = 0 then r := 'NIL' else r := DbgHex(v, 2 * types[t].size);
+        fEnum: begin
+          r := IntToStr(v);
+          for k := 1 to nSym do
+            if (syms[k].kind = skConst) and (syms[k].typ = t) and (syms[k].adr = v) then r := UpperCase(syms[k].name);
+        end;
+      else
+        r := IntToStr(v);
+      end;
+    end;
+    fReal: begin
+      u.l := B(0) or (B(1) shl 8) or (B(2) shl 16) or (B(3) shl 24);
+      { (Str is hidden here by the scanner's str) }
+      if Abs(u.r) >= 2000000000.0 then r := 'BIG'
+      else begin
+        v := Trunc(u.r);
+        f := Round(Abs(u.r - v) * 10000);
+        if f >= 10000 then begin f := f - 10000; if u.r < 0 then v := v - 1 else v := v + 1; end;
+        r := IntToStr(f + 10000);
+        r[1] := '.';
+        if (v = 0) and (u.r < 0) then r := '-0' + r else r := IntToStr(v) + r;
+      end;
+    end;
+    fStr: begin
+      len := B(0);
+      r := '''';
+      for k := 1 to len do if k <= 40 then r := r + chr(B(k));
+      r := r + '''';
+      if len > 40 then r := r + '...';
+    end;
+  else
+    r := '(...)';
+  end;
+  DebugValue := r;
 end;
 
 procedure PrepareRun;

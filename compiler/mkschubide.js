@@ -154,9 +154,16 @@ rt_throw:
 # SCHUB at .run_resume, which takes the registers back and returns.
 rt_runuser:
 	lw a1, 0(sp)
+	li a2, 8
 	j .run_go
 rt_runmer:
 	li a1, 0xffffff
+	li a2, 8
+	j .run_go
+# dbgresume: a stopped 65C816 program goes on (request 9)
+rt_dbgresume:
+	li a1, 0
+	li a2, 9
 .run_go:
 	la t0, .run_buf
 	sw sp, 0(t0)
@@ -177,8 +184,7 @@ rt_runmer:
 	sw a1, 8(t0)
 	la t1, .run_resume
 	sw t1, 12(t0)
-	li t1, 8
-	sw t1, 4(t0)
+	sw a2, 4(t0)
 	li t1, 1
 	sw t1, 0(t0)
 .run_wait:
@@ -201,6 +207,10 @@ rt_runmer:
 	lw s11, 52(t0)
 	li t0, MBOX_U
 	lw a0, 12(t0)
+	ret
+
+# dbgsetvec: the host stub sets the stop handler itself
+rt_dbgsetvec:
 	ret
 
 	.align 4

@@ -101,7 +101,7 @@ for (let i = 0; i < jobs.length; i++) {
     hold(0x03);
     const ran = until(expect, 4000);
     if (during) during();
-    const ended = until(/PRESS A KEY/, 4000);
+    const ended = until(/PRESS A KEY --/, 4000); frames(5);
     const scr = m.screenText();
     m.pushKey(32); frames(60);
     return { ran, ended, scr, back: /PROGRAM ENDED/.test(line(29)) && /MERIDIAN PASCAL/.test(line(0)) };
@@ -150,7 +150,7 @@ for (let i = 0; i < jobs.length; i++) {
     hold(0x04); frames(20);
     type(name.toLowerCase() + '\n');
     const ran = until(re, 4000);
-    const ended = until(/PRESS A KEY/, 4000);
+    const ended = until(/PRESS A KEY --/, 4000); frames(5);
     m.pushKey(32); frames(60);
     return ran && ended && new RegExp(name.replace('.', '\\.') + ' ENDED').test(line(29)) && ok();
   };
