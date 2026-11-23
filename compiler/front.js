@@ -693,17 +693,17 @@ export class Front {
     const copies = [];
     for (const prm of sym.params) {
       const ploc = { k: 'param', lvl: sym.level, off: prm.off };
-      if (prm.mode === 'var' || prm.mode === 'const' && (isStruct(prm.type) || prm.type.k === 'untyped') ||
+      if (prm.mode === 'var' || prm.mode === 'const' && (isStruct(prm.type) || prm.type.k === 'untyped' || prm.type.k === 'openarray') ||
           prm.mode === 'val' && isStruct(prm.type)) {
         if (prm.mode === 'val') {
           const off = this.allocLocal(prm.type.size, this.alignOf(prm.type));
           copies.push({ from: prm.off, to: off, size: prm.type.size, type: prm.type });
-          this.scope.syms.set(prm.name, { kind: 'var', type: prm.type, loc: { k: 'local', lvl: sym.level, off } });
+          this.scope.syms.set(prm.name, { kind: 'var', name: prm.name, type: prm.type, loc: { k: 'local', lvl: sym.level, off } });
         } else {
-          this.scope.syms.set(prm.name, { kind: 'var', type: prm.type, loc: { ...ploc, byRef: true }, isConst: prm.mode === 'const' });
+          this.scope.syms.set(prm.name, { kind: 'var', name: prm.name, type: prm.type, loc: { ...ploc, byRef: true }, isConst: prm.mode === 'const' });
         }
       } else {
-        this.scope.syms.set(prm.name, { kind: 'var', type: prm.type, loc: ploc, isConst: prm.mode === 'const' });
+        this.scope.syms.set(prm.name, { kind: 'var', name: prm.name, type: prm.type, loc: ploc, isConst: prm.mode === 'const' });
       }
     }
     if (sym.ret) {
@@ -760,7 +760,18 @@ export class Front {
       while (this.accept(',')) ids.push(this.expectId());
       let type;
       if (this.accept(':')) {
-        if (this.is('array')) this.err('open array parameters are not supported; declare a named array type');
+        if (this.accept('array')) {
+          // array of T: passed by address (value ones like const), with a
+          // hidden parameter name$high = the last index (they count from 0)
+          this.expect('of');
+          const elem = this.parseTypeIdent();
+          const oa = { k: 'openarray', elem, size: this.target.ptrSize, name: 'array of ' + typeName(elem) };
+          for (const id of ids) {
+            params.push({ name: id.v, type: oa, mode: mode === 'var' ? 'var' : 'const' });
+            params.push({ name: id.v + '$high', type: T.integer, mode: 'val', hiddenHigh: true });
+          }
+          continue;
+        }
         type = this.parseTypeIdent();
       } else {
         if (mode === 'val') this.err('parameter type expected');
@@ -778,7 +789,7 @@ export class Front {
   }
 
   isRefParam(prm) {
-    return prm.mode === 'var' || isStruct(prm.type) || prm.type.k === 'untyped';
+    return prm.mode === 'var' || isStruct(prm.type) || prm.type.k === 'untyped' || prm.type.k === 'openarray';
   }
   // args are pushed left to right; the last one ends at the lowest address
   layoutParams(sym) {
@@ -1533,6 +1544,10 @@ export class Front {
           } else if (e.type.k === 'array') {
             this.checkIndex(e.type, idx, t.pos);
             e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: e.type.lo, hi: e.type.hi, esz: e.type.elem.size };
+          } else if (e.type.k === 'openarray') {
+            if (!isInt(idx.type) && !isOrdinal(idx.type)) this.err('index must be ordinal');
+            const h = e.n === 'var' && this.lookup(e.sym.name + '$high');
+            e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: 0, esz: e.type.elem.size, hiSym: h || undefined };
           } else if (e.type.k === 'ptr' && e.type.to) {
             // p[i] on typed pointers (pointer arithmetic)
             if (!isInt(idx.type)) this.err('integer index expected');
@@ -1623,6 +1638,7 @@ export class Front {
       case 'low': case 'high': {
         need(1);
         const t = a.n === 'typeref' ? a.type : a.type;
+        if (t.k === 'openarray') return name === 'low' ? this.cint(0) : this.openHigh(a);
         if (t.k === 'array') return { n: 'const', type: t.idx.k === 'int' ? intTypeFor(t.lo) : t.idx, v: name === 'low' ? t.lo : t.hi };
         if (t.k === 'string') return { n: 'const', type: T.integer, v: name === 'low' ? 0 : t.max };
         if (isOrdinal(t)) return { n: 'const', type: t.k === 'int' ? intTypeFor(name === 'low' ? t.lo : t.hi) : t, v: name === 'low' ? t.lo : t.hi };
@@ -1630,6 +1646,8 @@ export class Front {
       }
       case 'sizeof': {
         need(1);
+        if (a.type.k === 'openarray')
+          return this.binop('*', this.binop('+', this.openHigh(a), this.cint(1), pos), this.cint(a.type.elem.size), pos);
         return this.cint(a.type.size);
       }
       case 'length': {
@@ -1719,10 +1737,22 @@ export class Front {
   }
 
   checkCall(sym, args, pos) {
-    if (args.length !== sym.params.length) this.err(`wrong number of arguments for '${sym.name}': ${sym.params.length} expected, ${args.length} given`, pos);
+    const nUser = sym.params.filter(p => !p.hiddenHigh).length;
+    if (args.length !== nUser) this.err(`wrong number of arguments for '${sym.name}': ${nUser} expected, ${args.length} given`, pos);
     const out = [];
-    sym.params.forEach((p, i) => {
+    let k = 0;
+    sym.params.forEach((p) => {
+      if (p.hiddenHigh) { out.push(this.openHigh(out[out.length - 1])); return; }
+      const i = k++;
       let a = args[i];
+      if (p.type.k === 'openarray') {
+        const at = a.type;
+        const el = at.k === 'array' ? at.elem : at.k === 'openarray' ? at.elem : null;
+        if (!a.lv || !el || !(el === p.type.elem || (sameType(el, p.type.elem) && el.size === p.type.elem.size)))
+          this.err(`argument ${i + 1} of '${sym.name}': an array of ${typeName(p.type.elem)} expected`, pos);
+        out.push(a);
+        return;
+      }
       if (p.mode === 'var') {
         if (!a.lv) this.err(`argument ${i + 1} of '${sym.name}' must be a variable`, pos);
         if (p.type.k !== 'untyped' && !this.varCompat(p.type, a.type)) this.err(`argument ${i + 1} of '${sym.name}': ${typeName(p.type)} expected, ${typeName(a.type)} found`, pos);
@@ -1734,6 +1764,14 @@ export class Front {
       out.push(a);
     });
     return { n: 'call', proc: sym, args: out, type: sym.ret || T.void };
+  }
+
+  // the last index of an array passed to an open array parameter
+  openHigh(a) {
+    if (a.type.k === 'array') return this.cint(a.type.hi - a.type.lo);
+    const h = a.n === 'var' && this.lookup(a.sym.name + '$high');
+    if (!h) this.err('open array expected');
+    return { n: 'var', sym: h, type: T.integer, lv: true };
   }
 
   varCompat(pt, at) {
@@ -2025,9 +2063,11 @@ export class Front {
           this.genValue(ie);
           if (chk) this.genRangeCheck(e.lo, e.hi, this.clsOf(ie.type), !this.signedOf(ie.type), 201);
           if (this.clsOf(ie.type) === 'L') this.emit({ o: 'trunc', mt: 'u16' });
+          if (this.sw.R && e.hiSym) this.genOpenCheck(e.hiSym, 'W');
         } else {
           this.genValue(this.conv(ie, T.longint));
           if (chk) this.genRangeCheck(e.lo, e.hi, 'L', false, 201);
+          if (this.sw.R && e.hiSym) this.genOpenCheck(e.hiSym, 'L');
         }
         if (e.esz !== 1) this.genMulConst(e.esz, P);
         this.emit({ o: 'add', s: P, u: true });
@@ -2206,7 +2246,7 @@ export class Front {
     }
     sym.params.forEach((p, i) => {
       const a = c.args[i];
-      if (p.mode === 'var' || p.type.k === 'untyped') {
+      if (p.mode === 'var' || p.type.k === 'untyped' || p.type.k === 'openarray') {
         this.genAddr(a);
         this.emit({ o: 'arg', s: P });
       } else if (p.type.k === 'string') {
@@ -2263,6 +2303,20 @@ export class Front {
     this.emit({ o: 'jmp', l: ok });
     this.emit({ o: 'label', l: bad });
     this.genRunError(code);
+    this.emit({ o: 'label', l: ok });
+  }
+
+  // {$R+}: an index of an open array in 0..its high (the hidden parameter)
+  genOpenCheck(hs, cls) {
+    const bad = this.newLabel(), ok = this.newLabel();
+    this.emit({ o: 'dup' }); this.emit({ o: 'lit', s: cls, v: 0 });
+    this.emit({ o: 'cmp', c: 'lt', s: cls, u: false }); this.emit({ o: 'jnz', l: bad });
+    this.emit({ o: 'dup' });
+    this.genValue(this.conv({ n: 'var', sym: hs, type: T.integer, lv: true }, cls === 'L' ? T.longint : T.integer));
+    this.emit({ o: 'cmp', c: 'gt', s: cls, u: false }); this.emit({ o: 'jnz', l: bad });
+    this.emit({ o: 'jmp', l: ok });
+    this.emit({ o: 'label', l: bad });
+    this.genRunError(201);
     this.emit({ o: 'label', l: ok });
   }
 

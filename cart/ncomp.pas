@@ -228,6 +228,8 @@ var
   { labels: their table in expansion RAM; the slots FOR loops keep on the
     stack (a goto out of a loop drops them) }
   nLab, labStart, nFix, stkSlots, preLabels: integer;
+  skipHidden: boolean;                 { PushArg pushed an open array's hidden index too }
+  openHi: integer;                     { Selector: the hidden index of the open array indexed }
   curUnit: integer;                    { 0: the program, else the unit being compiled }
   msgsBuilt: boolean;
 
@@ -2888,6 +2890,7 @@ end;
 procedure RangeCheck(t: integer; lo, hi: longint; code: integer);
 var sg: boolean;
 begin
+  if hi < lo then exit;                          { an open array (see OpenCheck) }
   if (lo <= types[t].lo) and (hi >= types[t].hi) then exit;
   sg := types[t].sgn;
   if rv then begin
@@ -2933,6 +2936,44 @@ begin
   end;
 end;
 
+function IsOpenArr(t: integer): boolean;
+begin
+  IsOpenArr := (types[t].form = fArr) and (types[t].hi < types[t].lo);
+end;
+
+{ the hidden last index of the open array parameter a variable is }
+function OpenHigh(const n: TName): integer;
+var k: integer;
+begin
+  k := Find(Copy(n, 1, 14) + '$');
+  if k = 0 then ErrorN(67, '');
+  OpenHigh := k;
+end;
+
+{ $R+ on an open array: the index (A / a0) in 0..its hidden last index }
+procedure OpenCheck(hs: integer);
+var h: TItem;
+begin
+  if rv then begin
+    RMv(rA2, rA0);
+    Designator(h, hs); Load(h);
+    RB(4, rA0, rA2, 12);                      { high < index }
+    RB(4, rA2, rZero, 8);                     { index < 0 }
+    W32(JEnc(rZero, 16));
+    ErrJump(201);
+    RMv(rA0, rA2);
+  end else begin
+    Gen($48);                                 { pha }
+    Designator(h, hs); Load(h);
+    Gen($38); Op8($E3, 1);                    { sec / sbc 1,s: high - index }
+    Op8($50, 3); Op16($49, $8000);
+    Op8($30, 4);                              { bmi bad }
+    Op8($A3, 1); Op8($10, 9);                 { lda 1,s / bpl ok }
+    ErrJump(201);
+    Gen($68);                                 { pla }
+  end;
+end;
+
 { RISC-V: a0 holds a 16-bit result as 32 bits: it must be what its 16 bits say }
 procedure RvFits16(sgn: boolean);
 begin
@@ -2943,10 +2984,11 @@ end;
 
 procedure Selector(var x: TItem);
 var y: TItem;
-    t, f, esz, k: integer;
+    t, f, esz, k, oh: integer;
     khi: longint;
     s: TName;
 begin
+  oh := openHi;                     { (an index expression changes openHi) }
   repeat
     if sym = sPeriod then begin
       Next;
@@ -2981,6 +3023,7 @@ begin
           LoadBool(y);
           if y.mode <> mReg then Load(y);
           if swR then RangeCheck(y.typ, k, khi, 201);
+          if swR and (khi < k) and (oh <> 0) then OpenCheck(oh);
           RAddi(rA0, rA0, -k);
           if esz = 2 then RSlli(rA0, rA0, 1)
           else if esz = 4 then RSlli(rA0, rA0, 2)
@@ -2998,6 +3041,7 @@ begin
           LoadBool(y);
           if y.mode <> mReg then Load(y);
           if swR then RangeCheck(y.typ, k, khi, 201);
+          if swR and (khi < k) and (oh <> 0) then OpenCheck(oh);
           if k <> 0 then begin Gen($38); Op16($E9, k); end;
           if esz = 2 then Gen($0A)
           else if esz = 4 then begin Gen($0A); Gen($0A); end
@@ -3052,6 +3096,7 @@ begin
       x.mode := mInd; x.a := 0;
     end;
   end;
+  if IsOpenArr(x.typ) then openHi := OpenHigh(syms[s].name) else openHi := 0;
   Selector(x);
 end;
 
@@ -3251,17 +3296,33 @@ end;
 procedure StdFunc(n: TName; var x: TItem);
 var y: TItem;
     t, k: integer;
+    nm: TName;
     u: TRealBits;
 begin
   Expect(sLparen);
   if (n = 'sizeof') or (n = 'low') or (n = 'high') then begin
     k := 0;
+    nm := id;
     if sym = sIdent then begin
       k := Find(id);
       if (k <> 0) and (syms[k].kind = skType) then begin t := syms[k].typ; Next; end else k := 0;
     end else if sym = sStringKw then begin Next; t := tString; k := 1; end;
     if k = 0 then begin Expression(y); t := y.typ; end;
     Expect(sRparen);
+    if IsOpenArr(t) then begin
+      { an open array parameter: 0, its hidden last index, the size from it }
+      if n = 'low' then MakeConst(x, 0, tInteger)
+      else begin
+        Designator(x, OpenHigh(nm));
+        if n = 'sizeof' then begin
+          Load(x);
+          if rv then begin RAddi(rA0, rA0, 1); RLi(rT1, types[types[t].base].size); RR(1, 0, rA0, rA0, rT1); end
+          else begin Gen($1A); LdxImm(types[types[t].base].size); Jsl(aMul16); end;
+          x.mode := mReg; x.typ := tInteger;
+        end;
+      end;
+      exit;
+    end;
     if n = 'sizeof' then MakeConst(x, types[t].size, tInteger)
     else if types[t].form = fArr then begin
       if n = 'low' then MakeConst(x, types[t].lo, tInteger) else MakeConst(x, types[t].hi, tInteger);
@@ -4087,11 +4148,24 @@ end;
 
 { ================================================================ calls }
 procedure PushArg(p: integer);
-var x: TItem;
+var x, h: TItem;
     s: integer;
     pt: integer;
+    nm: TName;
 begin
   pt := syms[p].typ;
+  if IsOpenArr(pt) then begin
+    nm := id;
+    VarDesignator(x);
+    if (types[x.typ].form <> fArr) or (types[types[x.typ].base].size <> types[types[pt].base].size) then ErrorN(67, '');
+    LoadAdr(x); PushA(2);
+    if IsOpenArr(x.typ) then begin
+      Designator(h, OpenHigh(nm)); Load(h);
+    end else LdaImm(types[x.typ].hi - types[x.typ].lo);
+    PushA(2);
+    skipHidden := true;
+    exit;
+  end;
   if syms[p].isRef then begin
     if (types[pt].form = fStr) and (syms[p].flags and 1 = 0) then begin
       Expression(x); StrAdr(x); PushA(2); exit;
@@ -4138,6 +4212,7 @@ begin
         if p = 0 then ErrorN(68, '');
         PushArg(p);
         p := syms[p].next;
+        if skipHidden then begin p := syms[p].next; skipHidden := false; end;
         n := n + 1;
         if sym = sComma then Next else break;
       until false;
@@ -5501,6 +5576,7 @@ var isFunc: boolean;
     np, mode, pt: integer;
     entry: longint;
     rsz: integer;
+    isOpen: boolean;
 begin
   isFunc := sym = sFunction;
   Next;
@@ -5534,7 +5610,17 @@ begin
             np := np + 1; parIds[np] := id; Next;
             if sym = sComma then Next else break;
           until false;
-          if sym = sColon then begin Next; ParseTypeIdent(pt); end
+          isOpen := false;
+          if sym = sColon then begin
+            Next;
+            if sym = sArray then begin
+              { array of T: an address, and a hidden name$ = the last index }
+              Next; Expect(sOf); ParseTypeIdent(pt);
+              q := NewType(fArr, 0); types[q].lo := 0; types[q].hi := -1; types[q].base := pt;
+              pt := q; isOpen := true;
+              if mode = 0 then mode := 2;
+            end else ParseTypeIdent(pt);
+          end
           else begin if mode = 0 then ErrorN(120, ''); pt := tUntyped; end;
           for i := 1 to np do begin
             p := NewSym(parIds[i], skPar, pt);
@@ -5544,6 +5630,12 @@ begin
             if prev = 0 then syms[s].first := p else syms[prev].next := p;
             prev := p;
             syms[s].npar := syms[s].npar + 1;
+            if isOpen then begin
+              p := NewSym(Copy(parIds[i], 1, 14) + '$', skPar, tInteger);
+              syms[prev].next := p;
+              prev := p;
+              syms[s].npar := syms[s].npar + 1;
+            end;
           end;
           if sym = sSemi then Next else break;
         until false;
