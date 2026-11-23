@@ -2,7 +2,7 @@
 // on the text screen ($0400, 2 bytes per character: code, colour).
 import { buildPascalCart } from '../compiler/mkcart.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 
 const r = buildPascalCart();
 if (!r.ok) { console.log(r.errors); process.exit(1); }
@@ -11,7 +11,7 @@ const check = (what, ok, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} $
 
 const m = new Meridian(roms);
 m.insertCartridge(r.bytes);
-m.startCartridge();
+startPascal816(m);
 const frames = (n) => { for (let i = 0; i < n && m.state === 'running'; i++) m.runFrame(); };
 const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(3); } frames(10); };
 const hold = (scan, n = 8) => { m.keyState(scan, true); frames(n); m.keyState(scan, false); frames(2); };

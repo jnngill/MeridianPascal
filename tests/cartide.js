@@ -4,13 +4,13 @@
 // the error into the status line and the cursor on its line; F2 saves.
 import { buildPascalCart } from '../compiler/mkcart.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 
 const r = buildPascalCart();
 if (!r.ok) { console.log(r.errors); process.exit(1); }
 const m = new Meridian(roms);
 m.insertCartridge(r.bytes);
-m.startCartridge();
+startPascal816(m);
 const frames = (n) => { for (let i = 0; i < n && m.state === 'running'; i++) m.runFrame(); };
 const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(c === '\n' ? 8 : 3); } frames(30); };
 const key = (code, n = 1) => { for (let i = 0; i < n; i++) { m.pushKey(code); frames(4); } frames(10); };

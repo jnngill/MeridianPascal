@@ -240,6 +240,8 @@ export function buildSchubIde() {
   img.set(code, L.CODE - L.LOAD);
   return {
     mer: makeMer(img, L.LOAD, L.LOAD, true),
+    image: img,            // for the cartridge, which copies it to L.LOAD
+    load: L.LOAD,
     symbols: a.symbols,
     info: { codeEnd: bss, heap: a.symbols.get('PAS_HEAP'), stackTop },
   };

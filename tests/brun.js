@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Meridian } from '../emu/meridian.js';
-import { roms, build } from './harness.js';
+import { roms, build, startPascal816 } from './harness.js';
 import { buildPascalCart } from '../compiler/mkcart.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -80,7 +80,7 @@ for (const [n, s] of sources)
   if (!cart.ok) { console.log(cart.errors); process.exit(1); }
   const m = new Meridian(roms);
   m.insertCartridge(cart.bytes);
-  m.startCartridge();
+  startPascal816(m);
   const frames = (n) => { for (let i = 0; i < n && m.state === 'running'; i++) m.runFrame(); };
   const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(3); } };
   const hold = (scan) => { m.keyState(scan, true); frames(4); m.keyState(scan, false); frames(2); };

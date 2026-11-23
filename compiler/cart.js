@@ -438,6 +438,7 @@ ${libInits.map(l => `\tjsl ${l}`).join('\n')}
 `;
     // the cartridge's start code, after the program (it names the program,
     // so it stays out of the library block)
+    const se = schubEditorAsm(opts.schubEditor);
     const boot = `
 	.al
 	.xl
@@ -445,6 +446,7 @@ cart_start
 	phb
 	phd
 	php
+${se.boot}
 	rep #$30
 	lda #0
 	tcd
@@ -471,7 +473,7 @@ ${progInits.map(l => `\tjsl ${l}`).join('\n')}
 	jsl ${prog.main}
 	jml rt_exit
 `;
-    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + exp.asm + rvAsm + MER_STUB } });
+    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
     res.asm = asm;
     const a = assemble816(asm, { listing: !!opts.listing });
     res.symbols = a.symbols;
@@ -494,6 +496,67 @@ ${progInits.map(l => `\tjsl ${l}`).join('\n')}
     else res.errors.push({ msg: `internal error: ${e.message}`, stack: e.stack });
   }
   return res;
+}
+
+// The SCHUB build of the editor (compiler/mkschubide.js), if given: the
+// cartridge starts it instead of the 65C816 editor when the core has SCHUB.
+// The boot code copies the image (stored bank-aligned) from the ROM to its
+// place ($A0:0000) and calls its host stub; when the editor ends with F10 it
+// goes back to BASIC like the 65C816 editor, with Ctrl+F10 (flag at $B0:0000)
+// on to the 65C816 editor. Ctrl held down at the start also picks the 65C816
+// editor; a MiSTer cannot pass on a key held while the core loads, so that
+// is for the emulator and the tests. Outside the library block, so the
+// library stamp stays.
+function schubEditorAsm(ed) {
+  if (!ed) return { boot: '', image: '' };
+  const n = ed.image.length;
+  const banks = Math.ceil(n / 0x10000);
+  const dst = ed.load >> 16;
+  if (ed.load & 0xffff) throw new CompileError('the SCHUB editor must start at a bank boundary');
+  let copy = '';
+  for (let k = 0; k < banks; k++) {
+    const len = Math.min(0x10000, n - k * 0x10000);
+    copy += `\tldx #0\n\tldy #0\n\tlda #$${(len - 1).toString(16)}\n\tmvn #^SCHUBED+${k},#$${(dst + k).toString(16)}\n`;
+  }
+  const boot = `
+	sep #$20
+	rep #$10
+	.as
+	.xl
+	lda @l $00CD00          ; SCHUB there ("SC")?
+	cmp #$53
+	bne cs_816
+	lda @l $00CD01
+	cmp #$43
+	bne cs_816
+	lda @l $033E14          ; Ctrl held down at the start (the tests do it): the 65C816 editor
+	bne cs_816
+	rep #$30
+	.al
+	phb
+${copy}	plb
+	sep #$20
+	.as
+	lda #0
+	sta @l $B00000          ; set by the SCHUB editor on Ctrl+F10
+	jsl $${ed.load.toString(16)}            ; the SCHUB editor (its host stub)
+	sep #$20
+	rep #$10
+	lda @l $B00000          ; Ctrl+F10: on to the 65C816 editor,
+	beq cs_basic
+-	lda @l $033E09          ; once F10 is let go (it would end that one, too)
+	bne -
+	bra cs_816
+cs_basic
+	plp
+	pld
+	plb
+	rtl
+cs_816
+	.al
+	.xl`;
+  const image = `\t.align $10000\nSCHUBED\n${byteLines(ed.image)}\nSCHUBED_END\n`;
+  return { boot, image };
 }
 
 // ---------------------------------------------------------------- exports

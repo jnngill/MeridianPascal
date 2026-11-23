@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { buildPascalCart } from '../compiler/mkcart.js';
 import { buildSchubIde, IDE_LAYOUT } from '../compiler/mkschubide.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 
 const cart = buildPascalCart();
 if (!cart.ok) { console.log(cart.errors); process.exit(1); }
@@ -33,15 +33,15 @@ const jobs = [
 function session(onSchub) {
   const m = new Meridian(roms);
   m.insertCartridge(cart.bytes);
-  if (onSchub) m.startProgram(m.loadMer(rv.mer).start);
-  else m.startCartridge();
+  if (onSchub) m.startCartridge();     // the cartridge starts the SCHUB editor
+  else startPascal816(m);
   let n = 0;
   const frames = (k) => { for (let i = 0; i < k && m.state === 'running'; i++) { m.runFrame(); n++; } };
   const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(3); } frames(10); };
   const hold = (scan, k = 8) => { m.keyState(scan, true); frames(k); m.keyState(scan, false); frames(2); };
   const line = (r) => m.screenText().split('\n')[r] || '';
   frames(120);
-  const out = { started: /MERIDIAN PASCAL/.test(line(0)) && /WELCOME/.test(line(29)), screen: m.screenText(), jobs: [] };
+  const out = { started: /MERIDIAN PASCAL/.test(line(0)) && /WELCOME/.test(line(29)), onSchub: m.rv.running, screen: m.screenText(), jobs: [] };
   for (const [name, text] of jobs) {
     m.drives[1].set(name, Buffer.from(text, 'latin1'));
     hold(0x04); frames(20);                                            // F3
@@ -67,7 +67,8 @@ function session(onSchub) {
 
 const a = session(false);
 const b = session(true);
-check('the SCHUB editor starts (with the cartridge inserted)', b.started, b.screen);
+check('the cartridge starts the SCHUB editor on a core with SCHUB', b.started && b.onSchub, b.screen);
+check('with Ctrl held down it starts the 65C816 editor', a.started && !a.onSchub, a.screen);
 for (let i = 0; i < jobs.length; i++) {
   const x = a.jobs[i], y = b.jobs[i];
   check(`${y.name}: ${y.msg} - same as on the 65C816 (${x.frames} frames there, ${y.frames} on SCHUB)`,
@@ -81,7 +82,7 @@ for (let i = 0; i < jobs.length; i++) {
 {
   const m = new Meridian(roms);
   m.insertCartridge(cart.bytes);
-  m.startProgram(m.loadMer(rv.mer).start);
+  m.startCartridge();
   const frames = (k) => { for (let i = 0; i < k && m.state === 'running'; i++) m.runFrame(); };
   const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(3); } frames(10); };
   const hold = (scan, k = 8) => { m.keyState(scan, true); frames(k); m.keyState(scan, false); frames(2); };
@@ -156,6 +157,25 @@ for (let i = 0; i < jobs.length; i++) {
   if (m2) check('the SCHUB editor runs RRV.MER (SCHUB) from the drive', runMer('RRV.MER', /SCHUB LINE 21/), m.screenText());
   hold(0x04); frames(20); type('nothere.mer\n'); frames(60);
   check('a missing .MER gives a DOS error, and the editor carries on', /CANNOT RUN NOTHERE\.MER/.test(line(29)) && ok(), m.screenText() + `\n${m.state} ${m.schubFault || ''}`);
+  // F10: back to BASIC, as from the 65C816 editor (the cartridge returns to the kernel)
+  hold(0x09); frames(120);
+  check('F10 leaves the SCHUB editor: the cartridge returns, SCHUB is stopped', m.state === 'idle' && !m.rv.running, `${m.state} ${m.message}\n${m.screenText()}`);
+}
+
+// Ctrl+F10 in the SCHUB editor: on to the 65C816 editor
+{
+  const m = new Meridian(roms);
+  m.insertCartridge(cart.bytes);
+  m.startCartridge();
+  const frames = (k) => { for (let i = 0; i < k && m.state === 'running'; i++) m.runFrame(); };
+  frames(120);
+  const welcome = m.screenText().split('\n')[29] || '';
+  m.keyState(0x14, true); m.keyState(0x09, true); frames(8); m.keyState(0x09, false); frames(4); m.keyState(0x14, false);
+  frames(200);
+  const scr = m.screenText().split('\n');
+  check('the SCHUB editor says so when it starts', /ON SCHUB/.test(welcome), welcome);
+  check('Ctrl+F10 leaves the SCHUB editor for the 65C816 editor', m.state === 'running' && !m.rv.running &&
+    /MERIDIAN PASCAL/.test(scr[0]) && /^ *WELCOME TO MERIDIAN PASCAL\. F1/.test(scr[29] || ''), `${m.state} ${m.message}\n${scr.join('\n')}`);
 }
 
 console.log(fail ? `${fail} failed` : 'all ok');

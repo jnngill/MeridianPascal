@@ -1101,7 +1101,11 @@ end;
 begin
   for r := 2 to Rows + 1 do PutStr(1, r, '', aText, Cols);
   r := 2;
+{$IFDEF SCHUB}
+  L('MERIDIAN PASCAL - THE EDITOR ON SCHUB.  CTRL+F10: THE 65C816 EDITOR');
+{$ELSE}
   L('MERIDIAN PASCAL - ON THE MERIDIAN 816');
+{$ENDIF}
   L('');
   L('F1  THIS HELP          F2  SAVE              F3  LOAD');
   L('F4  NEW TEXT           F5  COMPILE AND RUN   F6  NEXT DRIVE (1, 2, 3)');
@@ -1212,7 +1216,13 @@ begin
     7: MakeMer;
     8: Directory;
     9: i := ord(Compile);
-    10: if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then quit := true;
+    10: if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then begin
+          quit := true;
+{$IFDEF SCHUB}
+          { Ctrl+F10: the cartridge starts the 65C816 editor (compiler/cart.js) }
+          if Ctrl then Mem[$B00000] := 1;
+{$ENDIF}
+        end;
   end;
 end;
 
@@ -1407,7 +1417,11 @@ begin
   for i := 0 to 255 do Mem[KeyWas + i] := 0;
   SetDrive(1);
   findText := '';
+{$IFDEF SCHUB}
+  msg := 'WELCOME TO MERIDIAN PASCAL ON SCHUB. F1 FOR HELP.';
+{$ELSE}
   msg := 'WELCOME TO MERIDIAN PASCAL. F1 FOR HELP.';
+{$ENDIF}
   if not CartPresent then msg := 'CARTRIDGE DIRECTORY MISSING';
   NewText;
   DrawTitle;

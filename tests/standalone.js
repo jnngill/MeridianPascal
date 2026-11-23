@@ -4,7 +4,7 @@
 // when a different cartridge occupies $40:0000.
 import { buildPascalCart } from '../compiler/mkcart.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 import { compile } from '../compiler/compile.js';
 import fs from 'node:fs';
 
@@ -16,7 +16,7 @@ const check = (what, ok, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} $
 // ---- make the .MER in the IDE
 const m = new Meridian(roms);
 m.insertCartridge(r.bytes);
-m.startCartridge();
+startPascal816(m);
 const frames = (n) => { for (let i = 0; i < n && m.state === 'running'; i++) m.runFrame(); };
 const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(c === '\n' ? 8 : 3); } frames(30); };
 const hold = (scan, n = 4) => { m.keyState(scan, true); frames(n); m.keyState(scan, false); frames(2); };

@@ -5,7 +5,7 @@ import { buildPascalCart } from '../compiler/mkcart.js';
 import { assemble816 } from '../compiler/asm816.js';
 import { assembleRV } from '../compiler/asmrv.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 
 const r = buildPascalCart();
 if (!r.ok) { console.log(r.errors); process.exit(1); }
@@ -15,7 +15,7 @@ const check = (what, ok, extra = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} $
 
 const m = new Meridian(roms);
 m.insertCartridge(r.bytes);
-m.startCartridge();
+startPascal816(m);
 const frames = (n) => { for (let i = 0; i < n && m.state === 'running'; i++) m.runFrame(); };
 // the stack must stay above the editor's data (bank 0, from the cartridge build)
 let minS = 0xffff, minAt = '';

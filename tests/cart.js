@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildCartridge } from '../compiler/cart.js';
 import { Meridian } from '../emu/meridian.js';
-import { roms } from './harness.js';
+import { roms, startPascal816 } from './harness.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -37,7 +37,7 @@ if (process.argv[1] && process.argv[1].endsWith('cart.js')) {
   console.log(`ROM ${r.bytes.length} bytes, ${r.exports} exports, LIBEND $${r.info.libEnd.toString(16)}, PROGEND $${r.info.progEnd.toString(16)}`);
   const m = new Meridian(roms);
   m.insertCartridge(r.bytes);
-  m.startCartridge();
+  startPascal816(m);
   const frames = +(process.argv[3] || 300);
   for (let f = 0; f < frames && m.state === 'running'; f++) m.runFrame();
   console.log(m.output);
