@@ -46,6 +46,13 @@ var
   IsSchub: boolean;         { the last compilation was for SCHUB }
   RunEntry: longint;        { where RunUser starts the compiled program }
   LinesDone: integer;
+  { F5 builds: every statement writes its line to DbgLineAdr (16 bits: the
+    unit in bits 12-15, 0 = the program, the line in bits 0-11), the end of
+    the program $FFFF; so the editor can tell where a runtime error was }
+  DebugLines: boolean;
+
+const
+  DbgLineAdr = $3D7F00;
 
 function CartPresent: boolean;
 function CompileSource(srcLen: longint): boolean;
@@ -56,6 +63,8 @@ function SchubDirective(n: longint): boolean;
 function SaveStandalone(const name: string): boolean;
 { before RunUser(RunEntry): put a SCHUB program's library and data in place }
 procedure PrepareRun;
+{ the file of unit u (as DebugLines numbers them) }
+function DebugUnitName(u: integer): string;
 
 implementation
 
@@ -207,7 +216,9 @@ var
   nPend: integer;
   { directives: defined names, open IFDEFs, open include files }
   nDef, condDepth, incDepth: integer;
-  swR, swQ, swI: boolean;              { the switches R+ Q+ I+ }
+  swR, swQ, swI, swD: boolean;         { the switches R+ Q+ I+ D+ }
+  lastDbg: longint;                    { DebugLines: the last line stored }
+  curUnit: integer;                    { 0: the program, else the unit being compiled }
   msgsBuilt: boolean;
 
 const
@@ -1483,7 +1494,8 @@ begin
     repeat
       c := UpCase(ch); NextCh;
       on := ch = '+'; NextCh;
-      if c = 'R' then swR := on else if c = 'Q' then swQ := on else if c = 'I' then swI := on;
+      if c = 'R' then swR := on else if c = 'Q' then swQ := on else if c = 'I' then swI := on
+      else if c = 'D' then swD := on;
       while ch = ' ' do NextCh;
       if ch <> ',' then break;
       NextCh;
@@ -4142,6 +4154,8 @@ begin
     syms[s].adr := pc - 3;
   end;
   PopBytes(syms[s].parsz);
+  { a routine of the program stores its own lines: the next statement's again }
+  if syms[s].flags and 4 = 0 then lastDbg := -1;
   x.tmp := false;
   if syms[s].flags and 1 <> 0 then begin
     PopA;
@@ -4738,12 +4752,46 @@ begin
   nWith := n0;
 end;
 
+{ DebugLines: the statement's line into DbgLineAdr (lda #v / sta long; on
+  RISC-V gp points there) }
+procedure StmtLine;
+var v: longint;
+begin
+  v := tokLine;
+  if v > 4095 then v := 4095;
+  v := v or (longint(curUnit) shl 12);
+  if v = lastDbg then exit;
+  lastDbg := v;
+  if rv then begin RLi(rT0, v); RSt(2, rT0, 3, 0); end
+  else begin Op16($A9, v); Op24($8F, DbgLineAdr); end;
+end;
+
+{ DebugLines with $D-: the line is not known ($FFFE), once until a line is
+  stored again }
+procedure NoLine;
+begin
+  if lastDbg = -2 then exit;
+  lastDbg := -2;
+  if rv then begin RLi(rT0, $FFFE); RSt(2, rT0, 3, 0); end
+  else begin Op16($A9, $FFFE); Op24($8F, DbgLineAdr); end;
+end;
+
+{ DebugLines: the program ends here as it should }
+procedure DbgEnd;
+begin
+  if not DebugLines then exit;
+  if rv then begin RLi(rT0, -1); RSt(2, rT0, 3, 0); end
+  else begin Op16($A9, $FFFF); Op24($8F, DbgLineAdr); end;
+  lastDbg := -1;
+end;
+
 procedure Statement;
 var x: TItem;
     s: integer;
     n: TName;
 begin
   nTmp := 0;
+  if DebugLines and (sym <> sEnd) and (sym <> sSemi) then if swD then StmtLine else NoLine;
   case sym of
     sBegin: begin Next; StatSeq; Expect(sEnd); end;
     sIf: IfStat;
@@ -4803,7 +4851,7 @@ begin
       end else if n = 'halt' then begin
         Next;
         if sym = sLparen then begin Next; Expression(x); Load(x); Expect(sRparen); end else LdaImm(0);
-        PushA(2); CallLib('_halt');
+        PushA(2); DbgEnd; CallLib('_halt');
       end else if (n = 'mem') or (n = 'memw') or (n = 'meml') then begin
         Next;
         if n = 'mem' then MemDesignator(x, 1) else if n = 'memw' then MemDesignator(x, 2) else MemDesignator(x, 4);
@@ -5319,6 +5367,7 @@ begin
   until false;
   if sym <> sBegin then ErrorN(126, '');
   { procedure entry }
+  lastDbg := -1;                               { DebugLines: this body stores its lines anew }
   PlaceLocals;
   fs := ctxLoc[curLev];
   ctxFS[curLev] := fs;
@@ -5469,6 +5518,7 @@ var i, u, ifaceEnd, first: integer;
     fname, saveFile: string[12];
     got: longint;
     saveWith: boolean;
+    saveUnit: integer;
 begin
   for i := 1 to nUnit do
     if unitName[i] = n then begin
@@ -5484,6 +5534,7 @@ begin
   if got < 0 then ErrorN(133, fname + ' (' + DosErrorText(DosError) + ')');
   saveFile := curFile; saveWith := hasWith;
   curFile := fname;
+  saveUnit := curUnit; curUnit := u; lastDbg := -1;
   curBase := unitTop; srcPos := 0; srcEnd := got; line := 1; col := 0;
   unitTop := (unitTop + got + 255) and $FFFF00;
   hasWith := ScanWith(curBase, got);
@@ -5525,6 +5576,7 @@ begin
   for i := first to ifaceEnd do
     if syms[i].kind in [skConst, skVar, skType, skProc, skAsm] then syms[i].flags := syms[i].flags or 64;
   hasWith := saveWith; curFile := saveFile;
+  curUnit := saveUnit; lastDbg := -1;
   unitDone[u] := true;
 end;
 
@@ -5560,7 +5612,7 @@ begin
   IsSchub := rv;
   { the names the PC compiler defines for the target }
   nDef := 0; condDepth := 0; incDepth := 0;
-  swR := false; swQ := false; swI := true;
+  swR := false; swQ := false; swI := true; swD := true;
   DefineName('MERIDIAN');
   if rv then begin DefineName('SCHUB'); DefineName('CPURV32'); end
   else begin DefineName('M816'); DefineName('CPU65C816'); end;
@@ -5569,6 +5621,7 @@ begin
   curBase := SrcBase; srcPos := 0; srcEnd := srcLen; line := 1; col := 0;
   tokLine := 1; tokCol := 1;
   pc := 0; dataTop := 0; nLoop := 0; nTmp := 0; nPend := 0; nWith := 0;
+  lastDbg := -1; curUnit := 0;
   hasWith := ScanWith(SrcBase, srcLen);
   for i := 0 to 63 do impType[i] := 0;
   InitKeywords;
@@ -5583,7 +5636,9 @@ begin
     { called by the library after its unit inits }
     RPush(rRa);
     RLi(rS1, RvTmpTop);
+    if DebugLines then RLi(3, DbgLineAdr);  { gp: the line for the editor }
     W32(0); W32(0); mainFix := pc - 8;      { call main (patched) }
+    DbgEnd;
     RPop(rRa);
     RRet;
   end else begin
@@ -5602,6 +5657,7 @@ begin
   LdaImm(StrStackTop); StaAbs(aStp);
   Jsl(aLibinit);
   Gen($22); mainFix := pc; Gen24(0);         { jsl main (patched) }
+  DbgEnd;
   Op24($5C, aExit);                          { jml rt_exit }
   end;
   { program text }
@@ -5729,6 +5785,12 @@ begin
 end;
 
 { ---------------------------------------------------------------- SCHUB run }
+function DebugUnitName(u: integer): string;
+begin
+  if (u < 1) or (u > nUnit) then DebugUnitName := ''
+  else DebugUnitName := UpperCase(Copy(unitName[u], 1, 8)) + '.PAS';
+end;
+
 procedure PrepareRun;
 begin
   if not IsSchub then exit;

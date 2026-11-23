@@ -15,6 +15,7 @@ program PascalIDE;
 uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, NComp, NAsm;
 
 const
+  RtText = 'RUNTIME ERROR ';  { what rt_error writes }
   TB = $200000;               { text buffer (= NComp.SrcBase) }
   Stage = $280000;            { loading area }
   MaxText = 60000;
@@ -46,6 +47,7 @@ var
   fileName: string[16];
   msg: string;
   findText: string[40];
+  rtLine: integer;                   { the line of the last runtime error, 0 = none }
   aText, aBar, aStat: byte;
   repT: longint;
   lastRow: integer;
@@ -1005,7 +1007,10 @@ var n: string;
     p: integer;
     ok: boolean;
 begin
-  if not Compile then exit;
+  DebugLines := false;                     { a standalone program without them }
+  ok := Compile;
+  DebugLines := true;
+  if not ok then exit;
   n := fileName;
   p := Pos('.', n);
   if p > 0 then n := Copy(n, 1, p - 1);
@@ -1066,20 +1071,66 @@ begin
   if n <> '' then RunNamed(n);
 end;
 
-procedure RunProgram;
-var r: integer;
-    isA: boolean;
+{ after a program ran: RUNTIME ERROR n on the screen (rt_error writes it at
+  the start of a line); 0 = none }
+function ScreenError: integer;
+var row, c, v: integer;
+    a: longint;
+    ok: boolean;
+    t: string[14];
 begin
+  ScreenError := 0;
+  t := RtText;
+  for row := 0 to 29 do begin
+    a := $0400 + longint(row) * 80;
+    ok := true;
+    for c := 1 to 14 do
+      if Mem[a + (c - 1) * 2] <> ord(t[c]) then ok := false;
+    if ok then begin
+      v := 0; c := 14;
+      while (Mem[a + c * 2] >= ord('0')) and (Mem[a + c * 2] <= ord('9')) and (c < 20) do begin
+        v := v * 10 + Mem[a + c * 2] - ord('0'); c := c + 1;
+      end;
+      ScreenError := v;
+    end;
+  end;
+end;
+
+{ the message after a run: where it ended, when that was not the end }
+procedure RunResult(dl: word; err: integer);
+var u: integer;
+begin
+  rtLine := 0;
+  if err <> 0 then begin msg := RtText; AddNum(err); end
+  else if dl = $FFFF then begin msg := 'PROGRAM ENDED.'; exit; end
+  else if dl = $FFFE then begin msg := 'PROGRAM STOPPED.'; exit; end
+  else msg := 'PROGRAM STOPPED';
+  if dl >= $FFFE then exit;                     { no line known ($D-) }
+  u := dl shr 12;
+  Add(' AT LINE '); AddNum(dl and $FFF);
+  if u <> 0 then begin Add(' IN '); Add(DebugUnitName(u)); end
+  else begin rtLine := dl and $FFF; GoToLine(rtLine, 1); end;
+end;
+
+procedure RunProgram;
+var r, err: integer;
+    isA: boolean;
+    dl: word;
+begin
+  DebugLines := true;
   if not Compile then exit;
   isA := IsAsm;
   if isA then if not AsmPrepareRun then begin msg := UpperCase(ErrMsg); exit; end;
   EditorMouse(false);
   r := KernelMode(40);
+  MemW[DbgLineAdr] := $FFFF;                { assembly: no lines }
   if isA then RunUser(RunAt)
   else begin
     PrepareRun;
     RunUser(RunEntry);
   end;
+  dl := MemW[DbgLineAdr];
+  err := ScreenError;
   WriteLn;
   Write('-- PRESS A KEY --');
   WaitAnyKey;
@@ -1088,7 +1139,7 @@ begin
   EditorMouse(true);
   DrawTitle;
   redrawAll := true;
-  msg := 'PROGRAM ENDED.';
+  RunResult(dl, err);
 end;
 
 procedure Help;
@@ -1348,7 +1399,8 @@ begin
     col := latchX div 8; row := latchY div 8 + 1;
       if row = 1 then TitleClick(col)
       else if row = 30 then begin
-        if Copy(msg, 1, 11) = 'ERROR LINE ' then GoToLine(ErrLine, ErrCol);
+        if Copy(msg, 1, 11) = 'ERROR LINE ' then GoToLine(ErrLine, ErrCol)
+        else if rtLine > 0 then GoToLine(rtLine, 1);
       end
       else if (row >= 2) and (row <= Rows + 1) then PlaceCursor(row, col);
   end

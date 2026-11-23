@@ -43,7 +43,8 @@ all. See [Start](#start) for the PC side and
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
   Ctrl+R runs a `.MER` from a drive,
   Ctrl+T switches between 65C816 and SCHUB code, Ctrl+K turns the syntax
-  colours on or off. With a mouse: click to place the cursor, the wheel
+  colours on or off. After F5 a runtime error names its line and the
+  cursor goes there. With a mouse: click to place the cursor, the wheel
   scrolls, and the F-key names on the top line can be clicked.
   It also assembles: a NAME.ASM text is 65C816 assembly (or RV32IM for
   SCHUB with `.schub`), with the same F9/F5/F7 and the syntax of the PC
