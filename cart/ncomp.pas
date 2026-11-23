@@ -4053,7 +4053,9 @@ begin
     codeAt := AddBlock(RvCode, CodeSize);
     imgAt := AddBlock(DataImg, DataSize);
     heapAt := Img + len;
-    MemL[heapAt] := (RvData + DataSize + 7) and not longint(7);
+    { byte by byte: heapAt can be odd, and SCHUB writes words only at even addresses }
+    a := (RvData + DataSize + 7) and not longint(7);
+    for i := 0 to 3 do Mem[heapAt + i] := (a shr (8 * i)) and 255;
     len := len + 4;
     nPiece := 0;
     Piece(libAt, RvLib, libLen);

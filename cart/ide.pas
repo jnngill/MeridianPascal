@@ -34,7 +34,7 @@ function RunMerFile: integer; external 'runmer';
 { fast loops in assembler (compiler/cart.js); text offsets are below 64 KB }
 function FindLF(p, limit: word): word; external 'findlf';
 function LineStartAt(p: word): word; external 'linestart';
-procedure DrawRow(scr, text, n, attr, plain: word); external 'drawrow';
+procedure DrawRow(scr, text, n: word; attr: pointer; plain: word); external 'drawrow';
 
 var
   Scr: array[0..2399] of word absolute $0400;
@@ -414,9 +414,9 @@ begin
   if n < 0 then n := 0;
   if n > Cols then n := Cols;
   if colours and (left + Cols <= 512) then
-    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, word(@lineAttr[left]), (word(aText) shl 8) or 32)
+    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, @lineAttr[left], (word(aText) shl 8) or 32)
   else
-    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, word(@plainAttr[0]), (word(aText) shl 8) or 32);
+    DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, @plainAttr[0], (word(aText) shl 8) or 32);
   if not colours then st := stNormal;
   DrawLine := st;
 end;
