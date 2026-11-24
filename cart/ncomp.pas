@@ -231,6 +231,8 @@ var
   skipHidden: boolean;                 { PushArg pushed an open array's hidden index too }
   wantProc: integer;                   { a procedural type is expected: a routine gives its address }
   procAny: integer;                    { the type of @Routine }
+  nObj: integer;                       { object types with a VMT (ObjTab) }
+  callDone: boolean;                   { the designator ended in a method call }
   openHi: integer;                     { Selector: the hidden index of the open array indexed }
   curUnit: integer;                    { 0: the program, else the unit being compiled }
   msgsBuilt: boolean;
@@ -2994,6 +2996,60 @@ begin
   RB(0, rT0, rA0, 16); ErrJump(215);
 end;
 
+{ ---- objects. An object type is a record with sgn = true, lo = the parent,
+  hi = the offset of the VMT link (-1 none). Its methods are members too
+  (skField, flags 128; 8 virtual, 16 constructor, 64 destructor), with Self
+  as the last parameter. A type with a VMT has an entry in ObjTab (8 bytes:
+  the type, the VMT address, the number of slots) and its slots (the
+  method symbols) at SlotTab + 64 * entry. The VMT: the size, then the code
+  addresses (4 bytes each). }
+const
+  ObjTab = $3D6800;
+  SlotTab = $3D6900;
+
+function IsObj(t: integer): boolean;
+begin
+  IsObj := (types[t].form = fRec) and types[t].sgn;
+end;
+
+function ObjIndex(t: integer): integer;
+var i: integer;
+begin
+  ObjIndex := -1;
+  for i := 0 to nObj - 1 do if MemW[ObjTab + i * 8] = t then ObjIndex := i;
+end;
+
+{ a member (field or method) of a record or object, 0 = none }
+function Member(t: integer; const n: TName): integer;
+var f: integer;
+begin
+  f := types[t].fields;
+  while (f <> 0) and (syms[f].name <> n) do f := syms[f].next;
+  Member := f;
+end;
+
+function IsDescendant(a, b: integer): boolean;
+begin
+  IsDescendant := false;
+  while a <> 0 do begin
+    if a = b then begin IsDescendant := true; exit; end;
+    if not IsObj(a) then exit;
+    a := types[a].lo;
+  end;
+end;
+
+procedure MethodCall(var x: TItem; m: integer; isStatic: boolean); forward;
+procedure SelfCall(ot: integer; var x: TItem); forward;
+procedure InheritedCall(var x: TItem); forward;
+procedure NewFunc(var x: TItem); forward;
+
+{ the type of a function result passed through a hidden buffer }
+function ResultType(s: integer): integer;
+begin
+  if (syms[s].flags and 4 <> 0) or (types[syms[s].typ].form = fStr) then ResultType := tString
+  else ResultType := syms[s].typ;
+end;
+
 procedure Selector(var x: TItem);
 var y: TItem;
     t, f, esz, k, oh: integer;
@@ -3010,11 +3066,16 @@ begin
       while (f <> 0) and (syms[f].name <> id) do f := syms[f].next;
       if f = 0 then ErrorN(39, id);
       Next;
+      callDone := false;
+      if syms[f].flags and 128 <> 0 then begin MethodCall(x, f, false); callDone := true; end
+      else begin
       if x.mode in [mGlob, mLoc, mInd, mFarC] then x.a := x.a + syms[f].adr
       else ErrorN(40, '');
       x.typ := syms[f].typ;
       if not rv and (x.mode = mLoc) and (x.a + types[x.typ].size > 255) then begin LoadAdr(x); x.mode := mInd; x.a := 0; end;
+      end;
     end else if sym = sLbrak then begin
+      callDone := false;
       Next;
       repeat
         t := x.typ;
@@ -3070,7 +3131,9 @@ begin
         if sym = sComma then Next else break;
       until false;
       Expect(sRbrak);
+      callDone := false;
     end else if sym = sCaret then begin
+      callDone := false;
       Next;
       if types[x.typ].form <> fPtr then ErrorN(31, '');
       if types[x.typ].base = 0 then ErrorN(45, '');
@@ -3085,6 +3148,7 @@ end;
 procedure Designator(var x: TItem; s: integer);
 var dp: longint;
 begin
+  callDone := false;
   x.typ := syms[s].typ;
   x.tmp := false;
   if syms[s].lev = 0 then begin
@@ -3134,12 +3198,33 @@ function WithField(var x: TItem): boolean;
 var i, f: integer;
 begin
   WithField := false;
+  callDone := false;
   for i := nWith downto 1 do begin
     f := types[withTyp[i]].fields;
     while (f <> 0) and (syms[f].name <> id) do f := syms[f].next;
     if f <> 0 then begin
       Next;
       x.tmp := false; x.tj := 0; x.fj := 0;
+      WithField := true;
+      if syms[f].flags and 128 <> 0 then begin
+        if (f = ctxProc[curLev]) and (sym = sBecomes) then begin
+          { the function method's own name: its result }
+          if syms[f].flags and 1 <> 0 then begin
+            LdaDp(ParDp(curLev, syms[f].hid));
+            x.mode := mInd; x.a := 0; x.typ := ResultType(f);
+          end else begin
+            x.mode := mLoc; x.a := ctxRes[curLev]; x.typ := syms[f].typ;
+          end;
+          exit;
+        end;
+        x.typ := withTyp[i];
+        if withMode[i] = mInd then begin LdaDp(withA[i]); x.mode := mInd; x.a := 0; end
+        else begin x.mode := withMode[i]; x.a := withA[i]; end;
+        MethodCall(x, f, false);
+        callDone := true;
+        Selector(x);
+        exit;
+      end;
       x.typ := syms[f].typ;
       if withMode[i] = mInd then begin
         LdaDp(withA[i]);                        { the record's address, kept in a frame slot }
@@ -3149,7 +3234,6 @@ begin
         if not rv and (x.mode = mLoc) and (x.a + types[x.typ].size > 255) then begin LoadAdr(x); x.mode := mInd; x.a := 0; end;
       end;
       Selector(x);
-      WithField := true;
       exit;
     end;
   end;
@@ -3640,6 +3724,8 @@ begin
         exit;
       end;
       if (id = 'concat') and (Find(id) = 0) then begin Next; StdConcat(x); exit; end;
+      if id = 'inherited' then begin InheritedCall(x); exit; end;
+      if (id = 'new') and (Find(id) = 0) then begin Next; NewFunc(x); exit; end;
       s := Find(id);
       if s = 0 then ErrorN(57, id);
       Next;
@@ -3652,7 +3738,9 @@ begin
           Designator(x, s);
           if (types[x.typ].form = fProc) and (sym = sLparen) then CallIndirect(x);
         end;
-        skType: begin
+        skType: if IsObj(syms[s].typ) and (sym = sPeriod) then begin
+          Next; SelfCall(syms[s].typ, x);
+        end else begin
           t := syms[s].typ;
           Expect(sLparen); Expression(x); Expect(sRparen);
           if (t = tReal) and IsInt(x.typ) then begin LoadReal(x); end
@@ -4209,7 +4297,8 @@ begin
     { var parameter / untyped: an address }
     if (id = 'mem') or (id = 'memw') or (id = 'meml') then ErrorN(66, '');
     VarDesignator(x);
-    if (types[pt].form <> fUntyped) and (types[pt].size <> types[x.typ].size) then ErrorN(67, '');
+    if (types[pt].form <> fUntyped) and (types[pt].size <> types[x.typ].size) then
+      if not (IsObj(pt) and IsDescendant(x.typ, pt)) then ErrorN(67, '');
     LoadAdr(x); PushA(2);
     exit;
   end;
@@ -4220,12 +4309,6 @@ begin
   PushA(types[pt].size);
 end;
 
-{ the type of a function result passed through a hidden buffer }
-function ResultType(s: integer): integer;
-begin
-  if (syms[s].flags and 4 <> 0) or (types[syms[s].typ].form = fStr) then ResultType := tString
-  else ResultType := syms[s].typ;
-end;
 
 procedure CallProc(s: integer; var x: TItem);
 var p, n, i: integer;
@@ -4321,6 +4404,140 @@ begin
   if rv then RAddi(rSp, rSp, 4) else begin Gen($7A); Gen($7A); end;   { the address }
   lastDbg := -1;
   x.mode := mReg; x.typ := syms[ps].typ; x.tmp := false;
+end;
+
+{ x.M(args): x is the object (not loaded yet). The address of the object
+  is kept on the stack under the arguments and pushed again as Self. }
+procedure MethodCall(var x: TItem; m: integer; isStatic: boolean);
+var p, ot, oi, k, w, back, selfP: integer;
+    fix: longint;
+begin
+  ot := x.typ;
+  if rv then w := 4 else w := 2;
+  LoadAdr(x); PushA(2);
+  if syms[m].flags and 1 <> 0 then begin AllocTmp; PushA(2); PushA(2); end;
+  selfP := syms[m].first;
+  while syms[selfP].next <> 0 do selfP := syms[selfP].next;
+  p := syms[m].first;
+  if sym = sLparen then begin
+    Next;
+    if sym <> sRparen then
+      repeat
+        if p = selfP then ErrorN(68, '');
+        PushArg(p);
+        p := syms[p].next;
+        if sym = sComma then Next else break;
+      until false;
+    Expect(sRparen);
+  end;
+  if p <> selfP then ErrorN(69, '');
+  back := syms[m].parsz - w;
+  if syms[m].flags and 1 <> 0 then back := back + w;
+  if rv then RLd(4, false, rA0, rSp, back) else Op8($A3, back + 1);
+  PushA(2);                                   { Self }
+  oi := ObjIndex(ot);
+  { o.Init / New(p, Init): the object gets its type's VMT first }
+  if (syms[m].flags and 16 <> 0) and not isStatic and (types[ot].hi >= 0) then
+    if rv then begin
+      RLi(rT1, MemL[ObjTab + oi * 8 + 2]); RSt(4, rT1, rA0, types[ot].hi);
+    end else begin
+      Gen($AA); LdaImm(MemL[ObjTab + oi * 8 + 2]); Op16($9D, types[ot].hi);   { tax / lda #vmt / sta link,x }
+    end;
+  if (syms[m].flags and 8 <> 0) and not isStatic then begin
+    { virtual: through the VMT of the object }
+    k := 0;
+    while syms[MemW[SlotTab + oi * 64 + k * 4]].name <> syms[m].name do k := k + 1;
+    if rv then begin
+      RLd(4, false, rT0, rSp, 0); RLd(4, false, rT0, rT0, types[ot].hi); RLd(4, false, rT0, rT0, 4 + 4 * k);
+      RI($67, 0, rRa, rT0, 0);                 { jalr ra, 0(t0) }
+    end else begin
+      Op8($A3, 1); Gen($AA); Op16($BD, types[ot].hi); Gen($AA);   { lda 1,s / tax / lda link,x / tax }
+      Op16($BD, 4 + 4 * k); StaAbs(aT0); Op16($BD, 6 + 4 * k); StaAbs(aT0 + 2);
+      Gen($4B);                                { phk }
+      Gen($62); Gen16(2);                      { per: the return address - 1 }
+      Gen($DC); Gen16(aT0);                    { jml [rt_t0] }
+    end;
+  end else if syms[m].flags and 2 <> 0 then Jsl(syms[m].adr)
+  else if rv then begin
+    W32(syms[m].adr); W32(0);
+    syms[m].adr := pc - 8;
+  end else begin
+    Gen($22); fix := syms[m].adr; Gen16(fix); Gen(0);
+    syms[m].adr := pc - 3;
+  end;
+  PopBytes(syms[m].parsz);
+  lastDbg := -1;
+  x.tmp := false;
+  if syms[m].flags and 1 <> 0 then begin
+    PopA; DropSlot;
+    x.mode := mReg; x.typ := ResultType(m); x.tmp := true;
+  end else begin
+    DropSlot;
+    x.mode := mReg; x.typ := syms[m].typ;
+  end;
+  x.a := 0;
+end;
+
+{ inherited M / TAncestor.M in a method: a static call on Self }
+procedure SelfCall(ot: integer; var x: TItem);
+var s, m: integer;
+begin
+  s := Find('self');
+  if (s = 0) or (ot = 0) then ErrorN(97, '');
+  if not IsDescendant(syms[s].typ, ot) then ErrorN(97, '');
+  if sym <> sIdent then ErrorN(38, '');
+  m := Member(ot, id);
+  if m = 0 then ErrorN(39, id);
+  if syms[m].flags and 128 = 0 then ErrorN(39, id);
+  Next;
+  Designator(x, s);
+  x.typ := ot;
+  MethodCall(x, m, true);
+  callDone := true;
+end;
+
+procedure InheritedCall(var x: TItem);
+var s: integer;
+begin
+  Next;
+  s := Find('self');
+  if s = 0 then ErrorN(97, '');
+  SelfCall(types[syms[s].typ].lo, x);
+end;
+
+{ New for a pointer to an object, with a constructor: the pointer in the
+  global a, then the constructor }
+procedure NewObject(t: integer; a: longint);
+var y: TItem;
+    m: integer;
+begin
+  y.mode := mGlob; y.a := a; y.typ := t; y.tmp := false;
+  Load(y);
+  y.mode := mInd; y.a := 0; y.typ := types[t].base;
+  if not IsObj(y.typ) then ErrorN(97, '');
+  if sym <> sIdent then ErrorN(38, '');
+  m := Member(y.typ, id);
+  if m = 0 then ErrorN(39, id);
+  Next;
+  MethodCall(y, m, false);
+end;
+
+{ New(PType, Init(...)) as a function }
+procedure NewFunc(var x: TItem);
+var t: integer;
+    a: longint;
+begin
+  Expect(sLparen);
+  ParseTypeIdent(t);
+  if (types[t].form <> fPtr) or (types[t].base = 0) then ErrorN(45, '');
+  a := AllocData(PtrSz);
+  PeaW(types[types[t].base].size);
+  LibCallPop('_getmem');
+  x.mode := mGlob; x.a := a; x.typ := t; x.tmp := false; x.tj := 0; x.fj := 0;
+  Store(x);
+  if sym = sComma then begin Next; NewObject(t, a); end;
+  Expect(sRparen);
+  x.mode := mGlob; x.a := a; x.typ := t; x.tmp := false;
 end;
 
 { library procedures: arguments by count (parsz from the parameter list) }
@@ -4666,7 +4883,7 @@ begin
     Expression(y);
     if types[t].form = fSet then SetAdr(y)
     else begin
-      if y.typ <> t then ErrorN(30, '');
+      if y.typ <> t then if not (IsObj(t) and IsDescendant(y.typ, t)) then ErrorN(30, '');
       LoadAdr(y);
     end;
     if rv then begin
@@ -4699,8 +4916,9 @@ begin
 end;
 
 procedure StdNewDispose(isNew: boolean);
-var x: TItem;
-    s, t: integer;
+var x, y: TItem;
+    s, t, b, m: integer;
+    a: longint;
 begin
   Expect(sLparen);
   VarDesignator(x);
@@ -4710,9 +4928,34 @@ begin
     PrepStore(x);
     PeaW(types[types[t].base].size);
     LibCallPop('_getmem');
-    Store(x);
+    if sym = sComma then begin
+      { the pointer in a global too, for the constructor }
+      a := AllocData(PtrSz);
+      y.mode := mGlob; y.a := a; y.typ := t; Store(y);
+      Store(x);
+      Next; NewObject(t, a);
+    end else Store(x);
   end else begin
-    Load(x); PushA(PtrSz); PeaW(types[types[t].base].size);
+    Load(x); PushA(PtrSz);
+    b := types[t].base;
+    if sym = sComma then begin
+      { the destructor first }
+      Next;
+      if not IsObj(b) then ErrorN(97, '');
+      if sym <> sIdent then ErrorN(38, '');
+      m := Member(b, id);
+      if m = 0 then ErrorN(39, id);
+      Next;
+      y.mode := mInd; y.a := 0; y.typ := b; y.tmp := false;
+      MethodCall(y, m, false);
+    end;
+    if IsObj(b) and (types[b].hi >= 0) then begin
+      { the size of the object's own type: from its VMT }
+      LdaSlot(1);
+      if rv then begin RLd(4, false, rA0, rA0, types[b].hi); RLd(4, false, rA0, rA0, 0); end
+      else begin Gen($AA); Op16($BD, types[b].hi); Gen($AA); Op16($BD, 0); end;
+      PushA(2);
+    end else PeaW(types[types[t].base].size);
     LibCallPop('_freemem');
   end;
   Expect(sRparen);
@@ -5225,7 +5468,8 @@ begin
         Statement;
         exit;
       end;
-      if WithField(x) then Assignment(x)
+      if WithField(x) then begin if not callDone then Assignment(x); end
+      else if n = 'inherited' then InheritedCall(x)
       else if (n = 'write') or (n = 'writeln') then begin Next; StdWrite(n = 'writeln'); end
       else if (n = 'include') or (n = 'exclude') then begin
         Next; Expect(sLparen);
@@ -5287,8 +5531,15 @@ begin
         case syms[s].kind of
           skVar: begin
             Designator(x, s);
-            if (types[x.typ].form = fProc) and (sym <> sBecomes) then CallIndirect(x)
+            if callDone then
+            else if (types[x.typ].form = fProc) and (sym <> sBecomes) then CallIndirect(x)
             else Assignment(x);
+          end;
+          skType: begin
+            { TAncestor.Method in a method }
+            if not IsObj(syms[s].typ) then ErrorN(97, '');
+            Expect(sPeriod);
+            SelfCall(syms[s].typ, x);
           end;
           skProc: begin
             if (sym = sBecomes) and (s = ctxProc[curLev]) then begin
@@ -5318,6 +5569,12 @@ end;
 
 { ================================================================ declarations }
 procedure TypeDef(var t: integer); forward;
+
+{ an identifier that starts a declaration (not a constructor / destructor) }
+function DeclIdent: boolean;
+begin
+  DeclIdent := (sym = sIdent) and (id <> 'constructor') and (id <> 'destructor');
+end;
 
 { the fields of a record, with a variant part (fields of the variants overlap) }
 procedure FieldList(t: integer; var off: longint; var prev: integer);
@@ -5381,6 +5638,204 @@ begin
       if sym = sSemi then Next else break;
     end;
     off := maxo;
+  end;
+end;
+
+{ (params) of a method f: the chain of skPar symbols }
+procedure ParamList(f: integer);
+var k, nid, i, s, prev, pt: integer;
+    ids: array[1..8] of TName;
+begin
+  prev := 0;
+  if sym <> sLparen then exit;
+  Next;
+  if sym <> sRparen then
+    repeat
+      k := 0;
+      if sym = sVar then begin k := 1; Next; end
+      else if sym = sConst then begin k := 2; Next; end;
+      nid := 0;
+      repeat
+        if sym <> sIdent then ErrorN(119, '');
+        if nid < 8 then nid := nid + 1;
+        ids[nid] := id; Next;
+        if sym = sComma then Next else break;
+      until false;
+      if sym = sColon then begin Next; ParseTypeIdent(pt); end
+      else begin if k = 0 then ErrorN(120, ''); pt := tUntyped; end;
+      for i := 1 to nid do begin
+        s := NewSym(ids[i], skPar, pt);
+        syms[s].isRef := (k = 1) or IsStruct(pt) or (pt = tUntyped);
+        if k = 1 then syms[s].flags := 1;
+        if k = 2 then syms[s].flags := 2;
+        if prev = 0 then syms[f].first := s else syms[prev].next := s;
+        prev := s;
+        syms[f].npar := syms[f].npar + 1;
+      end;
+      if sym = sSemi then Next else break;
+    until false;
+  Expect(sRparen);
+end;
+
+{ Self: the last parameter of a method, and the offsets of them all }
+procedure MethodParams(f, t: integer);
+var k, i, p, s: integer;
+    off: integer;
+begin
+  s := NewSym('self', skPar, t);
+  syms[s].isRef := true; syms[s].flags := 1;
+  p := syms[f].first;
+  if p = 0 then syms[f].first := s
+  else begin
+    while syms[p].next <> 0 do p := syms[p].next;
+    syms[p].next := s;
+  end;
+  syms[f].npar := syms[f].npar + 1;
+  off := 0;
+  k := syms[f].npar;
+  while k > 0 do begin
+    p := syms[f].first;
+    for i := 2 to k do p := syms[p].next;
+    syms[p].adr := off;
+    if rv or not syms[p].isRef and (types[syms[p].typ].size > 2) then off := off + 4 else off := off + 2;
+    k := k - 1;
+  end;
+  if syms[f].flags and 1 <> 0 then begin
+    syms[f].hid := off;
+    if rv then off := off + 4 else off := off + 2;
+  end;
+  syms[f].parsz := off;
+end;
+
+{ object [(Parent)] fields; methods [virtual;] end }
+procedure ObjectDef(var t: integer);
+var parent, f, prev, s, k, i, nid, pt, kind, oi, po, ns, pm, stop: integer;
+    off: longint;
+    ids: array[1..8] of TName;
+    virt, anyVirt: boolean;
+    mname: TName;
+begin
+  Next;
+  parent := 0;
+  if sym = sLparen then begin
+    Next; ParseTypeIdent(parent);
+    if not IsObj(parent) then ErrorN(97, '');
+    Expect(sRparen);
+  end;
+  t := NewType(fRec, 0);
+  types[t].sgn := true; types[t].lo := parent; types[t].hi := -1; types[t].al := 1;
+  off := 0;
+  if parent <> 0 then begin off := types[parent].size; types[t].hi := types[parent].hi; types[t].al := types[parent].al; end;
+  prev := 0;
+  { the fields }
+  while (sym = sIdent) and (id <> 'constructor') and (id <> 'destructor') do begin
+    if (id = 'private') or (id = 'public') then Next
+    else begin
+      nid := 0;
+      repeat
+        if nid < 8 then nid := nid + 1;
+        ids[nid] := id; Next;
+        if sym = sComma then Next else break;
+      until false;
+      Expect(sColon); TypeDef(pt);
+      for i := 1 to nid do begin
+        f := NewSym(ids[i], skField, pt);
+        if rv then begin
+          off := (off + AlignOf(pt) - 1) div AlignOf(pt) * AlignOf(pt);
+          if AlignOf(pt) > types[t].al then types[t].al := AlignOf(pt);
+        end;
+        syms[f].adr := off;
+        off := off + types[pt].size;
+        if prev = 0 then types[t].fields := f else syms[prev].next := f;
+        prev := f;
+      end;
+      Expect(sSemi);
+    end;
+  end;
+  { the methods }
+  anyVirt := false;
+  repeat
+    kind := -1;
+    if sym = sProcedure then kind := 0
+    else if sym = sFunction then kind := 1
+    else if sym = sIdent then begin
+      if id = 'constructor' then kind := 2
+      else if id = 'destructor' then kind := 3
+      else if (id = 'private') or (id = 'public') then begin Next; kind := 4; end;
+    end;
+    if kind < 0 then break;
+    if kind < 4 then begin
+      Next;
+      if sym <> sIdent then ErrorN(108, '');
+      mname := id; Next;
+      s := NewSym(mname, skField, 0);
+      syms[s].lev := 1; syms[s].adr := 0; syms[s].flags := 128;
+      if kind = 2 then syms[s].flags := syms[s].flags or 16;
+      if kind = 3 then syms[s].flags := syms[s].flags or 64;
+      ParamList(s);
+      if kind = 1 then begin
+        Expect(sColon); ParseTypeIdent(pt);
+        syms[s].typ := pt;
+        if types[pt].form in [fStr, fArr, fRec, fSet] then syms[s].flags := syms[s].flags or 1;
+      end;
+      Expect(sSemi);
+      virt := false;
+      if (sym = sIdent) and (id = 'virtual') then begin
+        Next; if sym = sNumber then Next;
+        Expect(sSemi); virt := true;
+      end;
+      if parent <> 0 then begin
+        pm := Member(parent, mname);
+        if pm <> 0 then if syms[pm].flags and 8 <> 0 then virt := true;
+      end;
+      if virt then begin syms[s].flags := syms[s].flags or 8; anyVirt := true; end;
+      MethodParams(s, t);
+      if prev = 0 then types[t].fields := s else syms[prev].next := s;
+      prev := s;
+    end;
+  until false;
+  Expect(sEnd);
+  { the VMT link after the fields of the first type with virtual methods }
+  if (types[t].hi < 0) and anyVirt then begin
+    if rv then begin off := (off + 3) div 4 * 4; if types[t].al < 4 then types[t].al := 4; end;
+    types[t].hi := off;
+    off := off + PtrSz;
+  end;
+  if rv then off := (off + types[t].al - 1) div types[t].al * types[t].al;
+  types[t].size := off;
+  { the members of the parent follow the own ones }
+  stop := 0;
+  if parent <> 0 then begin
+    stop := types[parent].fields;
+    if prev = 0 then types[t].fields := stop else syms[prev].next := stop;
+  end;
+  { the VMT: the parent's slots, overridden or added to by the own ones }
+  if types[t].hi >= 0 then begin
+    if nObj >= 16 then ErrorN(97, '');
+    oi := nObj; nObj := nObj + 1;
+    ns := 0;
+    po := -1;
+    if parent <> 0 then po := ObjIndex(parent);
+    if po >= 0 then begin
+      ns := MemW[ObjTab + po * 8 + 6];
+      for k := 0 to ns - 1 do MemW[SlotTab + oi * 64 + k * 4] := MemW[SlotTab + po * 64 + k * 4];
+    end;
+    f := types[t].fields;
+    while (f <> 0) and (f <> stop) do begin
+      if syms[f].flags and 8 <> 0 then begin
+        k := 0;
+        while (k < ns) and (syms[MemW[SlotTab + oi * 64 + k * 4]].name <> syms[f].name) do k := k + 1;
+        if k = ns then begin
+          if ns >= 16 then ErrorN(97, '');
+          ns := ns + 1;
+        end;
+        MemW[SlotTab + oi * 64 + k * 4] := f;
+      end;
+      f := syms[f].next;
+    end;
+    MemW[ObjTab + oi * 8] := t;
+    MemL[ObjTab + oi * 8 + 2] := AllocData((ns + 1) * 4);
+    MemW[ObjTab + oi * 8 + 6] := ns;
   end;
 end;
 
@@ -5537,6 +5992,7 @@ begin
     end;
   else
     if sym = sIdent then begin
+      if (id = 'object') and (Find(id) = 0) then begin ObjectDef(t); exit; end;
       s := Find(id);
       if (s <> 0) and (syms[s].kind = skType) then begin t := syms[s].typ; Next; exit; end;
     end;
@@ -5557,7 +6013,7 @@ var s, t, i, k: integer;
 begin
   Next;
   nPend := 0;
-  while sym = sIdent do begin
+  while DeclIdent do begin
     n := id; Next;
     Expect(sEql);
     TypeDef(t);
@@ -5622,7 +6078,7 @@ var s, t: integer;
     a: longint;
 begin
   Next;
-  while sym = sIdent do begin
+  while DeclIdent do begin
     n := id; Next;
     if sym = sColon then begin
       Next;
@@ -5653,7 +6109,7 @@ var ids: array[1..16] of TName;
     a: longint;
 begin
   Next;
-  while sym = sIdent do begin
+  while DeclIdent do begin
     n := 0;
     repeat
       if sym <> sIdent then ErrorN(108, '');
@@ -5721,6 +6177,20 @@ begin
   n := id; Next;
   { existing forward declaration? }
   s := 0;
+  if sym = sPeriod then begin
+    { TObj.Method: declared in the object }
+    s := Find(n);
+    if s = 0 then ErrorN(57, n);
+    if (syms[s].kind <> skType) or (curLev <> 0) then ErrorN(97, '');
+    rt := syms[s].typ;
+    if not IsObj(rt) then ErrorN(97, '');
+    Next;
+    if sym <> sIdent then ErrorN(108, '');
+    s := Member(rt, id);
+    if s = 0 then ErrorN(39, id);
+    if syms[s].flags and 130 <> 128 then ErrorN(39, id);
+    Next;
+  end else
   for i := nSym downto 1 do
     if (syms[i].kind = skProc) and (syms[i].name = n) and (syms[i].lev = curLev + 1) and (syms[i].flags and 6 = 0) then s := i;
   if s <> 0 then begin
@@ -5858,9 +6328,20 @@ begin
 end;
 
 { declarations and the body of a procedure (or the program) }
+{ a method's body: the members of Self by name (an implicit WITH) }
+procedure SelfWith(s: integer);
+var p: integer;
+begin
+  p := syms[s].first;
+  while syms[p].next <> 0 do p := syms[p].next;
+  if nWith >= 8 then ErrorN(89, '');
+  nWith := nWith + 1;
+  withTyp[nWith] := syms[p].typ; withMode[nWith] := mInd; withA[nWith] := ParDp(curLev, syms[p].adr);
+end;
+
 procedure Block;
 var entry, fs: longint;
-    s, p, q: integer;
+    s, p, q, w0: integer;
     x: TItem;
     saveLab, saveFix, saveSlots: integer;
 begin
@@ -5873,6 +6354,7 @@ begin
       sVar: VarSection;
       sProcedure, sFunction: ProcDecl;
       sLabel: LabelSection;
+      sIdent: if not DeclIdent then ProcDecl else break;
     else
       break;
     end;
@@ -5900,9 +6382,12 @@ begin
         RLi(rA2, cpSize[curLev, p]);
         RCall(aMemmove);
       end;
+    w0 := nWith;
+    if s <> 0 then if syms[s].kind = skField then SelfWith(s);
     Next;
     StatSeq;
     Expect(sEnd);
+    nWith := w0;
     EndLabels; nLab := labStart; labStart := saveLab; nFix := saveFix; stkSlots := saveSlots;
     FixChain(ctxExit[curLev], pc);
     if (s <> 0) and (syms[s].typ <> 0) and (syms[s].flags and 1 = 0) then
@@ -5923,9 +6408,12 @@ begin
       LdaImm(cpSize[curLev, p] - 1);
       Op8($54, 0); Gen(0);                                         { mvn 0,0 }
     end;
+  w0 := nWith;
+  if s <> 0 then if syms[s].kind = skField then SelfWith(s);
   Next;
   StatSeq;
   Expect(sEnd);
+  nWith := w0;
   EndLabels; nLab := labStart; labStart := saveLab; nFix := saveFix; stkSlots := saveSlots;
   FixChain(ctxExit[curLev], pc);
   { epilogue }
@@ -5980,6 +6468,7 @@ begin
       sVar: VarSection;
       sProcedure, sFunction: ProcDecl;
       sLabel: LabelSection;
+      sIdent: if not DeclIdent then ProcDecl else break;
     else
       break;
     end;
@@ -6109,6 +6598,22 @@ begin
   SchubDirective := UpperCase(t) = '{$SCHUB}';
 end;
 
+{ the VMTs in the data image: the size, then the methods' code }
+procedure FillVmts;
+var i, k, f: integer;
+    v: longint;
+begin
+  for i := 0 to nObj - 1 do begin
+    v := DataImg + MemL[ObjTab + i * 8 + 2] - dataOrg;
+    MemL[v] := types[MemW[ObjTab + i * 8]].size;
+    for k := 0 to MemW[ObjTab + i * 8 + 6] - 1 do begin
+      f := MemW[SlotTab + i * 64 + k * 4];
+      if syms[f].flags and 2 = 0 then ErrorN(39, syms[f].name);
+      MemL[v + 4 + 4 * k] := syms[f].adr;
+    end;
+  end;
+end;
+
 function CompileSource(srcLen: longint): boolean;
 var mainFix, lenAt, heapAt: longint;
     i: integer;
@@ -6137,7 +6642,7 @@ begin
   pc := 0; dataTop := 0; nLoop := 0; nTmp := 0; nPend := 0; nWith := 0;
   lastDbg := -1; curUnit := 0;
   nLab := 0; labStart := 0; nFix := 0; stkSlots := 0; preLabels := 0;
-  wantProc := 0; procAny := 0;
+  wantProc := 0; procAny := 0; nObj := 0;
   hasWith := ScanWith(SrcBase, srcLen);
   for i := 0 to 63 do impType[i] := 0;
   InitKeywords;
@@ -6209,6 +6714,7 @@ begin
   preLabels := nLab;                         { the program's labels belong to its body }
   Block;
   if sym <> sPeriod then ErrorN(140, '');
+  FillVmts;
   if not rv then begin
     Put16(lenAt, dataTop - 1);
     Put16(heapAt, UserData + dataTop);

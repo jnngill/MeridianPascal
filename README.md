@@ -24,7 +24,8 @@ all. See [Start](#start) for the PC side and
 ## What's in it
 
 - **Compiler**: a Turbo Pascal-style language (units, nested procedures,
-  records, sets, pointers, strings, software reals) with two native back ends:
+  records, sets, pointers, strings, software reals, files, objects with
+  virtual methods, procedural types, open arrays, `goto`) with two native back ends:
   65C816 code, or RISC-V code for SCHUB with a 65C816 host stub. Its output is
   `.MER` files that run on the real machine.
 - **Libraries**: `System`, `Crt`, `Graph` (PINSEL), `Sprites` (KOBOLD),
