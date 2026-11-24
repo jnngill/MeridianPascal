@@ -25,6 +25,9 @@ const jobs = [
   ['SNAKE.PAS', ex('snake.pas')],
   ['SSNAKE.PAS', '{$SCHUB}\n' + ex('snake.pas')],
   ['SPRIMES.PAS', '{$SCHUB}\n' + ex('primes.pas')],
+  // objects: the VMTs go into the data image, at odd addresses too
+  ['OBJ.PAS', fs.readFileSync(new URL('cases/22_objects.pas', import.meta.url), 'latin1')],
+  ['SOBJ.PAS', '{$SCHUB}\n' + fs.readFileSync(new URL('cases/22_objects.pas', import.meta.url), 'latin1')],
   ['HELLO.ASM', ex('hello.asm')],
   ['HELLORV.ASM', ex('hellorv.asm')],
 ];

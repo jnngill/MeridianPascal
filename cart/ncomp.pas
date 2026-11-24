@@ -4439,9 +4439,9 @@ begin
   { o.Init / New(p, Init): the object gets its type's VMT first }
   if (syms[m].flags and 16 <> 0) and not isStatic and (types[ot].hi >= 0) then
     if rv then begin
-      RLi(rT1, MemL[ObjTab + oi * 8 + 2]); RSt(4, rT1, rA0, types[ot].hi);
+      RLi(rT1, MemL[ObjTab + oi * 8 + 4]); RSt(4, rT1, rA0, types[ot].hi);
     end else begin
-      Gen($AA); LdaImm(MemL[ObjTab + oi * 8 + 2]); Op16($9D, types[ot].hi);   { tax / lda #vmt / sta link,x }
+      Gen($AA); LdaImm(MemL[ObjTab + oi * 8 + 4]); Op16($9D, types[ot].hi);   { tax / lda #vmt / sta link,x }
     end;
   if (syms[m].flags and 8 <> 0) and not isStatic then begin
     { virtual: through the VMT of the object }
@@ -5817,7 +5817,7 @@ begin
     po := -1;
     if parent <> 0 then po := ObjIndex(parent);
     if po >= 0 then begin
-      ns := MemW[ObjTab + po * 8 + 6];
+      ns := MemW[ObjTab + po * 8 + 2];
       for k := 0 to ns - 1 do MemW[SlotTab + oi * 64 + k * 4] := MemW[SlotTab + po * 64 + k * 4];
     end;
     f := types[t].fields;
@@ -5834,8 +5834,8 @@ begin
       f := syms[f].next;
     end;
     MemW[ObjTab + oi * 8] := t;
-    MemL[ObjTab + oi * 8 + 2] := AllocData((ns + 1) * 4);
-    MemW[ObjTab + oi * 8 + 6] := ns;
+    MemL[ObjTab + oi * 8 + 4] := AllocData((ns + 1) * 4);
+    MemW[ObjTab + oi * 8 + 2] := ns;
   end;
 end;
 
@@ -6598,18 +6598,26 @@ begin
   SchubDirective := UpperCase(t) = '{$SCHUB}';
 end;
 
-{ the VMTs in the data image: the size, then the methods' code }
+{ the VMTs in the data image: the size, then the methods' code. Byte by
+  byte: a VMT can start at an odd address, and SCHUB writes words only at
+  even addresses }
+procedure PutBytes4(a, w: longint);
+var i: integer;
+begin
+  for i := 0 to 3 do Mem[a + i] := (w shr (8 * i)) and 255;
+end;
+
 procedure FillVmts;
 var i, k, f: integer;
     v: longint;
 begin
   for i := 0 to nObj - 1 do begin
-    v := DataImg + MemL[ObjTab + i * 8 + 2] - dataOrg;
-    MemL[v] := types[MemW[ObjTab + i * 8]].size;
-    for k := 0 to MemW[ObjTab + i * 8 + 6] - 1 do begin
+    v := DataImg + MemL[ObjTab + i * 8 + 4] - dataOrg;
+    PutBytes4(v, types[MemW[ObjTab + i * 8]].size);
+    for k := 0 to MemW[ObjTab + i * 8 + 2] - 1 do begin
       f := MemW[SlotTab + i * 64 + k * 4];
       if syms[f].flags and 2 = 0 then ErrorN(39, syms[f].name);
-      MemL[v + 4 + 4 * k] := syms[f].adr;
+      PutBytes4(v + 4 + 4 * k, syms[f].adr);
     end;
   end;
 end;
