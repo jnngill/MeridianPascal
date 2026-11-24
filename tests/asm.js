@@ -28,7 +28,7 @@ let minS = 0xffff, minAt = '';
 const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(3); } frames(10); };
 const hold = (scan, n = 8) => { m.keyState(scan, true); frames(n); m.keyState(scan, false); frames(2); };
 const g = (name, n = 4) => { let v = 0; for (let i = 0; i < n; i++) v += m.mem[S.get(name) + i] * 2 ** (8 * i); return v; };
-const status = () => m.screenText().split('\n')[28];
+const status = () => m.screenText().split('\n')[1];
 const message = () => m.screenText().split('\n')[29].trim();
 frames(60);
 
@@ -36,7 +36,7 @@ frames(60);
 function onDevice(name, text, frm = 600) {
   m.drives[1].set(name, Buffer.from(text, 'latin1'));
   hold(0x04); frames(20);
-  if (/LOAD ANYWAY/.test(m.screenText())) { m.pushKey(89); frames(20); }
+  if (/Open another anyway/.test(m.screenText())) { m.pushKey(89); frames(20); }
   type(name.toLowerCase() + '\n'); frames(60);
   hold(0x01); frames(frm);                                                   // F9
   const size = g('G_nasm_asmsize'), origin = g('G_nasm_asmorigin');
@@ -46,7 +46,7 @@ function compare(what, dev, pc) {
   const a = dev.bytes, b = Array.from(pc.bytes);
   let d = -1;
   for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) { d = i; break; }
-  check(`${what}: ${b.length} bytes, same as the PC assembler`, d < 0 && dev.origin === pc.origin && /^OK/.test(dev.msg),
+  check(`${what}: ${b.length} bytes, same as the PC assembler`, d < 0 && dev.origin === pc.origin && /^Assembled/.test(dev.msg),
     `${dev.msg}\norigin ${dev.origin.toString(16)} vs ${pc.origin.toString(16)}, size ${a.length} vs ${b.length}` +
     (d >= 0 ? `, first difference at +${d}: ${a.slice(d, d + 6).map(x => x?.toString(16))} vs ${b.slice(d, d + 6).map(x => x.toString(16))}` : ''));
 }
@@ -84,7 +84,7 @@ lines.push('-\tdex', '\tbne -', '\tbeq +', '\tnop', '+\tnop', '-\tinx', '-\tiny'
 lines.push('later\t.byte 0');
 const src816 = lines.join('\n') + '\n';
 compare("65C816, every instruction and mode", onDevice("ALL816.ASM", src816, +(process.env.F || 1200)), assemble816(src816));
-check('the status line says ASM 65C816', /ASM 65C816\s*$/.test(status()), status());
+check('the file line says 65C816 assembly', /65C816 assembly/.test(status()), status());
 
 // ---- RV32IM
 const rv = ['; every RV32IM instruction', '.schub', 'k = 100', 'big = $12345', 'start:'];
@@ -106,12 +106,12 @@ const srcRV = rv.join('\n') + '\n';
 const pcRV = assembleRV(srcRV.replace('.schub', ''), { org: 0x40400 });
 pcRV.origin = 0x40400;
 compare('SCHUB RV32IM, every instruction and pseudo-instruction', onDevice('ALLRV.ASM', srcRV, 1200), pcRV);
-check('the status line says ASM SCHUB', /ASM SCHUB\s*$/.test(status()), status());
+check('the file line says SCHUB assembly', /SCHUB assembly/.test(status()), status());
 
 // ---- the examples: F5 runs them, F7 saves a .MER that runs without the cartridge
 import fs from 'node:fs';
 const ex = (n) => fs.readFileSync(new URL(`../examples/${n}`, import.meta.url), 'latin1');
-const lineCol = () => { const x = /LINE (\d+)\s+COL (\d+)/.exec(status()); return x ? [+x[1], +x[2]] : [0, 0]; };
+const lineCol = () => { const x = /Ln (\d+) Col (\d+)/.exec(status()); return x ? [+x[1], +x[2]] : [0, 0]; };
 function f5(frm = 400) { hold(0x03); frames(frm); const scr = m.screenText(); m.pushKey(32); frames(60); return scr; }
 function f7(name) { hold(0x02); frames(300); type('\n'); frames(200); return m.drives[1].get(name); }
 function runMer(mer, frm = 600) {
@@ -140,7 +140,7 @@ const MOVED = /^X \$0123  Y \$00EF$/m;
   check('F5 runs HELLO.ASM: it shows the mouse position on one line', /HELLO FROM THE MERIDIAN!/.test(moved) && MOVED.test(moved) && !/\$00C8/.test(moved), moved);
   check('a click ends HELLO.ASM, back to the editor', /PRESS A KEY/.test(scr), scr);
   m.pushKey(32); frames(60);
-  check('the editor is back', /PROGRAM ENDED/.test(m.screenText()), m.screenText());
+  check('the editor is back', /Program ended/.test(m.screenText()), m.screenText());
   const mer = f7('HELLO.MER');
   check('F7 saves HELLO.MER (load and start $002000)', !!mer && mer[0] === 0x4d && mer[4] === 0 && mer[5] === 0x20 && mer[8] === 0 && mer[9] === 0x20, m.screenText().split('\n')[29]);
   if (mer) {
@@ -151,7 +151,7 @@ const MOVED = /^X \$0123  Y \$00EF$/m;
 }
 {
   const dev = onDevice('HELLORV.ASM', ex('hellorv.asm'));
-  check('examples/hellorv.asm assembles for SCHUB at $040400', /^OK/.test(dev.msg) && dev.origin === 0x40400 && /ASM SCHUB/.test(status()), dev.msg + '\n' + status());
+  check('examples/hellorv.asm assembles for SCHUB at $040400', /^Assembled/.test(dev.msg) && dev.origin === 0x40400 && /SCHUB assembly/.test(status()), dev.msg + '\n' + status());
   const [moved, scr] = mouseRun(m, 300, () => hold(0x03));
   check('F5 runs HELLORV.ASM on SCHUB: it reads the mouse itself', /HELLO FROM SCHUB!/.test(moved) && MOVED.test(moved), moved);
   check('a click ends HELLORV.ASM', /PRESS A KEY/.test(scr), scr);
@@ -175,24 +175,24 @@ const MOVED = /^X \$0123  Y \$00EF$/m;
 
 // ---- errors point at their line
 for (const [what, src, line, re] of [
-  ['undefined symbol', '; t\n\tlda #1\n\tlda nothere\n', 3, /UNDEFINED SYMBOL NOTHERE/],
-  ['unknown instruction', '; t\n\tnop\n\tnop\n\tfoo #1\n', 4, /UNKNOWN INSTRUCTION FOO/],
-  ['branch out of range', '; t\nl\tnop\n\t.fill 200\n\tbne l\n', 4, /BRANCH OUT OF RANGE/],
-  ['addressing mode', '; t\n\tstx $1234,x\n', 2, /ADDRESSING MODE NOT AVAILABLE/],
-  ['symbol twice', '; t\na\tnop\na\tnop\n', 3, /DEFINED TWICE/],
-  ['bad register (SCHUB)', '; t\n\t.schub\n\tadd a0, a1, q9\n', 3, /BAD REGISTER/],
+  ['undefined symbol', '; t\n\tlda #1\n\tlda nothere\n', 3, /UNDEFINED SYMBOL NOTHERE/i],
+  ['unknown instruction', '; t\n\tnop\n\tnop\n\tfoo #1\n', 4, /UNKNOWN INSTRUCTION FOO/i],
+  ['branch out of range', '; t\nl\tnop\n\t.fill 200\n\tbne l\n', 4, /BRANCH OUT OF RANGE/i],
+  ['addressing mode', '; t\n\tstx $1234,x\n', 2, /ADDRESSING MODE NOT AVAILABLE/i],
+  ['symbol twice', '; t\na\tnop\na\tnop\n', 3, /DEFINED TWICE/i],
+  ['bad register (SCHUB)', '; t\n\t.schub\n\tadd a0, a1, q9\n', 3, /BAD REGISTER/i],
 ]) {
   const dev = onDevice('ERR.ASM', src);
-  check(`error: ${what}, line ${line}`, re.test(dev.msg) && new RegExp(`ERROR LINE ${line}:`).test(dev.msg) && lineCol()[0] === line, dev.msg + ' / ' + status());
+  check(`error: ${what}, line ${line}`, re.test(dev.msg) && new RegExp(`Error line ${line}:`).test(dev.msg) && lineCol()[0] === line, dev.msg + ' / ' + status());
 }
 
 // ---- colours for assembly
 onDevice('COL.ASM', '; a comment\n\tlda #$12\t; and more\n\t.byte "AB", 7\n');
 const colAt = (row, needle) => { const t = m.screenText().split('\n')[row - 1]; const c = t.indexOf(needle); return m.mem[0x400 + 2 * ((row - 1) * 80 + c) + 1] & 15; };
 check('assembly colours: comment green, mnemonic white, number turquoise, directive orange, string yellow',
-  colAt(2, 'comment') === 13 && colAt(3, 'lda') === 1 && colAt(3, '$12') === 3 && colAt(3, 'and more') === 13 && colAt(4, '.byte') === 8 && colAt(4, '"AB"') === 7,
-  [colAt(2, 'comment'), colAt(3, 'lda'), colAt(3, '$12'), colAt(3, 'and more'), colAt(4, '.byte'), colAt(4, '"AB"')].join(',') + '\n' +
-  [2, 3, 4].map(row => { let t = '', a = ''; for (let c = 0; c < 24; c++) { const o = 0x400 + 2 * ((row - 1) * 80 + c); t += String.fromCharCode(m.mem[o]); a += (m.mem[o + 1] & 15).toString(16); } return JSON.stringify(t) + ' ' + a; }).join('\n') + '\n' + m.screenText().split('\n')[1]);
+  colAt(3, 'comment') === 13 && colAt(4, 'lda') === 1 && colAt(4, '$12') === 3 && colAt(4, 'and more') === 13 && colAt(5, '.byte') === 8 && colAt(5, '"AB"') === 7,
+  [colAt(3, 'comment'), colAt(4, 'lda'), colAt(4, '$12'), colAt(4, 'and more'), colAt(5, '.byte'), colAt(5, '"AB"')].join(',') + '\n' +
+  [3, 4, 5].map(row => { let t = '', a = ''; for (let c = 0; c < 24; c++) { const o = 0x400 + 2 * ((row - 1) * 80 + c); t += String.fromCharCode(m.mem[o]); a += (m.mem[o + 1] & 15).toString(16); } return JSON.stringify(t) + ' ' + a; }).join('\n') + '\n' + m.screenText().split('\n')[1]);
 
 check(`the editor's stack stays above its data (lowest ${minS.toString(16)} in ${minAt}, data ends ${r.info.progEnd.toString(16)})`, minS > r.info.progEnd + 128);
 

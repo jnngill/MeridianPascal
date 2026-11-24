@@ -89,8 +89,8 @@ for (const [n, s] of sources)
     const base = `C${n}${t}`;
     m.drives[1].set(base + '.PAS', Buffer.from(pre + s, 'latin1'));
     hold(0x04); frames(20); type(base.toLowerCase() + '\n'); frames(60);        // F3
-    const status = m.screenText().split('\n')[28] || '';
-    check(`status line of ${base}.PAS says ${t === 'S' ? 'SCHUB' : '65C816'}`, new RegExp(`${t === 'S' ? 'SCHUB' : '65C816'}\\s*$`).test(status), status);
+    const status = m.screenText().split('\n')[1] || '';
+    check(`status line of ${base}.PAS says ${t === 'S' ? 'SCHUB' : '65C816'}`, new RegExp(`  ${t === 'S' ? 'SCHUB' : '65C816'}  `).test(status), status);
     hold(0x02); frames(300); type('\n'); frames(200);                            // F7, keep the name
     const mer = m.drives[1].get(base + '.MER');
     check(`cartridge F7 saved ${base}.MER`, !!mer, m.screenText());
@@ -101,7 +101,7 @@ for (const [n, s] of sources)
     const err = n !== 'DIVZ' || /RUNTIME ERROR 200/.test(ran);
     m.pushKey(32); frames(60);
     check(`cartridge F5 ${base}: ran, PRESS A KEY, back in the editor`, /PC BUILD 42/.test(ran) && /PRESS A KEY/.test(ran) && err && !/NOT HERE/.test(ran)
-      && /MERIDIAN PASCAL/.test(m.screenText()) && m.read(0xc000) === 1 && m.state === 'running', ran + '\n---\n' + m.screenText());
+      && /PASCAL +F1 help/.test(m.screenText()) && m.read(0xc000) === 1 && m.state === 'running', ran + '\n---\n' + m.screenText());
   }
 }
 

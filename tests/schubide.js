@@ -44,21 +44,21 @@ function session(onSchub) {
   const hold = (scan, k = 8) => { m.keyState(scan, true); frames(k); m.keyState(scan, false); frames(2); };
   const line = (r) => m.screenText().split('\n')[r] || '';
   frames(120);
-  const out = { started: /MERIDIAN PASCAL/.test(line(0)) && /WELCOME/.test(line(29)), onSchub: m.rv.running, screen: m.screenText(), jobs: [] };
+  const out = { started: /PASCAL +F1 help/.test(line(0)) && /Welcome/.test(line(29)), onSchub: m.rv.running, screen: m.screenText(), jobs: [] };
   for (const [name, text] of jobs) {
     m.drives[1].set(name, Buffer.from(text, 'latin1'));
     hold(0x04); frames(20);                                            // F3
-    if (/LOAD ANYWAY/.test(m.screenText())) { m.pushKey(89); frames(20); }
+    if (/Open another anyway/.test(m.screenText())) { m.pushKey(89); frames(20); }
     type(name.toLowerCase() + '\n'); frames(30);
     const t0 = n;
     m.keyState(0x01, true); frames(2); m.keyState(0x01, false);         // F9
     let k = 0;
-    while (!/^ *OK|ERROR/.test(line(29)) && k < 4000 && m.state === 'running') { frames(1); k++; }
+    while (!/^ *(Compiled|Assembled|Error)/.test(line(29)) && k < 4000 && m.state === 'running') { frames(1); k++; }
     const t1 = n; frames(10);                                                        // the whole message drawn
     // code and data of a 65C816 program, of a SCHUB program, of assembly
     const area = /\.ASM$/.test(name) ? [0x330000, 1024] : text.startsWith('{$SCHUB}') ? [0x080000, 8192] : [0x300000, 4096];
     out.jobs.push({
-      name, msg: line(29).trim().replace(/, \d+ MS$/, ''), frames: t1 - t0,
+      name, msg: line(29).trim().replace(/, \d+ ms$/, ''), frames: t1 - t0,
       bytes: Buffer.from(m.mem.subarray(area[0], area[0] + area[1])).toString('hex'),
       data: Buffer.from(m.mem.subarray(0x320000, 0x320000 + 2048)).toString('hex'),
       fault: m.schubFault, state: m.state,
@@ -76,7 +76,7 @@ check('with Ctrl held down it starts the 65C816 editor', a.started && !a.onSchub
 for (let i = 0; i < jobs.length; i++) {
   const x = a.jobs[i], y = b.jobs[i];
   check(`${y.name}: ${y.msg} - same as on the 65C816 (${x.frames} frames there, ${y.frames} on SCHUB)`,
-    /^OK/.test(y.msg) && y.msg === x.msg && y.bytes === x.bytes && y.data === x.data && !y.fault && y.state === 'running',
+    /^(Compiled|Assembled)/.test(y.msg) && y.msg === x.msg && y.bytes === x.bytes && y.data === x.data && !y.fault && y.state === 'running',
     `65C816: ${x.msg}\nSCHUB:  ${y.msg} ${y.fault || ''} ${y.state}`);
 }
 
@@ -96,7 +96,7 @@ for (let i = 0; i < jobs.length; i++) {
   const load = (name, text) => {
     m.drives[1].set(name, Buffer.from(text, 'latin1'));
     hold(0x04); frames(20);
-    if (/LOAD ANYWAY/.test(m.screenText())) { m.pushKey(89); frames(20); }
+    if (/Open another anyway/.test(m.screenText())) { m.pushKey(89); frames(20); }
     type(name.toLowerCase() + '\n'); frames(30);
   };
   // F5, the program's screen, a key back to the editor
@@ -107,7 +107,7 @@ for (let i = 0; i < jobs.length; i++) {
     const ended = until(/PRESS A KEY --/, 4000); frames(5);
     const scr = m.screenText();
     m.pushKey(32); frames(60);
-    return { ran, ended, scr, back: /PROGRAM ENDED/.test(line(29)) && /MERIDIAN PASCAL/.test(line(0)) };
+    return { ran, ended, scr, back: /Program ended/.test(line(29)) && /PASCAL +F1 help/.test(line(0)) };
   };
   const ok = () => m.state === 'running' && !m.schubFault;
   const prog = (who) => `program R;\nvar i: integer;\nbegin\n  for i := 1 to 3 do WriteLn('${who} LINE ', i * 7);\nend.\n`;
@@ -115,14 +115,14 @@ for (let i = 0; i < jobs.length; i++) {
   load('R816.PAS', prog('65C816'));
   let r = f5(/65C816 LINE 21/);
   check('F5 runs a 65C816 program from the SCHUB editor and comes back', r.ran && r.ended && r.back && ok(), r.scr + '\n' + m.screenText() + (m.schubFault || ''));
-  check('the editor still has its text', /65C816 LINE/.test(m.screenText()) && /R816\.PAS/.test(line(28)), m.screenText());
+  check('the editor still has its text', /65C816 LINE/.test(m.screenText()) && /R816\.PAS/.test(line(1)), m.screenText());
 
   load('RRV.PAS', '{$SCHUB}\n' + prog('SCHUB'));
   r = f5(/SCHUB LINE 21/);
   check('F5 runs a SCHUB program (SCHUB stops for it and the editor resumes)', r.ran && r.ended && r.back && ok(), r.scr + '\n' + m.screenText() + (m.schubFault || ''));
   // after that the editor still compiles
-  hold(0x01); until(/^ *OK|ERROR/m, 600);
-  check('the editor compiles again after a SCHUB program ran', /^ *OK/.test(line(29)), line(29));
+  hold(0x01); until(/^ *(Compiled|Error)/m, 600);
+  check('the editor compiles again after a SCHUB program ran', /^ *Compiled/.test(line(29)), line(29));
 
   // the assembly examples wait for a click
   const click = () => { m.mouse.b = 1; frames(10); m.mouse.b = 0; };
@@ -155,12 +155,12 @@ for (let i = 0; i < jobs.length; i++) {
     const ran = until(re, 4000);
     const ended = until(/PRESS A KEY --/, 4000); frames(5);
     m.pushKey(32); frames(60);
-    return ran && ended && new RegExp(name.replace('.', '\\.') + ' ENDED').test(line(29)) && ok();
+    return ran && ended && new RegExp(name.replace('.', '\\.') + ' ended').test(line(29)) && ok();
   };
   if (m1) check('the SCHUB editor runs R816.MER from the drive', runMer('R816.MER', /65C816 LINE 21/), m.screenText());
   if (m2) check('the SCHUB editor runs RRV.MER (SCHUB) from the drive', runMer('RRV.MER', /SCHUB LINE 21/), m.screenText());
   hold(0x04); frames(20); type('nothere.mer\n'); frames(60);
-  check('a missing .MER gives a DOS error, and the editor carries on', /CANNOT RUN NOTHERE\.MER/.test(line(29)) && ok(), m.screenText() + `\n${m.state} ${m.schubFault || ''}`);
+  check('a missing .MER gives a DOS error, and the editor carries on', /Cannot run NOTHERE\.MER/.test(line(29)) && ok(), m.screenText() + `\n${m.state} ${m.schubFault || ''}`);
   // F10: back to BASIC, as from the 65C816 editor (the cartridge returns to the kernel)
   hold(0x09); frames(120);
   check('F10 leaves the SCHUB editor: the cartridge returns, SCHUB is stopped', m.state === 'idle' && !m.rv.running, `${m.state} ${m.message}\n${m.screenText()}`);
@@ -177,9 +177,9 @@ for (let i = 0; i < jobs.length; i++) {
   m.keyState(0x14, true); m.keyState(0x09, true); frames(8); m.keyState(0x09, false); frames(4); m.keyState(0x14, false);
   frames(200);
   const scr = m.screenText().split('\n');
-  check('the SCHUB editor says so when it starts', /ON SCHUB/.test(welcome), welcome);
+  check('the SCHUB editor says so when it starts', /on SCHUB/.test(welcome), welcome);
   check('Ctrl+F10 leaves the SCHUB editor for the 65C816 editor', m.state === 'running' && !m.rv.running &&
-    /MERIDIAN PASCAL/.test(scr[0]) && /^ *WELCOME TO MERIDIAN PASCAL\. F1/.test(scr[29] || ''), `${m.state} ${m.message}\n${scr.join('\n')}`);
+    /PASCAL +F1 help/.test(scr[0]) && /^ *Welcome to MERIDIAN Pascal\. F1/.test(scr[29] || ''), `${m.state} ${m.message}\n${scr.join('\n')}`);
 }
 
 console.log(fail ? `${fail} failed` : 'all ok');

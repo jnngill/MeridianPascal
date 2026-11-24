@@ -40,7 +40,9 @@ all. See [Start](#start) for the PC side and
 - **PASCAL.MOD**: a cartridge with an editor and a compiler that run on the
   MERIDIAN itself (`node compiler/mkcart.js`, or the *PASCAL cartridge*
   button in the IDE). Insert it in the MiSTer OSD and the machine starts into
-  the editor: F5 compiles and runs, F2/F3 save and load on the drives,
+  the editor, which looks and works like the workshop's EDIT (tabs on top,
+  the keys at the bottom, Ctrl+S/O/N/F/G/L/X/C/V as there): F5 compiles
+  and runs, F2/F3 save and open on the drives,
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
   Ctrl+R runs a `.MER` from a drive,
   Ctrl+T switches between 65C816 and SCHUB code, Ctrl+K turns the syntax
@@ -55,7 +57,7 @@ all. See [Start](#start) for the PC side and
   On a core with SCHUB the cartridge starts a SCHUB build of the same
   editor, compiler and assembler: it compiles about ten times faster and
   scrolls about three times faster, with the same results. The welcome line
-  says "ON SCHUB"; Ctrl+F10 switches to the 65C816 editor. On a core without
+  says "on SCHUB"; Ctrl+F10 switches to the 65C816 editor. On a core without
   SCHUB the cartridge starts the 65C816 editor.
 
 ## Start
