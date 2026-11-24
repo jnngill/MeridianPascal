@@ -20,45 +20,45 @@ let fail = 0;
 const check = (what, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) { fail++; console.log(screen()); } };
 
 frames(60);
-check('editor starts', /MERIDIAN PASCAL/.test(screen()) && /program Hello;/.test(screen()));
+check('editor starts', /PASCAL +F1 help/.test(screen()) && /program Hello;/.test(screen()));
 
 // line 6 is the WriteLn: insert a line in front of it
 key(0x1f, 5);                       // cursor down x5
 key(0x01);                          // Home
 type('  WriteLn(6 * 7, \' \', Copy(\'PASCAL\', 1, 3));\n');
-check('text edited', /WriteLn\(6 \* 7/.test(screen()) && /LINE 7/.test(screen()) && /end\./.test(screen()));
+check('text edited', /WriteLn\(6 \* 7/.test(screen()) && /Ln 7 /.test(screen()) && /end\./.test(screen()));
 
 hold(0x03);                         // F5: compile and run
 frames(200);
 check('program ran', /42 PAS/.test(screen()) && /HELLO FROM THE MERIDIAN!/.test(screen()) && /PRESS A KEY/.test(screen()));
 key(32);
 frames(30);
-check('back in the editor', /PROGRAM ENDED/.test(screen()) && /WriteLn\(6 \* 7/.test(screen()));
+check('back in the editor', /Program ended/.test(screen()) && /WriteLn\(6 \* 7/.test(screen()));
 
 // an error: unknown identifier on line 7
 key(0x1e, 10);                      // up to the top
 key(0x01); type('x');               // "xprogram Hello;" -> error at line 1
 hold(0x01);                         // F9: compile
 frames(60);
-check('error reported', /ERROR LINE 1/.test(screen()));
+check('error reported', /Error line 1/.test(screen()));
 key(0x01); key(0x7f);               // Home, delete the x
 hold(0x01);
 frames(60);
-check('compiles again', /OK: \d+ LINES/.test(screen()));
+check('compiles again', /Compiled: \d+ lines/.test(screen()));
 
 // F2: save on drive 1
 hold(0x06);
 frames(5);
 type('demo\n');
 frames(30);
-check('saved', /SAVED DEMO.PAS/.test(screen()) && m.drives[1].has('DEMO.PAS'));
+check('saved', /Saved DEMO.PAS/.test(screen()) && m.drives[1].has('DEMO.PAS'));
 const saved = Buffer.from(m.drives[1].get('DEMO.PAS') || []).toString('latin1');
 check('saved text is the program', saved.startsWith('program Hello;\nuses Crt;') && saved.includes('WriteLn(6 * 7'));
 
 // F4 new, F3 load it back
 hold(0x0c); frames(20);
 hold(0x04); frames(5); type('demo\n'); frames(30);
-check('loaded', /LOADED DEMO.PAS/.test(screen()) && /WriteLn\(6 \* 7/.test(screen()));
+check('loaded', /Opened DEMO.PAS/.test(screen()) && /WriteLn\(6 \* 7/.test(screen()));
 
 // a unit of your own on the disk
 m.drives[1].set('MYLIB.PAS', Buffer.from('unit MyLib;\ninterface\nfunction Twice(n: integer): integer;\nimplementation\nfunction Twice;\nbegin\n  Twice := 2 * n;\nend;\nend.\n', 'latin1'));
@@ -72,7 +72,26 @@ key(32); frames(30);
 key(0x1e, 10); key(0x1f); key(0x01);
 type('uses Broken;\n');
 hold(0x01); frames(60);
-check('error in a unit reported', /ERROR IN BROKEN.PAS LINE 5/.test(screen()));
+check('error in a unit reported', /Error in BROKEN.PAS line 5/.test(screen()));
+
+// EDIT's keys: ^L go to line, ^X cut (in a row they collect), ^V paste, ^G find next
+const ctrl = (scan) => { m.keyState(0x14, true); hold(scan, 6); m.keyState(0x14, false); frames(6); };
+const row = (n) => screen().split('\n')[n] || '';
+const textRows = () => screen().split('\n').slice(2, 10).map(l => l.trimEnd());
+hold(0x0c); frames(20); key(89); frames(20);          // F4, Y: the starter text
+ctrl(0x4b); type('4\n');                               // ^L 4: begin
+check('^L goes to line 4', /Ln 4 /.test(row(1)));
+ctrl(0x22); ctrl(0x22);                                // ^X ^X: begin and ClrScr
+check('^X ^X cuts two lines', textRows()[3].includes('WriteLn') && /Cut/.test(row(29)));
+ctrl(0x4b); type('5\n');                               // ^L 5: end.
+ctrl(0x2a);                                            // ^V
+const t = textRows();
+check('^V pastes both in front of the line', t[3].includes('WriteLn') && t[4] === 'begin' && t[5] === '  ClrScr;' && t[6] === 'end.');
+ctrl(0x4b); type('1\n');                               // ^L 1
+ctrl(0x2b); type('clrscr\n');                          // ^F
+check('^F finds', /Ln 6 /.test(row(1)));
+ctrl(0x34);                                            // ^G: no further one
+check('^G: not found', /Not found: CLRSCR/.test(row(29)));
 
 console.log(fail ? `${fail} failed` : 'all ok');
 process.exit(fail ? 1 : 0);

@@ -21,7 +21,7 @@ frames(60);
 // screen row (1-based) as text, and the text colour (low nibble) of each column
 const rowText = (row) => { let s = ''; for (let c = 0; c < 80; c++) s += String.fromCharCode(m.mem[0x400 + 2 * ((row - 1) * 80 + c)]); return s; };
 const rowCol = (row) => { const a = []; for (let c = 0; c < 80; c++) a.push(m.mem[0x400 + 2 * ((row - 1) * 80 + c) + 1] & 15); return a; };
-const rowOf = (needle) => { for (let row = 2; row <= 28; row++) if (rowText(row).includes(needle)) return row; return -1; };
+const rowOf = (needle) => { for (let row = 3; row <= 28; row++) if (rowText(row).includes(needle)) return row; return -1; };
 // colour of the text `word` in the row that contains `needle` (every character must agree)
 function colourOf(needle, word = needle) {
   const row = rowOf(needle);
@@ -36,7 +36,7 @@ const K = 1, NAME = 14, COMMENT = 13, STRING = 7, NUMBER = 3, DIRECTIVE = 8;
 const load = (name, text) => {
   m.drives[1].set(name, Buffer.from(text, 'latin1'));
   hold(0x04); frames(20);
-  if (/LOAD ANYWAY/.test(m.screenText())) { m.pushKey(89); frames(20); }
+  if (/Open another anyway/.test(m.screenText())) { m.pushKey(89); frames(20); }
   type(name.replace(/\.PAS$/, '').toLowerCase() + '\n'); frames(60);
 };
 
@@ -68,7 +68,7 @@ check('after the comments: normal again', colourOf('end.', 'end') === K);
 // typing { at the start of the "begin" line: everything below up to the next } turns green
 const beginRow = rowOf('begin');
 for (let i = 0; i < 40 && rowOf('begin') >= 0; i++) { m.pushKey(30); frames(3); }   // cursor up to the top
-for (let i = 0; i < beginRow - 2; i++) { m.pushKey(31); frames(3); }                // down to "begin"
+for (let i = 0; i < beginRow - 3; i++) { m.pushKey(31); frames(3); }                // down to "begin"
 m.pushKey(1); frames(5);                                                           // Home
 type('{');
 check('typing { colours the rows below as comment', colourOf('{begin', 'begin') === COMMENT && colourOf("  s := '", 's :=') === COMMENT
@@ -78,9 +78,9 @@ m.pushKey(8); frames(10);                                                       
 check('deleting it colours them back', colourOf('begin') === K && colourOf("'it''s { not a comment }'") === STRING);
 
 ctrl(0x42);                                                                        // Ctrl+K
-check('Ctrl+K: all light blue', colourOf('begin') === NAME && colourOf('{ a brace comment }') === NAME && /COLOURS OFF/.test(m.screenText()));
+check('Ctrl+K: all light blue', colourOf('begin') === NAME && colourOf('{ a brace comment }') === NAME && /Colours off/.test(m.screenText()));
 ctrl(0x42);
-check('Ctrl+K again: colours back', colourOf('begin') === K && /COLOURS ON/.test(m.screenText()));
+check('Ctrl+K again: colours back', colourOf('begin') === K && /Colours on/.test(m.screenText()));
 
 // a long text: a comment opened 3 KB above the screen must still colour it
 const filler = [];
@@ -114,7 +114,7 @@ check('long line scrolled sideways: string, comment and keyword coloured in plac
 // ---- scrolling by moving screen rows, and several keys handled at once:
 // after each step the screen must be exactly what a full redraw gives
 // (Ctrl+K twice redraws everything)
-const screenBytes = () => Array.from(m.mem.subarray(0x400 + 160, 0x400 + 160 * 28));
+const screenBytes = () => Array.from(m.mem.subarray(0x400 + 160 * 2, 0x400 + 160 * 28));
 const cursorCell = () => { const b = screenBytes(); for (let i = 1; i < b.length; i += 2) if ((b[i] >> 4) !== 6) return i; return -1; };
 function sameAsFullRedraw(what) {
   frames(20);
@@ -123,14 +123,14 @@ function sameAsFullRedraw(what) {
   const b = screenBytes();
   const diff = []; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
   check(`${what}: screen equals a full redraw`, diff.length === 0,
-    diff.slice(0, 6).map(i => `row ${2 + Math.floor(i / 160)} col ${(i % 160) >> 1}: ${a[i]} vs ${b[i]}`).join('\n'));
+    diff.slice(0, 6).map(i => `row ${3 + Math.floor(i / 160)} col ${(i % 160) >> 1}: ${a[i]} vs ${b[i]}`).join('\n'));
 }
 const lines = ['program Scroll;', '(* a comment', '   over lines *)', 'var i: integer;'];
 for (let i = 0; i < 70; i++) lines.push(i % 9 === 4 ? `  { comment ${i} }` : i % 9 === 6 ? `  (* opens ${i}` : i % 9 === 7 ? `     closes ${i} *)` : `  i := ${i}; WriteLn('line ${i}');`);
 lines.push('end.', '');
 load('SCROLL.PAS', lines.join('\n'));
 const push = (code, n) => { for (let i = 0; i < n; i++) m.pushKey(code); frames(30); };
-for (let i = 0; i < 26; i++) { m.pushKey(31); frames(3); }                         // to the bottom row
+for (let i = 0; i < 25; i++) { m.pushKey(31); frames(3); }                         // to the bottom row
 push(31, 1);  sameAsFullRedraw('scroll down 1 line');
 push(31, 7);  sameAsFullRedraw('7 cursor-downs at once (scroll 7)');
 push(30, 30); sameAsFullRedraw('30 cursor-ups at once (scroll up)');

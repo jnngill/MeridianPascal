@@ -41,7 +41,7 @@ hold(0x02);                                   // F7
 frames(150);
 type('alone\n');
 frames(120);
-check('saved ALONE.MER', /SAVED ALONE.MER \(\d+ BYTES\)/.test(m.screenText()) && m.drives[1].has('ALONE.MER'), m.screenText());
+check('saved ALONE.MER', /Saved ALONE.MER \(\d+ bytes\)/.test(m.screenText()) && m.drives[1].has('ALONE.MER'), m.screenText());
 const mer = m.drives[1].get('ALONE.MER');
 if (!mer) { console.log(`${fail} failed`); process.exit(1); }
 console.log(`     ALONE.MER: ${mer.length} bytes`);
@@ -71,11 +71,11 @@ check('refuses with another cartridge inserted', /ANOTHER CARTRIDGE IS INSERTED/
 
 // ---- SCHUB: Ctrl+T switches the target; F5 runs on the co-processor, F7 saves a .MER
 hold(0x0c); frames(20);
-if (/CLEAR IT\?/.test(m.screenText())) { m.pushKey(89); frames(20); }   // Y
+if (/Clear it\?/.test(m.screenText())) { m.pushKey(89); frames(20); }   // Y
 for (let i = 0; i < 20; i++) { m.pushKey(25); frames(6); }
 frames(20);
 m.keyState(0x14, true); hold(0x2c); m.keyState(0x14, false); frames(10);
-check('Ctrl+T selects SCHUB', /TARGET: SCHUB/.test(m.screenText()) && /SCHUB\s*$/m.test(m.screenText().split('\n')[28] || ''), m.screenText());
+check('Ctrl+T selects SCHUB', /Target: SCHUB/.test(m.screenText()) && /  SCHUB  /.test(m.screenText().split('\n')[1] || ''), m.screenText());
 type([
   'program RV;',
   'uses Greet;',
@@ -89,7 +89,7 @@ hold(0x03); frames(400);                       // F5
 check('F5 runs it on SCHUB', /HELLO RISC-V 112492500 4/.test(m.screenText()), m.screenText());
 m.pushKey(32); frames(40);
 hold(0x02); frames(150); type('rvmer\n'); frames(150);
-check('saved RVMER.MER', /SAVED RVMER.MER/.test(m.screenText()) && m.drives[1].has('RVMER.MER'), m.screenText());
+check('saved RVMER.MER', /Saved RVMER.MER/.test(m.screenText()) && m.drives[1].has('RVMER.MER'), m.screenText());
 const rvmer = m.drives[1].get('RVMER.MER');
 if (rvmer) {
   const x2 = new Meridian(roms);
@@ -127,10 +127,10 @@ check('Ctrl+R runs a 65C816 .MER from the PC compiler', /PC BUILD 42/.test(scr),
 scr = ctrlR('pcschub');
 check('Ctrl+R runs a SCHUB .MER from the PC compiler', /PC BUILD 42/.test(scr), scr);
 m.pushKey(32); frames(40);
-check('editor is back after the runs', /PCSCHUB.MER ENDED/.test(m.screenText()) && /MERIDIAN PASCAL/.test(m.screenText()), m.screenText());
+check('editor is back after the runs', /PCSCHUB.MER ended/.test(m.screenText()) && /PASCAL +F1 help/.test(m.screenText()), m.screenText());
 scr = ctrlR('nothere');
 m.pushKey(32); frames(20);
-check('a missing file is reported', /CANNOT RUN NOTHERE.MER/.test(m.screenText()), m.screenText());
+check('a missing file is reported', /Cannot run NOTHERE.MER/.test(m.screenText()), m.screenText());
 
 console.log(fail ? `${fail} failed` : 'all ok');
 process.exit(fail ? 1 : 0);

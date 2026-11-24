@@ -7,7 +7,9 @@
 
   Keys:  F1 help   F2 save   F3 load   F4 new   F5 compile + run
          F6 drive  F7 standalone .MER  F8 directory   F9 compile   F10 quit to BASIC
-         Ctrl+Y delete line   Ctrl+F find   Ctrl+L find again   Ctrl+K colours
+         Ctrl+Y delete line   Ctrl+F find   Ctrl+G find again   Ctrl+L go to line
+         Ctrl+K colours   as in EDIT: Ctrl+S save, Ctrl+O open, Ctrl+N new,
+         Ctrl+X cut line (in a row: collect), Ctrl+C copy line, Ctrl+V paste
          Ctrl+Home / Ctrl+End  start / end of the text
          PgUp PgDn Home End and the cursor keys move }
 program PascalIDE;
@@ -29,16 +31,28 @@ const
   TB = $200000;               { text buffer (= NComp.SrcBase) }
   Stage = $280000;            { loading area }
   MaxText = 60000;
-  Rows = 27;                  { text rows on screen (2..28) }
+  { the screen as in the workshop and EDIT: row 1 the tabs and F-keys, row 2
+    the file and the position, the text from row TT, row 29 the keys, row 30
+    the message (or more keys) }
+  Rows = 26;                  { text rows on screen (TT..TT + 25) }
+  TT = 3;                     { the first text row }
   Cols = 80;
-  AttrText = $E6;             { light blue on blue... set below }
-  AttrBar = $16;              { white on blue }
-  AttrStat = $61;             { blue on white }
-  AttrCur = $6E;
+  { the workshop's colours (rom/werkstatt.asm: F_REITER, F_AKTIV, F_TITEL,
+    F_STATUS); colour = foreground + 16 * background }
+  aTabs = $BF;                { light grey on dark grey: tabs, keys }
+  aTabOn = $70;               { black on yellow: this tab }
+  aHead = $67;                { yellow on blue: file and position }
+  aLine = $F0;                { black on light grey: message, prompts }
+  TabKeys = '  F1 help  F2 save  F3 open  F4 new  F5 run  F9 compile';
+  Hint1 = ' ^F find  ^G next  ^L go to line  ^X cut  ^C copy  ^V paste  ^B break  ^W watch';
+  Hint2 = ' F6 drive  F7 .MER  F8 directory  ^R run .MER  ^F7 trace  ^T target  ^K colours';
+  HintStop = ' F5 go  F7 into  F8 over  F4 to cursor  ^F2 end  ^B breakpoint  ^W watch';
   { tables in expansion RAM: bank 0 is short (the compiler's stack) }
   KeyWas = $3C0000;           { a key's press was handled (1 byte a scan code) }
   CkState = $3C0100;          { scanner state at every 256 bytes of text }
   RowPos = $3C0200;           { text position of each row at the last redraw (4 bytes) }
+  ClipBase = $3C1000;         { the clipboard: whole lines (^X ^C ^V, as in EDIT) }
+  ClipMax = $E000;
 
 procedure RunUser(entry: longint); external 'runuser';
 function RunMerFile: integer; external 'runmer';
@@ -67,7 +81,7 @@ var
   dbgSchub: boolean;                 { it is a SCHUB program }
   dbgCols: integer;                  { its screen: 40 or 80 columns }
   nWatch: integer;
-  aText, aBar, aStat: byte;
+  aText: byte;
   repT: longint;
   lastRow: integer;
   lastMsg: string;
@@ -96,6 +110,8 @@ var
   sampleB: byte;
   fLatch: word;                      { F1..F10 pressed while the screen was being drawn }
   startLine, editLine: integer;      { cursor line at the last Refresh; a line edited since, -1 none }
+  clipLen: longint;                  { bytes in the clipboard }
+  clipRun: boolean;                  { the last key was ^X: the next cut adds to the clipboard }
 
 { ------------------------------------------------------------- text }
 function TC(p: longint): char;
@@ -133,7 +149,7 @@ procedure TextChanged(p: longint);
 begin
   if p < ckValid then ckValid := p;
   rowsValid := false;
-  if dbgActive then begin dbgActive := false; msg := 'PROGRAM RESET: THE TEXT CHANGED.'; end;
+  if dbgActive then begin dbgActive := false; msg := 'Program reset: the text changed.'; end;
 end;
 
 procedure InsertChars(const s: string);
@@ -141,7 +157,7 @@ var n: integer;
     i: integer;
 begin
   n := length(s);
-  if len + n > MaxText then begin msg := 'TEXT FULL'; exit; end;
+  if len + n > MaxText then begin msg := 'The text is full'; exit; end;
   { make room: KRAN copies backwards from the last byte (it takes the right
     end of the row as the address) }
   if len > cur then Blit(TB + len - 1, TB + len - 1 + n, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
@@ -167,6 +183,25 @@ begin
 end;
 
 { ------------------------------------------------------------- screen }
+{ the library's texts (DosErrorText) in small letters, as messages here are }
+function Lower(const s: string): string;
+var t: string;
+    i: integer;
+begin
+  t := s;
+  for i := 1 to length(t) do if (t[i] >= 'A') and (t[i] <= 'Z') then t[i] := chr(ord(t[i]) + 32);
+  Lower := t;
+end;
+
+{ a message of the compiler on its own: a capital first }
+function Cap(const s: string): string;
+var t: string;
+begin
+  t := s;
+  if (length(t) > 0) and (t[1] >= 'a') and (t[1] <= 'z') then t[1] := chr(ord(t[1]) - 32);
+  Cap := t;
+end;
+
 procedure PutStr(x, y: integer; const s: string; attr: byte; width: integer);
 var i, o: integer;
     w: word;
@@ -394,7 +429,7 @@ begin
   if asmMode then begin StateAt := stNormal; exit; end;
   { a row of the last redraw (paging down: the line after the screen) }
   if rowsValid then
-    for k := 2 to Rows + 2 do
+    for k := TT to Rows + TT do
       if MemL[RowPos + k * 4] = p then begin StateAt := rowSt[k]; exit; end;
   k := p div CkStep;
   if longint(k) * CkStep > ckValid then k := ckValid div CkStep;
@@ -424,7 +459,7 @@ procedure MarkRow(row: integer);
 var line, c, a: integer;
     o: word;
 begin
-  line := topLine + row - 2;
+  line := topLine + row - TT;
   if dbgActive and (line = dbgLine) then a := aStopLine
   else if BreakAt(line) then a := aBreakLine
   else exit;
@@ -433,7 +468,7 @@ begin
 end;
 
 function DrawLine(row: integer; p: longint; st: byte): byte;
-{ draw the text line starting at p on screen row (2..28); st is the state at
+{ draw the text line starting at p on screen row (TT..); st is the state at
   p, the result the state at the start of the next line }
 var col: integer;
     e, q, n: longint;
@@ -474,7 +509,7 @@ function TargetName: string;
 begin
   { what F5/F7 will make: Ctrl+T, or $SCHUB / .schub at the top of the text }
   if IsAsm then begin
-    if WantSchub or IsAsmSchub(len) then TargetName := 'ASM SCHUB' else TargetName := 'ASM 65C816';
+    if WantSchub or IsAsmSchub(len) then TargetName := 'SCHUB assembly' else TargetName := '65C816 assembly';
   end
   else if WantSchub or SchubDirective(len) then TargetName := 'SCHUB' else TargetName := '65C816';
 end;
@@ -482,21 +517,28 @@ end;
 procedure DrawStatus;
 var s: string;
 begin
-  s := ' ' + fileName;
-  if fileName = '' then s := ' (NO NAME)';
-  if modified then s := s + ' *';
-  s := s + '   LINE ' + IntToStr(curLine) + '  COL ' + IntToStr(ColOf(cur) + 1) + '   DRIVE ' + IntToStr(CurrentDrive) +
-       '   ' + IntToStr(len) + ' BYTES   ' + TargetName;
-  PutStr(1, 29, s, aStat, Cols);
-  PutStr(1, 30, ' ' + msg, aBar, Cols);
+  { row 2: the file, drive and target; the position on the right, as in EDIT }
+  if fileName = '' then s := ' (new)' else s := ' ' + fileName;
+  s := s + '  drive ' + IntToStr(CurrentDrive);
+  if modified then s := s + '  *';
+  s := s + '   ' + TargetName + '   ' + IntToStr(len) + ' bytes';
+  PutStr(1, 2, s, aHead, 56);
+  PutStr(57, 2, 'Ln ' + IntToStr(curLine) + ' Col ' + IntToStr(ColOf(cur) + 1), aHead, 24);
+  { rows 29 and 30: the keys; a message takes the place of the second line }
+  if dbgActive then PutStr(1, 29, HintStop, aTabs, Cols) else PutStr(1, 29, Hint1, aTabs, Cols);
+  if msg <> '' then PutStr(1, 30, ' ' + msg, aLine, Cols) else PutStr(1, 30, Hint2, aLine, Cols);
 end;
 
+{ row 1, like the workshop's tabs: this tab, the F-keys, the way out }
 procedure DrawTitle;
 begin
-  PutStr(1, 1, ' MERIDIAN PASCAL   F1 HELP  F2 SAVE  F3 LOAD  F4 NEW  F5 RUN  F9 COMPILE  F10 END', aBar, Cols);
+  PutStr(1, 1, '', aTabs, 1);
+  PutStr(2, 1, ' PASCAL ', aTabOn, 8);
+  PutStr(10, 1, TabKeys, aTabs, 57);
+  PutStr(67, 1, 'F10: to BASIC', aTabs, 14);
 end;
 
-{ the mouse pointer: the cell under it in black on light grey. It is taken
+{ the mouse pointer: the cell under it in black on light blue. It is taken
   away before the screen is drawn; a cell that was drawn anew meanwhile is
   left as it is. Shown only once the mouse has been moved or clicked. }
 procedure HidePointer;
@@ -515,7 +557,7 @@ begin
   c := (MouseY div 8) * Cols + MouseX div 8;
   if (c < 0) or (c >= 2400) then exit;
   ptrSaved := Scr[c];
-  ptrWord := (ptrSaved and $00FF) or $F000;
+  ptrWord := (ptrSaved and $00FF) or $E000;      { black on light blue }
   Scr[c] := ptrWord;
   ptrCell := c;
 end;
@@ -566,7 +608,7 @@ var o, x: integer;
 begin
   x := ColOf(cur) - left;
   if (x < 0) or (x >= Cols) then exit;
-  o := (curLine - topLine + 1) * Cols + x;
+  o := (curLine - topLine + TT - 1) * Cols + x;
   w := Scr[o];
   { swap foreground and background }
   Scr[o] := (w and $00FF) or (((w shr 4) and $0F00) or ((w shl 4) and $F000));
@@ -579,8 +621,8 @@ var r, col: integer;
 begin
   p := top;
   if colours then st := StateAt(top) else st := stNormal;
-  for r := 2 to Rows + 2 do MemL[RowPos + r * 4] := -1;
-  for r := 2 to Rows + 1 do begin
+  for r := TT to Rows + TT do MemL[RowPos + r * 4] := -1;
+  for r := TT to Rows + TT - 1 do begin
     SampleMouse;
     MemL[RowPos + r * 4] := p;
     rowSt[r] := st;
@@ -602,12 +644,12 @@ begin
     if p < len then p := p + 1 else p := len + 1;
     if p > len then begin
       { past the end: empty rows }
-      while r < Rows + 1 do begin r := r + 1; PutStr(1, r, '', aText, Cols); end;
+      while r < Rows + TT - 1 do begin r := r + 1; PutStr(1, r, '', aText, Cols); end;
       break;
     end;
   end;
   { the line after the screen: paging down starts there }
-  if p <= len then begin MemL[RowPos + (Rows + 2) * 4] := p; rowSt[Rows + 2] := st; end;
+  if p <= len then begin MemL[RowPos + (Rows + TT) * 4] := p; rowSt[Rows + TT] := st; end;
   { the row states only mean something when they were worked out }
   rowsValid := colours;
 end;
@@ -637,7 +679,7 @@ var p: longint;
     i: integer;
 begin
   p := top;
-  for i := 3 to row do if p <= len then p := LineEnd(p) + 1;
+  for i := TT + 1 to row do if p <= len then p := LineEnd(p) + 1;
   RowStart := p;
 end;
 
@@ -650,12 +692,12 @@ var r, n: integer;
 begin
   if d > 0 then begin
     n := Rows - d;
-    Blit($0400 + longint(1 + d) * Cols * 2, $0400 + Cols * 2, n * Cols * 2, 1, 0, 0, bmCopy, 0);
-    for r := 2 to 1 + n do begin rowSt[r] := rowSt[r + d]; rowEnd[r] := rowEnd[r + d]; end;
+    Blit($0400 + longint(TT - 1 + d) * Cols * 2, $0400 + longint(TT - 1) * Cols * 2, n * Cols * 2, 1, 0, 0, bmCopy, 0);
+    for r := TT to TT - 1 + n do begin rowSt[r] := rowSt[r + d]; rowEnd[r] := rowEnd[r + d]; end;
     BlitWait;
-    st := rowEnd[1 + n];
-    p := RowStart(2 + n);
-    for r := 2 + n to Rows + 1 do begin
+    st := rowEnd[TT - 1 + n];
+    p := RowStart(TT + n);
+    for r := TT + n to Rows + TT - 1 do begin
       rowSt[r] := st;
       if p <= len then begin
         st := DrawLine(r, p, st);
@@ -667,20 +709,20 @@ begin
     d := -d;
     n := Rows - d;
     { backwards from the last byte (KRAN takes the right end as the address) }
-    Blit($0400 + longint(1 + n) * Cols * 2 - 1, $0400 + longint(1 + n + d) * Cols * 2 - 1, n * Cols * 2, 1, 0, 0,
+    Blit($0400 + longint(TT - 1 + n) * Cols * 2 - 1, $0400 + longint(TT - 1 + n + d) * Cols * 2 - 1, n * Cols * 2, 1, 0, 0,
          bmCopy + bmBackwards, 0);
-    for r := Rows + 1 downto 2 + d do begin rowSt[r] := rowSt[r - d]; rowEnd[r] := rowEnd[r - d]; end;
+    for r := Rows + TT - 1 downto TT + d do begin rowSt[r] := rowSt[r - d]; rowEnd[r] := rowEnd[r - d]; end;
     BlitWait;
     if colours then st := StateAt(top) else st := stNormal;
     p := top;
-    for r := 2 to 1 + d do begin
+    for r := TT to TT - 1 + d do begin
       rowSt[r] := st;
       st := DrawLine(r, p, st);
       rowEnd[r] := st;
       p := LineEnd(p) + 1;
     end;
     { the rows below begin as they did }
-    if st <> rowSt[2 + d] then redrawAll := true;
+    if st <> rowSt[TT + d] then redrawAll := true;
   end;
   rowsValid := false;
 end;
@@ -694,7 +736,7 @@ begin
   for i := 1 to nWatch do begin
     n[0] := chr(Mem[WatchBase + (i - 1) * 16]);
     for k := 1 to length(n) do n[k] := chr(Mem[WatchBase + (i - 1) * 16 + k]);
-    PutStr(1, Rows + 1 - nWatch + i, ' ' + n + ' = ' + DebugValue(n), aBar, Cols);
+    PutStr(1, Rows + TT - 1 - nWatch + i, ' ' + n + ' = ' + DebugValue(n), aHead, Cols);
   end;
 end;
 
@@ -714,11 +756,11 @@ begin
     end else redrawAll := true;
   end;
   scrollBy := 0;
-  row := curLine - topLine + 2;
+  row := curLine - topLine + TT;
   if not redrawAll then begin
     { the old cursor row (it may have changed) and the new one; a change that
       opens or closes a comment colours the rows below anew }
-    if (lastRow <> row) and (lastRow >= 2) and (lastRow <= Rows + 1) then begin
+    if (lastRow <> row) and (lastRow >= TT) and (lastRow <= Rows + TT - 1) then begin
       p := RowStart(lastRow);
       if p <= len then begin
         if DrawLine(lastRow, p, rowSt[lastRow]) <> rowEnd[lastRow] then redrawAll := true;
@@ -867,7 +909,7 @@ begin
   done := false;
   FlushKeys;
   repeat
-    PutStr(1, 30, ' ' + question + ' ' + answer + '_', aBar, Cols);
+    PutStr(1, 30, ' ' + question + ' ' + answer + '_', aLine, Cols);
     k := ReadKey;
     if k = #13 then begin done := true; Prompt := true; end
     else if k = #3 then done := true
@@ -880,7 +922,7 @@ end;
 function YesNo(const question: string): boolean;
 var k: char;
 begin
-  PutStr(1, 30, ' ' + question + ' (Y/N)', aBar, Cols);
+  PutStr(1, 30, ' ' + question + ' (Y/N)', aLine, Cols);
   FlushKeys;
   repeat k := UpCase(ReadKey) until (k = 'Y') or (k = 'N') or (k = #3);
   YesNo := k = 'Y';
@@ -916,15 +958,15 @@ procedure SaveText;
 var n: string;
 begin
   n := fileName;
-  if not Prompt('SAVE AS:', n, 12) then exit;
+  if not Prompt('Save as:', n, 12) then exit;
   if n = '' then exit;
   n := WithExt(n);
-  msg := 'SAVING ' + n + ' ...';
+  msg := 'Saving ' + n + '...';
   DrawStatus;
   if SaveFile(n, TB, len) then begin
     fileName := n; modified := false;
-    msg := 'SAVED ' + n + ' (' + IntToStr(len) + ' BYTES) ON DRIVE ' + IntToStr(CurrentDrive);
-  end else msg := 'SAVE FAILED: ' + DosErrorText(DosError);
+    msg := 'Saved ' + n + ' (' + IntToStr(len) + ' bytes) on drive ' + IntToStr(CurrentDrive);
+  end else msg := 'Save failed: ' + Lower(DosErrorText(DosError));
 end;
 
 procedure RunNamed(n: string); forward;
@@ -935,16 +977,16 @@ var n: string;
     b: byte;
     lastCR: boolean;
 begin
-  if modified then if not YesNo('THE TEXT IS NOT SAVED. LOAD ANYWAY?') then exit;
+  if modified then if not YesNo('The text is not saved. Open another anyway?') then exit;
   n := '';
-  if not Prompt('LOAD:', n, 12) then exit;
+  if not Prompt('Open:', n, 12) then exit;
   if n = '' then exit;
   n := WithExt(n);
   if Pos('.MER', n) > 0 then begin RunNamed(n); exit; end;
-  msg := 'LOADING ' + n + ' ...';
+  msg := 'Opening ' + n + '...';
   DrawStatus;
   got := LoadFile(n, Stage, MaxText);
-  if got < 0 then begin msg := 'LOAD FAILED: ' + DosErrorText(DosError); exit; end;
+  if got < 0 then begin msg := 'Open failed: ' + Lower(DosErrorText(DosError)); exit; end;
   { line ends: CR LF, CR or LF -> LF; tabs -> two spaces }
   len := 0; TextChanged(0);
   lastCR := false;
@@ -963,7 +1005,7 @@ begin
   modified := false;
   left := 0;
   JumpTo(0);
-  msg := 'LOADED ' + n + ' (' + IntToStr(len) + ' BYTES)';
+  msg := 'Opened ' + n + ' (' + IntToStr(len) + ' bytes)';
 end;
 
 procedure Directory;
@@ -971,17 +1013,17 @@ var i, r, c: integer;
     n: string;
     sz: longint;
 begin
-  for r := 2 to Rows + 1 do PutStr(1, r, '', aText, Cols);
-  PutStr(1, 2, ' DIRECTORY OF DRIVE ' + IntToStr(CurrentDrive), aText, Cols);
-  i := 0; r := 4; c := 2;
+  for r := TT to Rows + TT - 1 do PutStr(1, r, '', aText, Cols);
+  PutStr(2, TT, 'Directory of drive ' + IntToStr(CurrentDrive), aHead, 40);
+  i := 0; r := TT + 2; c := 2;
   while DirEntry(i, n, sz) do begin
     PutStr(c, r, n + '  ' + IntToStr(sz), aText, 24);
     r := r + 1;
-    if r > Rows then begin r := 4; c := c + 26; if c > 60 then break; end;
+    if r > Rows + TT - 3 then begin r := TT + 2; c := c + 26; if c > 60 then break; end;
     i := i + 1;
   end;
-  if (i = 0) and (DosError <> 2) then PutStr(2, 4, DosErrorText(DosError), aText, 40);
-  PutStr(2, Rows + 1, IntToStr(DiskFree) + ' BYTES FREE.  PRESS A KEY.', aText, 60);
+  if (i = 0) and (DosError <> 2) then PutStr(2, TT + 2, Lower(DosErrorText(DosError)), aText, 40);
+  PutStr(2, Rows + TT - 1, IntToStr(DiskFree) + ' bytes free. Press a key.', aHead, 60);
   WaitAnyKey;
   redrawAll := true;
 end;
@@ -1027,29 +1069,29 @@ begin
   Compile := false;
   t := Frames;
   if IsAsm then begin
-    msg := 'ASSEMBLING ...';
+    msg := 'Assembling...';
     DrawStatus;
     ok := AssembleSource(len, WantSchub or IsAsmSchub(len));
     if ok then begin
-      msg := 'OK: '; AddNum(AsmLines); Add(' LINES, '); AddNum(AsmSize); Add(' BYTES AT $');
-      AddHex(AsmOrigin); Add(', '); AddNum((Frames - t) * 10 div 6); Add('0 MS');
+      msg := 'Assembled: '; AddNum(AsmLines); Add(' lines, '); AddNum(AsmSize); Add(' bytes at $');
+      AddHex(AsmOrigin); Add(', '); AddNum((Frames - t) * 10 div 6); Add('0 ms');
     end;
   end else begin
-    msg := 'COMPILING ...';
+    msg := 'Compiling...';
     DrawStatus;
     ok := CompileSource(len);
     if ok then begin
-      msg := 'OK: '; AddNum(LinesDone); Add(' LINES, '); AddNum(CodeSize); Add(' BYTES CODE, ');
-      AddNum(DataSize); Add(' BYTES DATA, '); AddNum((Frames - t) * 10 div 6); Add('0 MS');
+      msg := 'Compiled: '; AddNum(LinesDone); Add(' lines, '); AddNum(CodeSize); Add(' bytes code, ');
+      AddNum(DataSize); Add(' bytes data, '); AddNum((Frames - t) * 10 div 6); Add('0 ms');
     end;
   end;
   if ok then Compile := true
   else begin
     if ErrUnit <> '' then begin
-      msg := 'ERROR IN '; Add(ErrUnit); Add(' LINE '); AddNum(ErrLine); Add(': '); Add(UpperCase(ErrMsg));
+      msg := 'Error in '; Add(ErrUnit); Add(' line '); AddNum(ErrLine); Add(': '); Add(ErrMsg);
     end
     else begin
-      msg := 'ERROR LINE '; AddNum(ErrLine); Add(': '); Add(UpperCase(ErrMsg));
+      msg := 'Error line '; AddNum(ErrLine); Add(': '); Add(ErrMsg);
       GoToLine(ErrLine, ErrCol);
     end;
   end;
@@ -1068,20 +1110,20 @@ begin
   n := fileName;
   p := Pos('.', n);
   if p > 0 then n := Copy(n, 1, p - 1);
-  if not Prompt('SAVE PROGRAM AS:', n, 8) then exit;
+  if not Prompt('Save the program as:', n, 8) then exit;
   if n = '' then exit;
   p := Pos('.', n);
   if p > 0 then n := Copy(n, 1, p - 1);
   n := UpperCase(n) + '.MER';
-  msg := 'SAVING ' + n + ' ...';
+  msg := 'Saving ' + n + '...';
   DrawStatus;
   if IsAsm then ok := SaveAsmMer(n) else ok := SaveStandalone(n);
   if ok then begin
-    msg := 'SAVED '; Add(n);
-    if not IsAsm then begin Add(' ('); AddNum(MerSize); Add(' BYTES)'); end;
-    Add(' - IN BASIC: BRUN "'); Add(Copy(n, 1, Pos('.', n) - 1)); Add('"');
+    msg := 'Saved '; Add(n);
+    if not IsAsm then begin Add(' ('); AddNum(MerSize); Add(' bytes)'); end;
+    Add(' - in BASIC: BRUN "'); Add(Copy(n, 1, Pos('.', n) - 1)); Add('"');
   end
-  else msg := UpperCase(ErrMsg);
+  else msg := Cap(ErrMsg);
 end;
 
 { Ctrl+R (or F3 with a .MER name): run a program file from the current drive }
@@ -1090,7 +1132,7 @@ var r, e, i: integer;
 begin
   if Pos('.', n) = 0 then n := n + '.MER';
   n := UpperCase(n);
-  msg := 'RUNNING ' + n + ' ...';
+  msg := 'Running ' + n + '...';
   DrawStatus;
   Mem[$16C0] := CurrentDrive;
   Mem[$16C3] := 0; Mem[$16C4] := 0; Mem[$16C5] := 0;
@@ -1111,7 +1153,7 @@ begin
   EditorMouse(true);
   DrawTitle;
   redrawAll := true;
-  if e = 0 then msg := n + ' ENDED.' else msg := 'CANNOT RUN ' + n + ': ' + DosErrorText(e);
+  if e = 0 then msg := n + ' ended.' else msg := 'Cannot run ' + n + ': ' + Lower(DosErrorText(e));
 end;
 
 procedure RunFile;
@@ -1121,7 +1163,7 @@ begin
   n := fileName;
   p := Pos('.', n);
   if p > 0 then n := Copy(n, 1, p - 1);
-  if not Prompt('RUN PROGRAM FILE (.MER):', n, 12) then exit;
+  if not Prompt('Run a program file (.MER):', n, 12) then exit;
   if n <> '' then RunNamed(n);
 end;
 
@@ -1155,14 +1197,14 @@ procedure RunResult(dl: word; err: integer);
 var u: integer;
 begin
   rtLine := 0;
-  if err <> 0 then begin msg := RtText; AddNum(err); end
-  else if dl = $FFFF then begin msg := 'PROGRAM ENDED.'; exit; end
-  else if dl = $FFFE then begin msg := 'PROGRAM STOPPED.'; exit; end
-  else msg := 'PROGRAM STOPPED';
+  if err <> 0 then begin msg := 'Runtime error '; AddNum(err); end
+  else if dl = $FFFF then begin msg := 'Program ended.'; exit; end
+  else if dl = $FFFE then begin msg := 'Program stopped.'; exit; end
+  else msg := 'Program stopped';
   if dl >= $FFFE then exit;                     { no line known ($D-) }
   u := dl shr 12;
-  Add(' AT LINE '); AddNum(dl and $FFF);
-  if u <> 0 then begin Add(' IN '); Add(DebugUnitName(u)); end
+  Add(' at line '); AddNum(dl and $FFF);
+  if u <> 0 then begin Add(' in '); Add(DebugUnitName(u)); end
   else begin rtLine := dl and $FFF; GoToLine(rtLine, 1); end;
 end;
 
@@ -1207,13 +1249,13 @@ begin
     rtLine := 0;
     if dl shr 12 <> 0 then begin
       dbgLine := 0;
-      msg := 'STOPPED IN '; Add(DebugUnitName(dl shr 12)); Add(' LINE '); AddNum(dl and $FFF);
+      msg := 'Stopped in '; Add(DebugUnitName(dl shr 12)); Add(' line '); AddNum(dl and $FFF);
     end else begin
       dbgLine := dl and $FFF;
       GoToLine(dbgLine, 1);
-      msg := 'STOPPED AT LINE '; AddNum(dbgLine);
+      msg := 'Stopped at line '; AddNum(dbgLine);
     end;
-    Add(': F5 GO F7 INTO F8 OVER F4 TO CURSOR CTRL+F2 END');
+    Add('.');
     exit;
   end;
   dbgActive := false;
@@ -1251,7 +1293,7 @@ begin
   DebugHooks := hooks;
   if not Compile then exit;
   isA := IsAsm;
-  if isA then if not AsmPrepareRun then begin msg := UpperCase(ErrMsg); exit; end;
+  if isA then if not AsmPrepareRun then begin msg := Cap(ErrMsg); exit; end;
   dbgSchub := IsSchub;
   Mem[DbgBase + 2] := mode;
   Mem[DbgBase + 3] := 0;
@@ -1279,7 +1321,7 @@ begin
   DebugHooks := false;
   if not Compile then exit;
   isA := IsAsm;
-  if isA then if not AsmPrepareRun then begin msg := UpperCase(ErrMsg); exit; end;
+  if isA then if not AsmPrepareRun then begin msg := Cap(ErrMsg); exit; end;
   EditorMouse(false);
   r := KernelMode(40);
   MemW[DbgLineAdr] := $FFFF;                { assembly: no lines }
@@ -1309,39 +1351,35 @@ begin
   r := r + 1;
 end;
 begin
-  for r := 2 to Rows + 1 do PutStr(1, r, '', aText, Cols);
-  r := 2;
+  for r := TT to Rows + TT - 1 do PutStr(1, r, '', aText, Cols);
+  r := TT;
 {$IFDEF SCHUB}
-  L('MERIDIAN PASCAL - THE EDITOR ON SCHUB.  CTRL+F10: THE 65C816 EDITOR');
+  L('MERIDIAN Pascal - the editor on SCHUB.  Ctrl+F10: the 65C816 editor');
 {$ELSE}
-  L('MERIDIAN PASCAL - ON THE MERIDIAN 816');
+  L('MERIDIAN Pascal - on the MERIDIAN 816');
 {$ENDIF}
   L('');
-  L('F1  THIS HELP          F2  SAVE              F3  LOAD');
-  L('F4  NEW TEXT           F5  COMPILE AND RUN   F6  NEXT DRIVE (1, 2, 3)');
-  L('F7  SAVE AS .MER (RUNS WITHOUT THE CARTRIDGE)');
-  L('F8  DIRECTORY          F9  COMPILE           F10 BACK TO BASIC');
-  L('CTRL+Y DELETE LINE     CTRL+F FIND           CTRL+L FIND AGAIN');
-  L('CTRL+T TARGET 65C816 / SCHUB (OR {$SCHUB} AT THE TOP OF THE TEXT)');
-  L('CTRL+R RUN A PROGRAM FILE (.MER) FROM THE DRIVE (ALSO F3 WITH NAME.MER)');
-  L('CTRL+HOME/END START/END OF TEXT   CTRL+K COLOURS ON/OFF   PGUP PGDN HOME END');
-  L('MOUSE: CLICK PLACES THE CURSOR, WHEEL SCROLLS, CLICK F-KEYS ON THE TOP LINE');
-  L('THE LANGUAGE: PROGRAM, USES, CONST, TYPE, VAR, PROCEDURE, FUNCTION (NESTED),');
-  L('INTEGER WORD BYTE SHORTINT LONGINT REAL CHAR BOOLEAN STRING[N] ARRAYS RECORDS');
-  L('(ALSO VARIANT), SETS, POINTERS, ENUMS, SUBRANGES, IF WHILE REPEAT FOR CASE');
-  L('WITH, EXIT BREAK CONTINUE, WRITE(LN) READ(LN) INC DEC NEW DISPOSE HALT STR');
-  L('INCLUDE EXCLUDE TRUNC ROUND SQRT, MEM[] MEMW[] MEML[], ABSOLUTE, TYPED CONSTS.');
-  L('FUNCTIONS CAN RETURN RECORDS, ARRAYS AND SETS. AND/OR STOP EARLY.');
-  L('ALL LIBRARY UNITS ARE BUILT IN: CRT GRAPH SPRITES AUDIO BASIC');
-  L('INPUT DOS BLITTER COPPER SCHUB AND SYSTEM (COPY POS SIN COS RANDOM ...).');
-  L('ASSEMBLER: NAME.ASM OR ; ON TOP. 65C816 (ENDS WITH RTL); .SCHUB: RISC-V');
-  L('YOUR OWN UNITS: USES MYUNIT READS MYUNIT.PAS FROM THE CURRENT DRIVE');
-  L('(UNIT, INTERFACE, IMPLEMENTATION, BEGIN OR INITIALIZATION ... END.).');
-  L('DEBUG: CTRL+B BREAKPOINT, CTRL+F7 TRACE FROM THE START, CTRL+W WATCH;');
-  L('STOPPED: F5 GO, F7 INTO, F8 OVER, F4 TO THE CURSOR, CTRL+F2 END.');
-  L('PROGRAMS RUN IN 40 COLUMNS; ESC IN READKEY OR READLN ENDS THEM.');
+  L('F1  this help          F2  save              F3  open (NAME.MER: run it)');
+  L('F4  new text           F5  compile and run   F6  next drive (1, 2, 3)');
+  L('F7  save as .MER (runs without the cartridge, BRUN in BASIC)');
+  L('F8  directory          F9  compile           F10 back to BASIC');
+  L('^F find  ^G find next  ^L go to line  ^Y delete line  ^K colours on/off');
+  L('As in EDIT: ^S save  ^O open  ^N new text  ^X cut line  ^C copy line  ^V paste');
+  L('^T target 65C816 / SCHUB (or {$SCHUB} at the top)  ^R run a .MER file');
+  L('^Home/^End start/end of the text, PgUp PgDn Home End, Tab: two spaces');
+  L('Mouse: a click places the cursor, the wheel scrolls; click the F-keys on top');
+  L('Debug: ^B breakpoint, ^F7 trace from the start, ^W watch a variable.');
+  L('Stopped: F5 go, F7 into, F8 over, F4 to the cursor, ^F2 end.');
   L('');
-  L('PRESS A KEY.');
+  L('The language is the PC compiler''s: units, nested routines, records, sets,');
+  L('pointers, reals, strings, files, objects, procedural types, open arrays,');
+  L('goto, {$R+} {$Q+} {$I-}, {$DEFINE}/{$IFDEF}, {$I file}. Your own units:');
+  L('USES MYUNIT reads MYUNIT.PAS from the current drive.');
+  L('All library units are built in: Crt Graph Sprites Audio Input Dos Blitter');
+  L('Copper Schub Basic, and System.');
+  L('Assembler: NAME.ASM or ; on top; 65C816 (ends with RTL), .SCHUB: RISC-V.');
+  L('Programs run in 40 columns; Esc in ReadKey or ReadLn ends them.');
+  L('Press a key.');
   WaitAnyKey;
   redrawAll := true;
 end;
@@ -1354,7 +1392,7 @@ var s: string;
 begin
   if not again or (findText = '') then begin
     s := findText;
-    if not Prompt('FIND:', s, 40) then exit;
+    if not Prompt('Find:', s, 40) then exit;
     findText := UpperCase(s);
   end;
   n := length(findText);
@@ -1370,7 +1408,61 @@ begin
     if ok then begin JumpTo(p); msg := ''; exit; end;
     p := p + 1;
   end;
-  msg := '"' + findText + '" NOT FOUND';
+  msg := 'Not found: ' + findText;
+end;
+
+{ ^X / ^C: the cursor's line to the clipboard; cuts in a row collect }
+procedure CopyLine(cut: boolean);
+var ls, le, n: longint;
+begin
+  ls := LineStart(cur);
+  le := LineEnd(cur);
+  if le < len then le := le + 1;
+  n := le - ls;
+  if not (cut and clipRun) then clipLen := 0;
+  if clipLen + n + 1 > ClipMax then begin msg := 'Clipboard full'; exit; end;
+  if n > 0 then CopyMem(TB + ls, ClipBase + clipLen, n);
+  clipLen := clipLen + n;
+  { the last line of the text has no LF: it gets one in the clipboard }
+  if (clipLen > 0) and (Mem[ClipBase + clipLen - 1] <> 10) then begin
+    Mem[ClipBase + clipLen] := 10;
+    clipLen := clipLen + 1;
+  end;
+  if cut then begin
+    DeleteLine;
+    clipRun := true;
+    msg := 'Cut: ^V pastes it';
+  end else msg := 'Line copied: ^V pastes it';
+end;
+
+{ ^V: the clipboard's lines in front of the cursor's line }
+procedure PasteLines;
+begin
+  if clipLen = 0 then begin msg := 'Clipboard empty: ^X cuts a line, ^C copies it'; exit; end;
+  if len + clipLen > MaxText then begin msg := 'The text is full'; exit; end;
+  cur := LineStart(cur);
+  if len > cur then Blit(TB + len - 1, TB + len - 1 + clipLen, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
+  BlitWait;
+  CopyMem(ClipBase, TB + cur, clipLen);
+  TextChanged(cur);
+  len := len + clipLen;
+  cur := cur + clipLen;
+  curLine := CountLines(cur);
+  wantCol := 0;
+  modified := true;
+  redrawAll := true;
+  msg := '';
+end;
+
+{ ^L: go to a line }
+procedure GoToKey;
+var t: string;
+    n, c: integer;
+begin
+  t := '';
+  if not Prompt('Go to line:', t, 5) then exit;
+  Val(t, n, c);
+  if (c = 0) and (n > 0) then GoToLine(n, 1);
 end;
 
 { ------------------------------------------------------------- keys }
@@ -1410,36 +1502,39 @@ end;
 { what F1..F10 do (keys, and clicks on the top line) }
 procedure FKey(n: integer);
 var d, i: integer;
+    c: boolean;
 begin
+  clipRun := false;
+  c := Ctrl;                       { as the key was pressed (a question may follow) }
   if dbgActive then
     case n of
       4: begin DbgGo(3); exit; end;
       5: begin DbgGo(0); exit; end;
       7: begin DbgGo(1); exit; end;
       8: begin DbgGo(2); exit; end;
-      2: if Ctrl then begin dbgActive := false; redrawAll := true; msg := 'PROGRAM ENDED (CTRL+F2).'; exit; end;
+      2: if Ctrl then begin dbgActive := false; redrawAll := true; msg := 'Program ended (Ctrl+F2).'; exit; end;
     end
   else if Ctrl and (n = 7) then begin StartRun(true, 1); exit; end;
   case n of
     1: Help;
     2: SaveText;
     3: LoadText;
-    4: if not modified or YesNo('THE TEXT IS NOT SAVED. CLEAR IT?') then NewText;
+    4: if not modified or YesNo('The text is not saved. Clear it?') then NewText;
     5: RunProgram;
     6: begin
          d := CurrentDrive + 1;
          if d > 3 then d := 1;
          SetDrive(d);
-         msg := 'DRIVE ' + IntToStr(d);
+         msg := 'Drive ' + IntToStr(d);
        end;
     7: MakeMer;
     8: Directory;
     9: i := ord(Compile);
-    10: if not modified or YesNo('THE TEXT IS NOT SAVED. QUIT ANYWAY?') then begin
+    10: if not modified or YesNo('The text is not saved. Leave anyway?') then begin
           quit := true;
 {$IFDEF SCHUB}
           { Ctrl+F10: the cartridge starts the 65C816 editor (compiler/cart.js) }
-          if Ctrl then Mem[$B00000] := 1;
+          if c then Mem[$B00000] := 1;
 {$ENDIF}
         end;
   end;
@@ -1451,7 +1546,7 @@ var n: string;
     k: integer;
 begin
   n := '';
-  if not Prompt('WATCH (VARIABLE, R.FIELD, A[3]; EMPTY: REMOVE THE LAST):', n, 15) then exit;
+  if not Prompt('Watch (variable, r.field, a[3]; empty: remove the last):', n, 15) then exit;
   if n = '' then begin
     if nWatch > 0 then nWatch := nWatch - 1;
   end else begin
@@ -1484,18 +1579,25 @@ begin
   if Ctrl then begin
     if Pressed(scY) then DeleteLine;
     if Pressed(scF) then Find(false);
-    if Pressed(scL) then Find(true);
+    if Pressed(scG) then Find(true);                              { ^G: find next }
+    if Pressed(scL) then GoToKey;
+    if Pressed(scS) then FKey(2);                                 { ^S ^O ^N: as in EDIT }
+    if Pressed(scO) then FKey(3);
+    if Pressed(scN) then FKey(4);
+    if Pressed(scX) then CopyLine(true);
+    if Pressed(scC) then CopyLine(false);
+    if Pressed(scV) then PasteLines;
     if Pressed($2D) then RunFile;                                  { Ctrl+R }
     if Pressed(scT) then begin
       WantSchub := not WantSchub;
-      if WantSchub then msg := 'TARGET: SCHUB (RISC-V CO-PROCESSOR)'
-      else if SchubDirective(len) then msg := 'TARGET: SCHUB ($SCHUB AT THE TOP OF THE TEXT)'
-      else msg := 'TARGET: 65C816';
+      if WantSchub then msg := 'Target: SCHUB (the RISC-V co-processor)'
+      else if SchubDirective(len) then msg := 'Target: SCHUB ($SCHUB at the top of the text)'
+      else msg := 'Target: 65C816';
     end;
     if Pressed(scB) then begin                                     { Ctrl+B: breakpoint }
       if curLine < 4096 then begin
         Mem[DbgBits + (curLine shr 3)] := Mem[DbgBits + (curLine shr 3)] xor (1 shl (curLine and 7));
-        if BreakAt(curLine) then msg := 'BREAKPOINT AT LINE ' else msg := 'NO BREAKPOINT AT LINE ';
+        if BreakAt(curLine) then msg := 'Breakpoint at line ' else msg := 'No breakpoint at line ';
         AddNum(curLine);
         redrawAll := true;
       end;
@@ -1504,7 +1606,7 @@ begin
     if Pressed(scK) then begin                                     { Ctrl+K }
       colours := not colours;
       rowsValid := false;
-      if colours then msg := 'COLOURS ON' else msg := 'COLOURS OFF';
+      if colours then msg := 'Colours on' else msg := 'Colours off';
       redrawAll := true;
     end;
     if Pressed($80 + $6C) then JumpTo(0);                             { Ctrl+Home }
@@ -1536,14 +1638,14 @@ begin
   end;
 end;
 
-{ the cursor to screen row (2..28) and column (0..79), or as near as the
+{ the cursor to screen row (TT..) and column (0..79), or as near as the
   text allows }
 procedure PlaceCursor(row, col: integer);
 var p, e: longint;
     line: integer;
 begin
   p := top; line := topLine;
-  while (line < topLine + row - 2) and (LineEnd(p) < len) do begin
+  while (line < topLine + row - TT) and (LineEnd(p) < len) do begin
     p := LineEnd(p) + 1;
     line := line + 1;
   end;
@@ -1553,22 +1655,23 @@ begin
   wantCol := ColOf(cur);
 end;
 
-{ a click on the top line: the F-key whose name is under it }
+{ a click on the top line: the F-key whose name is under it (TabKeys
+  starts in column 10, F10 in column 67) }
 procedure TitleClick(col: integer);
-const Title = ' MERIDIAN PASCAL   F1 HELP  F2 SAVE  F3 LOAD  F4 NEW  F5 RUN  F9 COMPILE  F10 END';
 var i, p: integer;
     nm: string[12];
 begin
-  for i := 1 to 10 do begin
+  if col >= 66 then begin FKey(10); exit; end;
+  for i := 1 to 9 do begin
     case i of
-      1: nm := 'F1 HELP'; 2: nm := 'F2 SAVE'; 3: nm := 'F3 LOAD'; 4: nm := 'F4 NEW';
-      5: nm := 'F5 RUN'; 9: nm := 'F9 COMPILE'; 10: nm := 'F10 END';
+      1: nm := 'F1 help'; 2: nm := 'F2 save'; 3: nm := 'F3 open'; 4: nm := 'F4 new';
+      5: nm := 'F5 run'; 9: nm := 'F9 compile';
     else
       nm := '';
     end;
     if nm <> '' then begin
-      p := Pos(nm, Title);
-      if (p > 0) and (col >= p - 1) and (col < p - 1 + length(nm)) then begin FKey(i); exit; end;
+      p := Pos(nm, TabKeys);
+      if (p > 0) and (col >= p + 8) and (col < p + 8 + length(nm)) then begin FKey(i); exit; end;
     end;
   end;
 end;
@@ -1594,12 +1697,12 @@ begin
     col := latchX div 8; row := latchY div 8 + 1;
       if row = 1 then TitleClick(col)
       else if row = 30 then begin
-        if Copy(msg, 1, 11) = 'ERROR LINE ' then GoToLine(ErrLine, ErrCol)
+        if Copy(msg, 1, 11) = 'Error line ' then GoToLine(ErrLine, ErrCol)
         else if rtLine > 0 then GoToLine(rtLine, 1);
       end
-      else if (row >= 2) and (row <= Rows + 1) then PlaceCursor(row, col);
+      else if (row >= TT) and (row <= Rows + TT - 1) then PlaceCursor(row, col);
   end
-  else if ((b and 1) <> 0) and (row >= 2) and (row <= Rows + 1) and ((x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8)) then
+  else if ((b and 1) <> 0) and (row >= TT) and (row <= Rows + TT - 1) and ((x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8)) then
     PlaceCursor(row, col);                       { dragged: the cursor follows }
   if (x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8) then ptrMoved := true;
   lastMX := x; lastMY := y; lastButtons := MouseButtons; lastWheel := w;
@@ -1616,6 +1719,7 @@ end;
 
 procedure TypedKey(k: char);
 begin
+  clipRun := false;
   if (k = #8) or (k = #127) or (k = #9) or (k >= ' ') then NoteEdit;
   case k of
     #13: NewLine;
@@ -1639,8 +1743,6 @@ var k: char;
 begin
   CheckBreak := false;
   aText := $6E;        { light blue on blue, like BASIC }
-  aBar := $16;         { blue on white }
-  aStat := $61;
   colours := true;
   asmMode := false;
   AsmWorkPtr := PAsmWork(@lineAttr);
@@ -1664,14 +1766,15 @@ begin
   for i := 0 to 255 do Mem[KeyWas + i] := 0;
   FillMem(DbgBits, 512, 0);
   nWatch := 0; dbgActive := false;
+  clipLen := 0; clipRun := false;
   SetDrive(1);
   findText := '';
 {$IFDEF SCHUB}
-  msg := 'WELCOME TO MERIDIAN PASCAL ON SCHUB. F1 FOR HELP.';
+  msg := 'Welcome to MERIDIAN Pascal on SCHUB. F1 for help.';
 {$ELSE}
-  msg := 'WELCOME TO MERIDIAN PASCAL. F1 FOR HELP.';
+  msg := 'Welcome to MERIDIAN Pascal. F1 for help.';
 {$ENDIF}
-  if not CartPresent then msg := 'CARTRIDGE DIRECTORY MISSING';
+  if not CartPresent then msg := 'The cartridge directory is missing';
   NewText;
   DrawTitle;
   redrawAll := true;
