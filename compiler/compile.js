@@ -30,7 +30,7 @@ function prune(prog) {
     live.add(l);
     for (const ins of p.code) {
       if (ins.o === 'call' && !live.has(ins.l)) work.push(ins.l);
-      if ((ins.o === 'gaddr' || ins.o === 'ldg' || ins.o === 'stg') && typeof ins.g === 'string') liveData.add(ins.g);
+      if ((ins.o === 'gaddr' || ins.o === 'ldg' || ins.o === 'stg') && typeof ins.g === 'string') { liveData.add(ins.g); if (ins.o === 'gaddr' && procs.has(ins.g) && !live.has(ins.g)) work.push(ins.g); }
     }
     // parents of nested procedures are needed for frame sizes
     if (p.parent && !live.has(p.parent)) work.push(p.parent);

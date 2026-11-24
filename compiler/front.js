@@ -39,7 +39,7 @@ class ProcCtx {
 
 const BUILTIN_PROCS = ['write', 'writeln', 'read', 'readln', 'inc', 'dec', 'new',
   'dispose', 'halt', 'exit', 'break', 'continue', 'str', 'val', 'include',
-  'exclude', 'getmem', 'freemem'];
+  'exclude', 'getmem', 'freemem', 'reset', 'rewrite', 'blockread', 'blockwrite'];
 const BUILTIN_FUNCS = ['ord', 'chr', 'succ', 'pred', 'low', 'high', 'sizeof',
   'length', 'abs', 'sqr', 'odd', 'hi', 'lo', 'swap', 'trunc', 'round',
   'assigned', 'concat', 'addr', 'ptr', 'sqrt', 'int', 'frac'];
@@ -49,6 +49,7 @@ export class Front {
     this.target = target;           // see compile.js: TARGETS
     this.loadSource = opts.loadSource;   // (unitName) -> {text, name} | null
     this.loadInclude = opts.loadInclude; // (fileName, fromFile) -> {text, name} | null
+    this.objTypes = [];                   // object types with virtual methods (their VMTs)
     this.baseDefines = new Set(opts.defines || []);
     this.units = new Map();
     this.unitInits = [];
@@ -95,7 +96,7 @@ export class Front {
     switch (t.k) {
       case 'int': case 'enum': return t.size;
       case 'real': return 4;
-      case 'ptr': case 'nil': return this.target.ptrSize;
+      case 'ptr': case 'nil': case 'proc': return this.target.ptrSize;
       case 'record': return t.align || 1;
       case 'array': return this.alignOf(t.elem);
       default: return 1;
@@ -110,7 +111,7 @@ export class Front {
       case 'char': case 'bool': return 'u8';
       case 'enum': return t.size === 1 ? 'u8' : 'u16';
       case 'real': return '32';
-      case 'ptr': case 'nil': return this.target.ptrSize === 2 ? 'u16' : '32';
+      case 'ptr': case 'nil': case 'proc': return this.target.ptrSize === 2 ? 'u16' : '32';
       default: this.err(`no scalar access for ${typeName(t)}`);
     }
   }
@@ -152,6 +153,8 @@ export class Front {
       const w = this.withStack[i];
       const f = w.recType.fields.find(f => f.name === name);
       if (f) return { kind: 'withfield', w, f };
+      const m = w.recType.methods && w.recType.methods.get(name);
+      if (m) return { kind: 'method', w, m };
     }
     for (let s = this.scope; s; s = s.parent) {
       const sym = s.syms.get(name);
@@ -191,6 +194,7 @@ export class Front {
     if (this.is('unit')) this.err('this file is a unit; open the program that uses it, or build a program');
     this.parseUses();
     const ctx = new ProcCtx(1, 'PMAIN', 'main');
+    ctx.vmtInit = true;
     this.parseDecls(false);
     this.beginProc(ctx);
     this.expect('begin');
@@ -289,14 +293,25 @@ export class Front {
       if (this.accept('const')) this.parseConstSection();
       else if (this.accept('type')) this.parseTypeSection();
       else if (this.accept('var')) this.parseVarSection();
-      else if (this.is('procedure') || this.is('function')) this.parseProcDecl(isInterface);
-      else if (this.is('label')) this.err('labels and goto are not supported');
+      else if (this.is('procedure') || this.is('function') || this.isId('constructor') || this.isId('destructor')) this.parseProcDecl(isInterface);
+      else if (this.accept('label')) this.parseLabelSection();
       else break;
     }
   }
 
+  // label 10, done;  (names or numbers; goto stays within the routine)
+  parseLabelSection() {
+    do {
+      const t = this.next();
+      if (t.k !== 'id' && t.k !== 'int') this.err('label name expected', t.pos);
+      const name = String(t.v);
+      this.declare(name, { kind: 'label', name, lbl: this.newLabel('G'), defined: false, used: null, scope: this.scope }, t.pos);
+    } while (this.accept(','));
+    this.expect(';');
+  }
+
   parseConstSection() {
-    while (this.tk.k === 'id') {
+    while (this.tk.k === 'id' && !this.isId('constructor') && !this.isId('destructor')) {
       const id = this.next();
       if (this.accept(':')) {
         const type = this.parseType();
@@ -316,7 +331,7 @@ export class Front {
   parseTypeSection() {
     const pendingPtrs = [];
     this.pendingPtrs = pendingPtrs;
-    while (this.tk.k === 'id') {
+    while (this.tk.k === 'id' && !this.isId('constructor') && !this.isId('destructor')) {
       const id = this.next();
       this.expect('=');
       const t = this.parseType(id.raw);
@@ -335,7 +350,7 @@ export class Front {
   }
 
   parseVarSection() {
-    while (this.tk.k === 'id') {
+    while (this.tk.k === 'id' && !this.isId('constructor') && !this.isId('destructor')) {
       const ids = [this.next()];
       while (this.accept(',')) ids.push(this.expectId());
       this.expect(':');
@@ -502,8 +517,30 @@ export class Front {
       if (b.lo < 0 || b.hi > 255) this.err('set base type must be in 0..255');
       return { k: 'set', base: b, size: 32, name: nameHint };
     }
-    if (this.is('file')) this.err('file types are not supported; use the Dos unit');
-    if (this.is('procedure') || this.is('function')) this.err('procedural types are not supported');
+    if (this.isId('object')) return this.parseObject(nameHint);
+    if (this.is('file')) {
+      // file of T / file: System's _TFile record, with the record type (null: untyped)
+      this.next();
+      let of = null;
+      if (this.accept('of')) of = this.parseType();
+      const fr = this.fileRec();
+      return { ...fr, fileOf: of, name: of ? 'file of ' + typeName(of) : 'file' };
+    }
+    if (this.is('procedure') || this.is('function')) {
+      // procedure(...) / function(...): T: the address of a global routine
+      const isFunc = this.next().v === 'function';
+      const params = this.is('(') ? this.parseParams() : [];
+      let ret = null;
+      if (isFunc) {
+        this.expect(':');
+        ret = this.parseTypeIdent();
+        if (ret.k === 'string' || isStruct(ret)) this.err('a procedural function returns a scalar, a real or a pointer');
+      }
+      if (params.some(p => p.hiddenHigh)) this.err('open arrays in a procedural type are not supported');
+      const ps = { kind: 'proc', name: '(procedural)', params, ret, level: 1, procType: true };
+      this.layoutParams(ps);
+      return { k: 'proc', params, ret, sym: ps, size: this.target.ptrSize, name: nameHint || (isFunc ? 'function' : 'procedure') };
+    }
     if (t.k === 'op' && t.v === '(') {
       this.next();
       const names = [];
@@ -548,6 +585,98 @@ export class Front {
     if (a.v > b.v) this.err('lower bound greater than upper bound', t.pos);
     const base = a.type.k === 'int' ? T.longint : a.type;
     return subrange(base, a.v, b.v);
+  }
+
+  // object [(Parent)] fields; methods [virtual;] end
+  parseObject(nameHint) {
+    this.next();
+    let parent = null;
+    if (this.accept('(')) {
+      parent = this.parseTypeIdent();
+      if (!parent.isObject) this.err('object type expected');
+      this.expect(')');
+    }
+    const P = this.target.ptrSize;
+    const ot = {
+      k: 'record', isObject: true, name: nameHint, parent, fields: parent ? [...parent.fields] : [],
+      size: parent ? parent.size : 0, align: parent ? parent.align : 1,
+      methods: new Map(parent ? parent.methods : []), slots: parent ? [...parent.slots] : [],
+      vmtOff: parent ? parent.vmtOff : -1, vmtLabel: null,
+    };
+    let o = ot.size;
+    const skipSection = () => { while (this.isId('private') || this.isId('public')) this.next(); };
+    skipSection();
+    // fields
+    while (this.tk.k === 'id' && !['procedure', 'function'].includes(this.tk.v) && !this.isId('constructor') && !this.isId('destructor') &&
+           !this.isId('private') && !this.isId('public')) {
+      const ids = [this.next()];
+      while (this.accept(',')) ids.push(this.expectId());
+      this.expect(':');
+      const type = this.parseType();
+      for (const id of ids) {
+        if (ot.fields.some(f => f.name === id.v)) this.err(`duplicate field '${id.raw}'`, id.pos);
+        const al = this.alignOf(type);
+        if (al > ot.align) ot.align = al;
+        o = Math.ceil(o / al) * al;
+        ot.fields.push({ name: id.v, type, off: o });
+        o += type.size;
+      }
+      this.expect(';');
+      skipSection();
+    }
+    // methods
+    const own = [];
+    for (;;) {
+      skipSection();
+      let kind;
+      if (this.is('procedure') || this.is('function')) kind = this.next().v;
+      else if (this.isId('constructor') || this.isId('destructor')) kind = this.next().v;
+      else break;
+      const id = this.expectId();
+      const params = this.is('(') ? this.parseParams() : [];
+      let ret = null;
+      if (kind === 'function') { this.expect(':'); ret = this.parseTypeIdent(); }
+      this.expect(';');
+      let virt = false;
+      if (this.isId('virtual')) { this.next(); if (this.tk.k === 'int') this.next(); this.expect(';'); virt = true; }
+      own.push({ kind, id, params, ret, virt });
+    }
+    this.expect('end');
+    // the VMT link: after the fields of the first type with virtual methods
+    if (ot.vmtOff < 0 && own.some(m => m.virt)) {
+      o = Math.ceil(o / P) * P;
+      ot.vmtOff = o;
+      o += P;
+      if (P > ot.align) ot.align = P;
+    }
+    ot.size = this.target.align ? Math.ceil(o / ot.align) * ot.align : o;
+    for (const m of own) {
+      const old = ot.methods.get(m.id.v);
+      const self = { name: 'self', type: ot, mode: 'var', isSelf: true };
+      const sym = {
+        kind: 'proc', name: `${nameHint}.${m.id.raw}`, label: `P${++this.lbl}_${(nameHint || 'obj').toLowerCase()}_${m.id.v}`,
+        params: [...m.params, self], ret: m.ret, level: 1, forward: true, external: null, isFunc: !!m.ret,
+        method: { obj: ot, name: m.id.v, kind: m.kind },
+      };
+      this.layoutParams(sym);
+      let slot = -1;
+      if (m.virt || (old && old.virtual)) {
+        slot = old && old.virtual ? old.slot : ot.slots.length;
+        ot.slots[slot] = sym;
+      }
+      ot.methods.set(m.id.v, { sym, virtual: slot >= 0, slot, kind: m.kind, obj: ot });
+    }
+    if (ot.slots.length) {
+      ot.vmtLabel = `VMT${++this.lbl}_${(nameHint || 'obj').toLowerCase()}`;
+      this.bss.push({ label: ot.vmtLabel, size: (ot.slots.length + 1) * P, align: P, module: this.moduleName });
+      this.objTypes.push(ot);
+    }
+    return ot;
+  }
+  // is a an object type derived from b (or b itself)?
+  isDescendant(a, b) {
+    for (let t = a; t; t = t.parent) if (t === b) return true;
+    return false;
   }
 
   parseRecord(nameHint) {
@@ -607,13 +736,27 @@ export class Front {
     const isFunc = this.next().v === 'function';
     const id = this.expectId();
     let name = id.v;
-    if (this.accept('.')) this.err('methods are not supported');
+    let method = null;
+    if (this.accept('.')) {
+      // TObj.Method: the body of a method declared in the object type
+      const ts = this.lookup(name);
+      if (!ts || ts.kind !== 'type' || !ts.type.isObject) this.err(`object type expected, '${id.raw}' found`, id.pos);
+      const mid = this.expectId();
+      method = ts.type.methods.get(mid.v);
+      if (!method || method.obj !== ts.type) this.err(`'${mid.raw}' is not a method of ${id.raw}`, mid.pos);
+    }
     const params = this.is('(') ? this.parseParams() : [];
     let ret = null;
     if (isFunc) {
       if (this.accept(':')) ret = this.parseTypeIdent();
     }
     this.expect(';');
+    if (method) {
+      const sym = method.sym;
+      if (params.length && !this.sameParams(sym.params.slice(0, -1), params)) this.err(`parameter list of '${sym.name}' differs from the declaration`, id.pos);
+      if (!sym.forward) this.err(`'${sym.name}' is already defined`, id.pos);
+      return this.parseProcBody(sym, false);
+    }
     let existing = this.scope.syms.get(name);
     if (!existing && this.scope.parent && this.scope.level === 0 && this.scope.parent.level === 0) {
       // implementation part of a unit: the interface scope is the parent
@@ -655,6 +798,10 @@ export class Front {
       break;
     }
     if (isInterface) return;
+    this.parseProcBody(sym, true);
+  }
+
+  parseProcBody(sym, plain) {
     // body
     sym.forward = false;
     const ctx = new ProcCtx(sym.level, sym.label, sym.name);
@@ -675,17 +822,17 @@ export class Front {
     const copies = [];
     for (const prm of sym.params) {
       const ploc = { k: 'param', lvl: sym.level, off: prm.off };
-      if (prm.mode === 'var' || prm.mode === 'const' && (isStruct(prm.type) || prm.type.k === 'untyped') ||
+      if (prm.mode === 'var' || prm.mode === 'const' && (isStruct(prm.type) || prm.type.k === 'untyped' || prm.type.k === 'openarray') ||
           prm.mode === 'val' && isStruct(prm.type)) {
         if (prm.mode === 'val') {
           const off = this.allocLocal(prm.type.size, this.alignOf(prm.type));
           copies.push({ from: prm.off, to: off, size: prm.type.size, type: prm.type });
-          this.scope.syms.set(prm.name, { kind: 'var', type: prm.type, loc: { k: 'local', lvl: sym.level, off } });
+          this.scope.syms.set(prm.name, { kind: 'var', name: prm.name, type: prm.type, loc: { k: 'local', lvl: sym.level, off } });
         } else {
-          this.scope.syms.set(prm.name, { kind: 'var', type: prm.type, loc: { ...ploc, byRef: true }, isConst: prm.mode === 'const' });
+          this.scope.syms.set(prm.name, { kind: 'var', name: prm.name, type: prm.type, loc: { ...ploc, byRef: true }, isConst: prm.mode === 'const' });
         }
       } else {
-        this.scope.syms.set(prm.name, { kind: 'var', type: prm.type, loc: ploc, isConst: prm.mode === 'const' });
+        this.scope.syms.set(prm.name, { kind: 'var', name: prm.name, type: prm.type, loc: ploc, isConst: prm.mode === 'const' });
       }
     }
     if (sym.ret) {
@@ -701,9 +848,18 @@ export class Front {
       }
       this.scope.syms.set('result', ctx.resultSym);
     }
+    let selfBase = null;
+    if (sym.method) {
+      const sv = this.scope.syms.get('self');
+      selfBase = { n: 'var', sym: sv, type: sym.method.obj, lv: true };
+      this.withStack.push({ recType: sym.method.obj, base: selfBase });
+      ctx.method = sym.method;
+      ctx.selfBase = selfBase;
+    }
     this.parseDecls(false);
     this.pendingCtx = null;
     this.beginProc(ctx);
+
     for (const c of copies) {
       this.emit({ o: 'laddr', hops: 0, off: c.to, kind: 'loc' });
       this.emit({ o: 'ldl', hops: 0, off: c.from, kind: 'par', mt: this.mtOf(this.ptrT) });
@@ -742,7 +898,18 @@ export class Front {
       while (this.accept(',')) ids.push(this.expectId());
       let type;
       if (this.accept(':')) {
-        if (this.is('array')) this.err('open array parameters are not supported; declare a named array type');
+        if (this.accept('array')) {
+          // array of T: passed by address (value ones like const), with a
+          // hidden parameter name$high = the last index (they count from 0)
+          this.expect('of');
+          const elem = this.parseTypeIdent();
+          const oa = { k: 'openarray', elem, size: this.target.ptrSize, name: 'array of ' + typeName(elem) };
+          for (const id of ids) {
+            params.push({ name: id.v, type: oa, mode: mode === 'var' ? 'var' : 'const' });
+            params.push({ name: id.v + '$high', type: T.integer, mode: 'val', hiddenHigh: true });
+          }
+          continue;
+        }
         type = this.parseTypeIdent();
       } else {
         if (mode === 'val') this.err('parameter type expected');
@@ -760,7 +927,7 @@ export class Front {
   }
 
   isRefParam(prm) {
-    return prm.mode === 'var' || isStruct(prm.type) || prm.type.k === 'untyped';
+    return prm.mode === 'var' || isStruct(prm.type) || prm.type.k === 'untyped' || prm.type.k === 'openarray';
   }
   // args are pushed left to right; the last one ends at the lowest address
   layoutParams(sym) {
@@ -782,9 +949,23 @@ export class Front {
   beginProc(ctx) {
     this.ctx = ctx;
     ctx.exitLabel = this.newLabel('X');
+    if (ctx.vmtInit) {
+      // every object type's VMT: its size, then its virtual methods
+      const P = this.target.ptrSize, mt = this.mtOf(this.ptrT);
+      for (const ot of this.objTypes) {
+        this.emit({ o: 'lit', s: this.P, v: ot.size });
+        this.emit({ o: 'stg', g: ot.vmtLabel, off: 0, mt });
+        ot.slots.forEach((m, k) => {
+          this.emit({ o: 'gaddr', g: m.label, off: 0 });
+          this.emit({ o: 'stg', g: ot.vmtLabel, off: (k + 1) * P, mt });
+        });
+      }
+    }
   }
   endProc() {
     const c = this.ctx;
+    for (const sym of this.scope.syms.values())
+      if (sym.kind === 'label' && sym.used && !sym.defined) this.err(`label '${sym.name}' is used but not placed`, sym.used);
     this.emit({ o: 'label', l: c.exitLabel });
     this.procs.push({
       label: c.label, name: c.name, level: c.level, locSize: c.locMax,
@@ -826,6 +1007,20 @@ export class Front {
     const t = this.tk;
     const mark = this.tempMark();
     if (t.k !== 'eof') this.emit({ o: 'line', file: t.pos.file, line: t.pos.line });
+    // a label in front of the statement
+    if ((t.k === 'id' || t.k === 'int') && this.peekTok().k === 'op' && this.peekTok().v === ':') {
+      const sym = this.lookup(String(t.v));
+      if (sym && sym.kind === 'label') {
+        if (sym.scope !== this.scope) this.err(`label '${t.v}' belongs to another routine`, t.pos);
+        if (sym.defined) this.err(`label '${t.v}' placed twice`, t.pos);
+        sym.defined = true;
+        this.emit({ o: 'label', l: sym.lbl });
+        this.next(); this.next();
+        this.tempRelease(mark);
+        this.parseStatement();
+        return;
+      }
+    }
     if (t.k === 'kw') {
       switch (t.v) {
         case 'begin': this.next(); this.parseStmtSeq('end'); this.expect('end'); break;
@@ -835,7 +1030,16 @@ export class Front {
         case 'for': this.parseFor(); break;
         case 'case': this.parseCase(); break;
         case 'with': this.parseWith(); break;
-        case 'goto': this.err('goto is not supported');
+        case 'goto': {
+          this.next();
+          const g = this.next();
+          const sym = this.lookup(String(g.v));
+          if (!sym || sym.kind !== 'label') this.err('label expected after goto', g.pos);
+          if (sym.scope !== this.scope) this.err(`goto out of the routine to '${g.v}'`, g.pos);
+          sym.used = sym.used || g.pos;
+          this.emit({ o: 'jmp', l: sym.lbl });
+          break;
+        }
         case 'asm': this.err('asm blocks are not supported');
         default: break; // empty statement (e.g. before 'end' / 'else' / 'until')
       }
@@ -847,6 +1051,12 @@ export class Front {
 
   parseSimpleStatement() {
     const t = this.tk;
+    if (this.isId('inherited') && !this.lookup('inherited')) {
+      const c = this.parseInherited(t.pos);
+      this.genCall(c);
+      if (c.type.k !== 'void' && c.type.k !== 'string') this.emit({ o: 'drop', s: this.clsOf(c.type) });
+      return;
+    }
     const sym = this.lookup(t.v);
     if (!sym) this.err(`unknown identifier '${t.raw}'`);
     if (sym.kind === 'bproc') { this.next(); this.builtinProc(sym.name, t.pos); return; }
@@ -855,11 +1065,14 @@ export class Front {
       const call = this.parseCallArgs(sym, t.pos);
       this.genCall(call);
       if (sym.ret && sym.ret.k !== 'string') this.emit({ o: 'drop', s: this.clsOf(sym.ret) });
+      if (this.isFileProc(sym)) this.genIoCheck();
       return;
     }
     const lhs = this.parseDesignator('lhs');
     if (this.accept(':=')) {
+      if (lhs.type && lhs.type.k === 'proc') this.wantProc = lhs.type;
       const rhs = this.parseExpr();
+      this.wantProc = null;
       this.assign(lhs, rhs, t.pos);
       return;
     }
@@ -870,6 +1083,13 @@ export class Front {
       return;
     }
     if (lhs.n === 'call') { this.genCall(lhs); if (lhs.type.k !== 'string' && lhs.type.k !== 'void') this.emit({ o: 'drop', s: this.clsOf(lhs.type) }); return; }
+    if (lhs.type && lhs.type.k === 'proc') {
+      // p; without arguments
+      const c = this.parseIndirectCall(lhs, t.pos);
+      this.genCall(c);
+      if (c.type.k !== 'void') this.emit({ o: 'drop', s: this.clsOf(c.type) });
+      return;
+    }
     this.err(`':=' expected but ${this.desc(this.tk)} found`);
   }
 
@@ -1030,9 +1250,56 @@ export class Front {
     return false;
   }
 
+  // ------------------------------------------------------------ files
+  // System's file record (Text is the same type)
+  fileRec() {
+    const sys = this.units.get('system');
+    const s = sys && sys.iface.syms.get('_tfile');
+    if (!s) this.err('internal: _TFile missing in System');
+    return s.type;
+  }
+  isFileType(t) { return t && t.k === 'record' && (t === this.fileRec() || t.fileOf !== undefined); }
+  isTextType(t) { return t && t.k === 'record' && t.fileOf === undefined && t === this.fileRec(); }
+  // a System routine on files (Close, Append, Seek ...): $I+ checks after it
+  isFileProc(sym) {
+    const sys = this.units.get('system');
+    return sys && sym.params && sym.params.length > 0 && sym.params[0].type === this.fileRec() &&
+      sys.iface.syms.get(sym.name) === sym;
+  }
+  genIoCheck() { if (this.sw.I) this.genCall(this.mkRtCall('iocheck', [])); }
+  // the record size Reset / Rewrite give a file: 0 = text
+  fileRecSize(t) { return t.fileOf === undefined ? 0 : t.fileOf === null ? 128 : t.fileOf.size; }
+
   // ------------------------------------------------------------ builtins
   builtinProc(name, pos) {
     switch (name) {
+      case 'reset': case 'rewrite': {
+        this.expect('(');
+        const f = this.parseDesignator();
+        if (!f.lv || !this.isFileType(f.type)) this.err('file variable expected');
+        let rs = this.cint(this.fileRecSize(f.type));
+        if (this.accept(',')) rs = this.conv(this.parseExpr(), T.integer);
+        this.expect(')');
+        this.genCall(this.mkRtCall(name === 'reset' ? 'freset' : 'frewrite', [f, rs]));
+        this.genIoCheck();
+        return;
+      }
+      case 'blockread': case 'blockwrite': {
+        this.expect('(');
+        const f = this.parseDesignator();
+        if (!f.lv || !this.isFileType(f.type)) this.err('file variable expected');
+        this.expect(',');
+        const buf = this.parseDesignator();
+        this.expect(',');
+        const n = this.conv(this.parseExpr(), T.word);
+        let res;
+        if (this.accept(',')) res = this.parseDesignator();
+        else res = { n: 'var', sym: this.units.get('system').iface.syms.get('_fdummy'), type: T.word, lv: true };
+        this.expect(')');
+        this.genCall(this.mkRtCall(name === 'blockread' ? 'fblockread' : 'fblockwrite', [f, buf, n, res]));
+        this.genIoCheck();
+        return;
+      }
       case 'write': case 'writeln': return this.genWrite(name === 'writeln');
       case 'read': case 'readln': return this.genRead(name === 'readln');
       case 'inc': case 'dec': {
@@ -1056,8 +1323,32 @@ export class Front {
       case 'new': case 'dispose': {
         this.expect('(');
         const v = this.parseDesignator();
-        this.expect(')');
         if (v.type.k !== 'ptr' || !v.type.to) this.err('typed pointer expected');
+        if (this.accept(',')) {
+          // New(p, Constructor(args)) / Dispose(p, Destructor(args))
+          const ot = v.type.to;
+          if (!ot.isObject) this.err('a pointer to an object expected');
+          const mid = this.expectId();
+          const m = ot.methods.get(mid.v);
+          if (!m) this.err(`'${mid.raw}' is not a method of ${typeName(ot)}`, mid.pos);
+          const self = { n: 'deref', ptr: v, type: ot, lv: true };
+          if (name === 'new') {
+            if (m.kind !== 'constructor') this.err('a constructor expected');
+            this.assign(v, { n: 'cvt', e: this.callRt('getmem', [this.cint(ot.size)]), type: v.type, explicit: true });
+            this.genCall(this.methodCall(self, m, mid.pos, true, true));
+          } else {
+            if (m.kind !== 'destructor') this.err('a destructor expected');
+            this.genCall(this.methodCall(self, m, mid.pos, false));
+            // the size of what it really is: +0 of its VMT
+            const sz = ot.vmtOff >= 0
+              ? { n: 'vmtsize', obj: self, off: ot.vmtOff, type: T.word }
+              : this.cint(ot.size);
+            this.genCall(this.mkRtCall('freemem', [v, sz]));
+          }
+          this.expect(')');
+          return;
+        }
+        this.expect(')');
         const sz = this.cint(v.type.to.size);
         if (name === 'new') {
           this.assign(v, { n: 'cvt', e: this.callRt('getmem', [sz]), type: v.type, explicit: true });
@@ -1157,6 +1448,22 @@ export class Front {
       }
       this.expect(')');
     }
+    // Write(f, ...): a file of records takes variables; a text file the usual
+    let file = null;
+    if (args.length && this.isFileType(args[0].e.type)) {
+      file = args.shift().e;
+      if (!file.lv) this.err('file variable expected');
+      if (!this.isTextType(file.type)) {
+        if (ln) this.err('WriteLn is for text files');
+        for (const a of args) {
+          if (!a.e.lv) this.err('variable expected');
+          this.genCall(this.mkRtCall('fwrite', [file, a.e, this.cint(a.e.type.size)]));
+        }
+        this.genIoCheck();
+        return;
+      }
+      this.genCall(this.mkRtCall('textout', [file]));
+    }
     for (const a of args) {
       const t = a.e.type;
       const w = a.w ? this.conv(a.w, T.integer) : this.cint(0);
@@ -1171,6 +1478,7 @@ export class Front {
       else this.err(`cannot write a value of type ${typeName(t)}`);
     }
     if (ln) this.genCall(this.mkRtCall('writeln', []));
+    if (file) { this.genCall(this.mkRtCall('textend', [])); this.genIoCheck(); }
   }
 
   genRead(ln) {
@@ -1180,6 +1488,20 @@ export class Front {
         do { vars.push(this.parseDesignator()); } while (this.accept(','));
       }
       this.expect(')');
+    }
+    let file = null;
+    if (vars.length && this.isFileType(vars[0].type)) {
+      file = vars.shift();
+      if (!this.isTextType(file.type)) {
+        if (ln) this.err('ReadLn is for text files');
+        for (const v of vars) {
+          if (!v.lv) this.err('variable expected in read');
+          this.genCall(this.mkRtCall('fread', [file, v, this.cint(v.type.size)]));
+        }
+        this.genIoCheck();
+        return;
+      }
+      this.genCall(this.mkRtCall('textin', [file]));
     }
     for (const v of vars) {
       if (!v.lv) this.err('variable expected in read');
@@ -1191,6 +1513,7 @@ export class Front {
       else this.err(`cannot read a value of type ${typeName(t)}`);
     }
     if (ln) this.genCall(this.mkRtCall('readlnend', []));
+    if (file) { this.genCall(this.mkRtCall('textend', [])); this.genIoCheck(); }
   }
 
   genIncDec(v, amount) {
@@ -1266,6 +1589,7 @@ export class Front {
   }
   parseFactor() {
     const t = this.tk;
+    if (this.isId('inherited') && !this.lookup('inherited')) return this.parseInherited(t.pos);
     switch (t.k) {
       case 'int': this.next(); return { n: 'const', type: intTypeFor(t.v), v: t.v };
       case 'real': this.next(); return { n: 'const', type: T.real, v: t.v };
@@ -1283,6 +1607,13 @@ export class Front {
         if (t.v === '[') return this.parseSetCons();
         if (t.v === '@') {
           this.next();
+          const ps = this.tk.k === 'id' && this.lookup(this.tk.v);
+          if (ps && ps.kind === 'proc') {
+            // @Routine: its address, an untyped pointer
+            this.next();
+            const v = this.procValue(ps, null, t.pos);
+            return { ...v, type: { k: 'ptr', to: null, size: this.target.ptrSize } };
+          }
           const e = this.parseDesignator();
           if (!e.lv) this.err('variable expected after @');
           return { n: 'addr', e, type: { k: 'ptr', to: e.type, size: this.target.ptrSize } };
@@ -1358,7 +1689,23 @@ export class Front {
       case 'const': e = { n: 'const', type: sym.type, v: sym.v }; break;
       case 'var': e = { n: 'var', sym, type: sym.type, lv: true }; break;
       case 'withfield': e = { n: 'field', base: sym.w.base, f: sym.f, type: sym.f.type, lv: true }; break;
+      case 'method':
+        if (this.ctx && this.ctx.sym === sym.m.sym && inExpr === 'lhs') {
+          e = { n: 'var', sym: this.ctx.resultSym, type: this.ctx.resultSym.type, lv: true };
+          break;
+        }
+        e = this.methodCall(sym.w.base, sym.m, t.pos, false);
+        break;
       case 'type': {
+        if (sym.type.isObject && this.is('.') && this.ctx && this.ctx.method && this.isDescendant(this.ctx.method.obj, sym.type)) {
+          // TAncestor.Method(args) inside a method: a static call with this Self
+          this.next();
+          const mid = this.expectId();
+          const m = sym.type.methods.get(mid.v);
+          if (!m) this.err(`'${mid.raw}' is not a method of ${t.raw}`, mid.pos);
+          e = this.methodCall(this.ctx.selfBase, m, mid.pos, true);
+          break;
+        }
         if (!this.is('(')) this.err(`'${t.raw}' is a type; use it as Type(value)`, t.pos);
         this.next();
         const v = this.parseExpr();
@@ -1367,6 +1714,11 @@ export class Front {
         break;
       }
       case 'proc': {
+        if (this.wantProc && !(this.ctx && this.ctx.sym === sym && inExpr === 'lhs')) {
+          e = this.procValue(sym, this.wantProc, t.pos);
+          this.wantProc = null;
+          break;
+        }
         if (this.ctx && this.ctx.sym === sym && inExpr === 'lhs') {
           e = { n: 'var', sym: this.ctx.resultSym, type: this.ctx.resultSym.type, lv: true };
           break;
@@ -1386,14 +1738,96 @@ export class Front {
         e = { n: 'mem', mt: sym.mt, addr: a, type: sym.type, lv: true };
         break;
       }
-      case 'bproc': this.err(`'${t.raw}' is a procedure and has no value`, t.pos);
+      case 'bproc':
+        if (sym.name === 'new' && this.is('(')) {
+          this.next();
+          const pt = this.parseTypeIdent();
+          if (pt.k !== 'ptr' || !pt.to || !pt.to.isObject) this.err('a pointer type to an object expected', t.pos);
+          this.expect(',');
+          const mid = this.expectId();
+          const m = pt.to.methods.get(mid.v);
+          if (!m || m.kind !== 'constructor') this.err('a constructor expected', mid.pos);
+          const tv = this.tempVar(pt);
+          const tmp = { n: 'var', sym: tv, type: pt, lv: true };
+          const ctor = this.methodCall({ n: 'deref', ptr: tmp, type: pt.to, lv: true }, m, mid.pos, true, true);
+          this.expect(')');
+          e = { n: 'newobj', ptype: pt, tmp, ctor, type: pt };
+          break;
+        }
+        this.err(`'${t.raw}' is a procedure and has no value`, t.pos);
       default: this.err(`'${t.raw}' cannot be used here`, t.pos);
     }
     return this.parsePostfix(e);
   }
 
+  // a global routine as a procedural value (t: the type expected, or null)
+  procValue(sym, t, pos) {
+    if (sym.level !== 1 || sym.external || sym.procType) this.err(`'${sym.name}' cannot be used as a procedural value (only routines of the program or a unit, not nested ones)`, pos);
+    if (t && (!this.sameParams(sym.params, t.params) || !!sym.ret !== !!t.ret || (t.ret && !sameType(sym.ret, t.ret))))
+      this.err(`'${sym.name}' does not fit ${typeName(t)}`, pos);
+    return { n: 'procaddr', sym, type: t || { k: 'proc', params: sym.params, ret: sym.ret, size: this.target.ptrSize } };
+  }
+
+  // p(args): a call through a procedural value
+  parseIndirectCall(fn, pos) {
+    const pt = fn.type;
+    const args = [];
+    if (this.accept('(')) {
+      if (!this.is(')')) {
+        let i = 0;
+        do {
+          const want = pt.params[i] && pt.params[i].type.k === 'proc' ? pt.params[i].type : null;
+          this.wantProc = want;
+          args.push(this.parseExpr());
+          this.wantProc = null;
+          i++;
+        } while (this.accept(','));
+      }
+      this.expect(')');
+    }
+    const c = this.checkCall(pt.sym, args, pos);
+    return { ...c, n: 'call', fn, type: pt.ret || T.void };
+  }
+
+  // o.Method(args) (Self = o); virtual ones through the VMT unless static
+  methodCall(obj, m, pos, isStatic, linkVmt) {
+    const sym = m.sym;
+    const user = sym.params.slice(0, -1);
+    const args = [];
+    if (this.accept('(')) {
+      if (!this.is(')')) {
+        do {
+          const p = user.filter(q => !q.hiddenHigh)[args.length];
+          this.wantProc = p && p.type.k === 'proc' ? p.type : null;
+          args.push(this.parseExpr());
+          this.wantProc = null;
+        } while (this.accept(','));
+      }
+      this.expect(')');
+    }
+    if (!obj.lv) this.err('object variable expected', pos);
+    const c = this.checkCall(sym, [...args, obj], pos);
+    if (m.virtual && !isStatic) c.virt = { obj, slot: m.slot, vmtOff: m.obj.vmtOff };
+    // o.Init(...), New(p, Init): the object gets its type's VMT before the
+    // constructor runs (an inherited constructor leaves it as it is)
+    if (linkVmt && m.kind === 'constructor' && obj.type.vmtOff >= 0) c.linkVmt = { obj, ot: obj.type };
+    return c;
+  }
+  // inherited Name(args) inside a method
+  parseInherited(pos) {
+    this.next();
+    const ctx = this.ctx;
+    if (!ctx || !ctx.method) this.err('inherited outside a method', pos);
+    const parent = ctx.method.obj.parent;
+    const id = this.expectId();
+    const m = parent && parent.methods.get(id.v);
+    if (!m) this.err(`no inherited method '${id.raw}'`, id.pos);
+    return this.methodCall(ctx.selfBase, m, pos, true);
+  }
+
   parsePostfix(e) {
     for (;;) {
+      if (e.type && e.type.k === 'proc' && e.n !== 'procaddr' && this.is('(')) { e = this.parseIndirectCall(e, this.tk.pos); continue; }
       const t = this.tk;
       if (t.k !== 'op') return e;
       if (t.v === '^') {
@@ -1406,10 +1840,14 @@ export class Front {
           const idx = this.parseExpr();
           if (e.type.k === 'string') {
             if (!isOrdinal(idx.type)) this.err('index must be ordinal');
-            e = { n: 'index', base: e, idx, type: T.char, lv: e.lv, lo: 0, esz: 1 };
+            e = { n: 'index', base: e, idx, type: T.char, lv: e.lv, lo: 0, hi: e.type.max, esz: 1 };
           } else if (e.type.k === 'array') {
             this.checkIndex(e.type, idx, t.pos);
-            e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: e.type.lo, esz: e.type.elem.size };
+            e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: e.type.lo, hi: e.type.hi, esz: e.type.elem.size };
+          } else if (e.type.k === 'openarray') {
+            if (!isInt(idx.type) && !isOrdinal(idx.type)) this.err('index must be ordinal');
+            const h = e.n === 'var' && this.lookup(e.sym.name + '$high');
+            e = { n: 'index', base: e, idx, type: e.type.elem, lv: e.lv, lo: 0, esz: e.type.elem.size, hiSym: h || undefined };
           } else if (e.type.k === 'ptr' && e.type.to) {
             // p[i] on typed pointers (pointer arithmetic)
             if (!isInt(idx.type)) this.err('integer index expected');
@@ -1422,6 +1860,7 @@ export class Front {
         this.next();
         const id = this.expectId();
         const f = e.type.fields.find(f => f.name === id.v);
+        if (!f && e.type.isObject && e.type.methods.has(id.v)) { e = this.methodCall(e, e.type.methods.get(id.v), id.pos, false, true); continue; }
         if (!f) this.err(`unknown field '${id.raw}'`, id.pos);
         e = { n: 'field', base: e, f, type: f.type, lv: e.lv };
       } else return e;
@@ -1500,6 +1939,7 @@ export class Front {
       case 'low': case 'high': {
         need(1);
         const t = a.n === 'typeref' ? a.type : a.type;
+        if (t.k === 'openarray') return name === 'low' ? this.cint(0) : this.openHigh(a);
         if (t.k === 'array') return { n: 'const', type: t.idx.k === 'int' ? intTypeFor(t.lo) : t.idx, v: name === 'low' ? t.lo : t.hi };
         if (t.k === 'string') return { n: 'const', type: T.integer, v: name === 'low' ? 0 : t.max };
         if (isOrdinal(t)) return { n: 'const', type: t.k === 'int' ? intTypeFor(name === 'low' ? t.lo : t.hi) : t, v: name === 'low' ? t.lo : t.hi };
@@ -1507,6 +1947,8 @@ export class Front {
       }
       case 'sizeof': {
         need(1);
+        if (a.type.k === 'openarray')
+          return this.binop('*', this.binop('+', this.openHigh(a), this.cint(1), pos), this.cint(a.type.elem.size), pos);
         return this.cint(a.type.size);
       }
       case 'length': {
@@ -1563,7 +2005,7 @@ export class Front {
       case 'sqrt': need(1); return this.callRt('sqrtreal', [this.conv(a, T.real)]);
       case 'assigned':
         need(1);
-        if (!isPtr(a.type)) this.err('pointer expected', pos);
+        if (!isPtr(a.type) && a.type.k !== 'proc') this.err('pointer expected', pos);
         return this.binop('<>', a, { n: 'const', type: T.nil, v: 0 }, pos);
       case 'concat': {
         if (!args.length) this.err('concat needs arguments', pos);
@@ -1586,9 +2028,15 @@ export class Front {
 
   parseCallArgs(sym, pos) {
     const args = [];
+    const user = (sym.params || []).filter(p => !p.hiddenHigh);
     if (this.accept('(')) {
       if (!this.is(')')) {
-        do { args.push(this.parseExpr()); } while (this.accept(','));
+        do {
+          const p = user[args.length];
+          this.wantProc = p && p.type.k === 'proc' ? p.type : null;
+          args.push(this.parseExpr());
+          this.wantProc = null;
+        } while (this.accept(','));
       }
       this.expect(')');
     }
@@ -1596,10 +2044,22 @@ export class Front {
   }
 
   checkCall(sym, args, pos) {
-    if (args.length !== sym.params.length) this.err(`wrong number of arguments for '${sym.name}': ${sym.params.length} expected, ${args.length} given`, pos);
+    const nUser = sym.params.filter(p => !p.hiddenHigh).length;
+    if (args.length !== nUser) this.err(`wrong number of arguments for '${sym.name}': ${nUser} expected, ${args.length} given`, pos);
     const out = [];
-    sym.params.forEach((p, i) => {
+    let k = 0;
+    sym.params.forEach((p) => {
+      if (p.hiddenHigh) { out.push(this.openHigh(out[out.length - 1])); return; }
+      const i = k++;
       let a = args[i];
+      if (p.type.k === 'openarray') {
+        const at = a.type;
+        const el = at.k === 'array' ? at.elem : at.k === 'openarray' ? at.elem : null;
+        if (!a.lv || !el || !(el === p.type.elem || (sameType(el, p.type.elem) && el.size === p.type.elem.size)))
+          this.err(`argument ${i + 1} of '${sym.name}': an array of ${typeName(p.type.elem)} expected`, pos);
+        out.push(a);
+        return;
+      }
       if (p.mode === 'var') {
         if (!a.lv) this.err(`argument ${i + 1} of '${sym.name}' must be a variable`, pos);
         if (p.type.k !== 'untyped' && !this.varCompat(p.type, a.type)) this.err(`argument ${i + 1} of '${sym.name}': ${typeName(p.type)} expected, ${typeName(a.type)} found`, pos);
@@ -1613,8 +2073,18 @@ export class Front {
     return { n: 'call', proc: sym, args: out, type: sym.ret || T.void };
   }
 
+  // the last index of an array passed to an open array parameter
+  openHigh(a) {
+    if (a.type.k === 'array') return this.cint(a.type.hi - a.type.lo);
+    const h = a.n === 'var' && this.lookup(a.sym.name + '$high');
+    if (!h) this.err('open array expected');
+    return { n: 'var', sym: h, type: T.integer, lv: true };
+  }
+
   varCompat(pt, at) {
     if (pt === at) return true;
+    if (pt.isObject && at.isObject && this.isDescendant(at, pt)) return true;
+    if (pt.k === 'record' && at.k === 'record' && at.fileOf !== undefined && pt === this.fileRec()) return true;
     if (pt.k === 'string' && at.k === 'string') return true;
     if (pt.k === 'ptr' && at.k === 'ptr') return !pt.to || !at.to || pt.to === at.to;
     if (pt.k === 'array' || pt.k === 'record' || pt.k === 'set') return pt === at || (pt.k === at.k && pt.size === at.size && pt.k !== 'record');
@@ -1638,6 +2108,13 @@ export class Front {
       return;
     }
     if (dt.k === 'bool') { if (st.k !== 'bool') bad(); return; }
+    if (dt.k === 'ptr' && st.k === 'ptr' && dt.to && st.to && dt.to.isObject && st.to.isObject && this.isDescendant(st.to, dt.to)) return;
+    if (dt.isObject && st.isObject && this.isDescendant(st, dt)) return;
+    if (dt.k === 'proc') {
+      if (st.k === 'nil' || (st.k === 'ptr' && !st.to)) return;
+      if (st.k !== 'proc' || !this.sameParams(dt.params, st.params) || !!dt.ret !== !!st.ret) bad();
+      return;
+    }
     if (dt.k === 'enum') { if (st.k !== 'enum' || (st.base || st) !== (dt.base || dt)) bad(); return; }
     if (dt.k === 'string') { if (st.k !== 'string' && st.k !== 'char') bad(); return; }
     if (dt.k === 'ptr') {
@@ -1850,7 +2327,13 @@ export class Front {
     }
     const mt = this.mtOf(dt);
     const d = this.lvalDesc(lhs);
-    this.genValue(this.conv(rhs, dt));
+    if (this.sw.R && isOrdinal(dt) && isOrdinal(rhs.type) && rhs.n !== 'const' &&
+        (rhs.type.lo < dt.lo || rhs.type.hi > dt.hi)) {
+      // {$R+}: the value within the range of the variable's type
+      this.genValue(rhs);
+      this.genRangeCheck(dt.lo, dt.hi, this.clsOf(rhs.type), !this.signedOf(rhs.type), 201);
+      this.genValue({ n: 'cvt', e: { n: 'onstack', type: rhs.type }, type: dt, explicit: true });
+    } else this.genValue(this.conv(rhs, dt));
     this.storeDesc(d, mt);
   }
 
@@ -1889,11 +2372,17 @@ export class Front {
         let ie = e.idx;
         if (ie.type.k !== 'int') ie = { n: 'cvt', e: ie, type: T.word, explicit: true };
         const P = this.P;
+        // {$R+}: the index within the bounds (pointer indexing has none)
+        const chk = this.sw.R && e.hi !== undefined;
         if (P === 'W') {
           this.genValue(ie);
+          if (chk) this.genRangeCheck(e.lo, e.hi, this.clsOf(ie.type), !this.signedOf(ie.type), 201);
           if (this.clsOf(ie.type) === 'L') this.emit({ o: 'trunc', mt: 'u16' });
+          if (this.sw.R && e.hiSym) this.genOpenCheck(e.hiSym, 'W');
         } else {
           this.genValue(this.conv(ie, T.longint));
+          if (chk) this.genRangeCheck(e.lo, e.hi, 'L', false, 201);
+          if (this.sw.R && e.hiSym) this.genOpenCheck(e.hiSym, 'L');
         }
         if (e.esz !== 1) this.genMulConst(e.esz, P);
         this.emit({ o: 'add', s: P, u: true });
@@ -2054,13 +2543,24 @@ export class Front {
     this.err('set expected');
   }
 
-  emitCall(sym) {
+  emitCall(sym, fn) {
+    if (fn) {
+      // through a procedural value: its address last
+      this.genValue(fn);
+      this.emit({ o: 'calli', args: sym.parBytes, ret: sym.ret ? this.clsOf(sym.ret) : null });
+      return;
+    }
     this.emit({ o: 'call', l: sym.label, args: sym.parBytes, ret: sym.ret && sym.ret.k !== 'string' ? this.clsOf(sym.ret) : null, ext: sym.external });
   }
 
   // call node -> IR. For string functions `strDst` is the result buffer.
   genCall(c, strDst) {
     const sym = c.proc;
+    if (c.linkVmt) {
+      const { obj, ot } = c.linkVmt;
+      this.assign({ n: 'field', base: obj, f: { name: '$vmt', type: this.ptrT, off: ot.vmtOff }, type: this.ptrT, lv: true },
+        { n: 'vmtaddr', label: ot.vmtLabel, type: this.ptrT });
+    }
     const P = this.P;
     if (sym.ret && sym.ret.k === 'string') {
       if (!strDst) {
@@ -2072,7 +2572,7 @@ export class Front {
     }
     sym.params.forEach((p, i) => {
       const a = c.args[i];
-      if (p.mode === 'var' || p.type.k === 'untyped') {
+      if (p.mode === 'var' || p.type.k === 'untyped' || p.type.k === 'openarray') {
         this.genAddr(a);
         this.emit({ o: 'arg', s: P });
       } else if (p.type.k === 'string') {
@@ -2096,13 +2596,124 @@ export class Front {
       this.emit({ o: 'fp', hops });
       this.emit({ o: 'arg', s: P });
     }
-    this.emitCall(sym);
+    if (c.virt) {
+      // the method's address from the object's VMT (+0 is the size)
+      const P = this.P;
+      this.genValue({ n: 'field', base: c.virt.obj, f: { name: '$vmt', type: this.ptrT, off: c.virt.vmtOff }, type: this.ptrT, lv: true });
+      this.emit({ o: 'ld', off: (c.virt.slot + 1) * this.target.ptrSize, mt: this.mtOf(this.ptrT) });
+      this.emit({ o: 'calli', args: sym.parBytes, ret: sym.ret && sym.ret.k !== 'string' ? this.clsOf(sym.ret) : null });
+    } else this.emitCall(sym, c.fn);
   }
 
   // push a scalar value
+  // ---- {$R+} {$Q+}: checks that stop the program with a runtime error
+  get sw() { return (this.tk && this.tk.pos && this.tk.pos.sw) || {}; }
+
+  genRunError(code) {
+    const sys = this.units.get('system');
+    const s = sys && sys.iface.syms.get('runerror');
+    if (!s) this.err('internal: RunError missing in System');
+    this.genCall(this.checkCall(s, [this.cint(code)], this.tk.pos));
+  }
+
+  // the value on top of the stack (class cls, unsigned u) within lo..hi,
+  // else runtime error code; the value stays
+  genRangeCheck(lo, hi, cls, u, code) {
+    const min = cls === 'L' ? (u ? 0 : -2147483648) : (u ? 0 : -32768);
+    const max = cls === 'L' ? (u ? 4294967295 : 2147483647) : (u ? 65535 : 32767);
+    const needLo = lo > min, needHi = hi < max;
+    if (!needLo && !needHi) return;
+    const bad = this.newLabel(), ok = this.newLabel();
+    if (needLo) {
+      this.emit({ o: 'dup' }); this.emit({ o: 'lit', s: cls, v: lo });
+      this.emit({ o: 'cmp', c: 'lt', s: cls, u }); this.emit({ o: 'jnz', l: bad });
+    }
+    if (needHi) {
+      this.emit({ o: 'dup' }); this.emit({ o: 'lit', s: cls, v: hi });
+      this.emit({ o: 'cmp', c: 'gt', s: cls, u }); this.emit({ o: 'jnz', l: bad });
+    }
+    this.emit({ o: 'jmp', l: ok });
+    this.emit({ o: 'label', l: bad });
+    this.genRunError(code);
+    this.emit({ o: 'label', l: ok });
+  }
+
+  // {$R+}: an index of an open array in 0..its high (the hidden parameter)
+  genOpenCheck(hs, cls) {
+    const bad = this.newLabel(), ok = this.newLabel();
+    this.emit({ o: 'dup' }); this.emit({ o: 'lit', s: cls, v: 0 });
+    this.emit({ o: 'cmp', c: 'lt', s: cls, u: false }); this.emit({ o: 'jnz', l: bad });
+    this.emit({ o: 'dup' });
+    this.genValue(this.conv({ n: 'var', sym: hs, type: T.integer, lv: true }, cls === 'L' ? T.longint : T.integer));
+    this.emit({ o: 'cmp', c: 'gt', s: cls, u: false }); this.emit({ o: 'jnz', l: bad });
+    this.emit({ o: 'jmp', l: ok });
+    this.emit({ o: 'label', l: bad });
+    this.genRunError(201);
+    this.emit({ o: 'label', l: ok });
+  }
+
+  // + - * with {$Q+}: runtime error 215 when the result does not fit
+  genOverflowOp(e, ot) {
+    const op = { '+': 'add', '-': 'sub', '*': 'mul' }[e.op];
+    const u = !this.signedOf(ot);
+    if (this.clsOf(ot) === 'W') {
+      // 16 bit: in 32 bits, then the range of the type
+      const wide = u ? T.longword : T.longint;
+      this.genValue(this.conv(e.l, wide));
+      this.genValue(this.conv(e.r, wide));
+      this.emit({ o: op, s: 'L', u });
+      this.genRangeCheck(ot.lo, ot.hi, 'L', u, 215);
+      this.emit({ o: 'trunc', mt: this.mtOf(ot) });
+      return;
+    }
+    // 32 bit: operands and result in temporaries
+    const mt = this.mtOf(ot);
+    const ta = this.allocTemp(4, 4), tb = this.allocTemp(4, 4), tr = this.allocTemp(4, 4);
+    const st = (off) => this.emit({ o: 'stl', hops: 0, off, kind: 'loc', mt });
+    const ld = (off) => this.emit({ o: 'ldl', hops: 0, off, kind: 'loc', mt });
+    const E = (o, x = {}) => this.emit({ o, s: 'L', u, ...x });
+    this.genValue(e.l); st(ta);
+    this.genValue(e.r); st(tb);
+    ld(ta); ld(tb); E(op); st(tr);
+    const ok = this.newLabel();
+    if (op === 'mul') {
+      // a = 0, or r div a = b
+      ld(ta); E('lit', { v: 0 }); E('cmp', { c: 'eq' }); this.emit({ o: 'jnz', l: ok });
+      ld(tr); ld(ta); E('div'); ld(tb); E('cmp', { c: 'eq' }); this.emit({ o: 'jnz', l: ok });
+    } else if (u) {
+      // unsigned: no carry (r >= a) / no borrow (a >= b)
+      if (op === 'add') { ld(tr); ld(ta); } else { ld(ta); ld(tb); }
+      E('cmp', { c: 'ge' }); this.emit({ o: 'jnz', l: ok });
+    } else {
+      // signed: (a xor r) and (b xor r) >= 0 / (a xor b) and (a xor r) >= 0
+      if (op === 'add') { ld(ta); ld(tr); E('xor'); ld(tb); ld(tr); E('xor'); }
+      else { ld(ta); ld(tb); E('xor'); ld(ta); ld(tr); E('xor'); }
+      E('and'); this.emit({ o: 'lit', s: 'L', v: 0 }); this.emit({ o: 'cmp', c: 'ge', s: 'L', u: false });
+      this.emit({ o: 'jnz', l: ok });
+    }
+    this.genRunError(215);
+    this.emit({ o: 'label', l: ok });
+    ld(tr);
+  }
+
   genValue(e) {
     const t = e.type;
     switch (e.n) {
+      case 'onstack': return;     // a value already computed (see assign)
+      case 'procaddr': this.emit({ o: 'gaddr', g: e.sym.label, off: 0 }); return;
+      case 'vmtaddr': this.emit({ o: 'gaddr', g: e.label, off: 0 }); return;
+      case 'vmtsize':
+        this.genValue({ n: 'field', base: e.obj, f: { name: '$vmt', type: this.ptrT, off: e.off }, type: this.ptrT, lv: true });
+        this.emit({ o: 'ld', off: 0, mt: 'u16' });
+        if (this.P === 'L') this.emit({ o: 'trunc', mt: 'u16' });
+        return;
+      case 'newobj': {
+        // New(PType, Constructor(args)): the memory, the constructor, the pointer
+        this.assign(e.tmp, { n: 'cvt', e: this.callRt('getmem', [this.cint(e.ptype.to.size)]), type: e.ptype, explicit: true });
+        this.genCall(e.ctor);
+        this.genValue(e.tmp);
+        return;
+      }
       case 'const': {
         if (t.k === 'real') { this.emit({ o: 'lit', s: 'L', v: realBits(e.v) }); return; }
         if (t.k === 'string') this.err('string constant used as a value');
@@ -2143,6 +2754,7 @@ export class Front {
         const cls = this.clsOf(ot);
         const u = !this.signedOf(ot);
         const rel = { '=': 'eq', '<>': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge' }[e.op];
+        if (this.sw.Q && ot.k === 'int' && (e.op === '+' || e.op === '-' || e.op === '*')) { this.genOverflowOp(e, ot); return; }
         if (e.op === 'shl' || e.op === 'shr') {
           this.genValue(e.l);
           if (e.r.n === 'const') this.emit({ o: 'lit', s: 'W', v: e.r.v & 31 });

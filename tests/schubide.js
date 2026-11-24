@@ -25,6 +25,9 @@ const jobs = [
   ['SNAKE.PAS', ex('snake.pas')],
   ['SSNAKE.PAS', '{$SCHUB}\n' + ex('snake.pas')],
   ['SPRIMES.PAS', '{$SCHUB}\n' + ex('primes.pas')],
+  // objects: the VMTs go into the data image, at odd addresses too
+  ['OBJ.PAS', fs.readFileSync(new URL('cases/22_objects.pas', import.meta.url), 'latin1')],
+  ['SOBJ.PAS', '{$SCHUB}\n' + fs.readFileSync(new URL('cases/22_objects.pas', import.meta.url), 'latin1')],
   ['HELLO.ASM', ex('hello.asm')],
   ['HELLORV.ASM', ex('hellorv.asm')],
 ];
@@ -51,10 +54,11 @@ function session(onSchub) {
     m.keyState(0x01, true); frames(2); m.keyState(0x01, false);         // F9
     let k = 0;
     while (!/^ *OK|ERROR/.test(line(29)) && k < 4000 && m.state === 'running') { frames(1); k++; }
+    const t1 = n; frames(10);                                                        // the whole message drawn
     // code and data of a 65C816 program, of a SCHUB program, of assembly
     const area = /\.ASM$/.test(name) ? [0x330000, 1024] : text.startsWith('{$SCHUB}') ? [0x080000, 8192] : [0x300000, 4096];
     out.jobs.push({
-      name, msg: line(29).trim().replace(/, \d+ MS$/, ''), frames: n - t0,
+      name, msg: line(29).trim().replace(/, \d+ MS$/, ''), frames: t1 - t0,
       bytes: Buffer.from(m.mem.subarray(area[0], area[0] + area[1])).toString('hex'),
       data: Buffer.from(m.mem.subarray(0x320000, 0x320000 + 2048)).toString('hex'),
       fault: m.schubFault, state: m.state,
@@ -100,7 +104,7 @@ for (let i = 0; i < jobs.length; i++) {
     hold(0x03);
     const ran = until(expect, 4000);
     if (during) during();
-    const ended = until(/PRESS A KEY/, 4000);
+    const ended = until(/PRESS A KEY --/, 4000); frames(5);
     const scr = m.screenText();
     m.pushKey(32); frames(60);
     return { ran, ended, scr, back: /PROGRAM ENDED/.test(line(29)) && /MERIDIAN PASCAL/.test(line(0)) };
@@ -149,7 +153,7 @@ for (let i = 0; i < jobs.length; i++) {
     hold(0x04); frames(20);
     type(name.toLowerCase() + '\n');
     const ran = until(re, 4000);
-    const ended = until(/PRESS A KEY/, 4000);
+    const ended = until(/PRESS A KEY --/, 4000); frames(5);
     m.pushKey(32); frames(60);
     return ran && ended && new RegExp(name.replace('.', '\\.') + ' ENDED').test(line(29)) && ok();
   };

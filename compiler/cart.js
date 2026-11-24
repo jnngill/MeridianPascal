@@ -43,7 +43,7 @@ export const RVC = {
   DATA: 0x0a0000,      // program variables, then the heap
   STACK: 0x1ffff0,     // stack top (grows down towards the heap)
 };
-const RT_EXPORTS_RV = ['rt_error', 'rt_exit', 'rt_memcpy', 'rt_memmove', 'rt_sys'];
+const RT_EXPORTS_RV = ['rt_error', 'rt_exit', 'rt_memcpy', 'rt_memmove', 'rt_sys', 'rt_dbghook'];
 
 // the whole library compiled for SCHUB, linked at RVC.LIB; the program
 // compiled on the MERIDIAN is entered at RVC.CODE after the unit inits
@@ -52,7 +52,7 @@ function buildRvLibrary(opts, libUnits) {
   const front = new Front(tgt, { loadSource: opts.loadUnit, loadInclude: opts.loadInclude, defines: [...tgt.defines] });
   const src = `program RVLIB;\nuses ${libUnits.join(', ')};\nbegin\nend.\n`;
   const prog = front.compileProgram(src, 'rvlib.pas');
-  const { asm } = genRV(prog, { userEntry: RVC.CODE, heapVar: RVC.HEAPVAR, stackTop: RVC.STACK });
+  const { asm } = genRV(prog, { userEntry: RVC.CODE, heapVar: RVC.HEAPVAR, stackTop: RVC.STACK, debugHook: true });
   const a = assembleRV(asm, { org: RVC.LIB });
   const end = a.symbols.get('PAS_BSS');
   if (a.symbols.get('PAS_HEAP') > RVC.LIBMAX) throw new CompileError('SCHUB library too large');
@@ -190,6 +190,154 @@ _dr_next
 	dex
 	bne _dr_loop
 	pld
+	rtl
+`;
+
+// The debugger (65C816 programs): every statement of an F5 build with
+// breakpoints calls rt_dbghook (JSL). State at $3D:7F00: +0 line (unit in
+// bits 12-15), +2 mode (0 breakpoints only, 1 into, 2 over, 3 to the line at
+// +8), +3 1 = stopped, +4 S of the last stop, +8 line, +10 the host's stop
+// handler (3 bytes), +16 S, +18 D, +20 DB of the stopped program (P is on its
+// stack, then the return address). Breakpoints: a bitmap at $3D:7000.
+// The host (the 65C816 editor here, or the SCHUB editor's stub) swaps bank 0:
+// the program's goes to bank $34 while the editor shows where it stopped.
+// Outside the library block (the stamp stays).
+const DEBUG_ASM = `
+DBG = $3D7F00
+DBGBITS = $3D7000
+rt_dbghook
+	php
+	rep #$30
+	.al
+	.xl
+	lda @l DBG+2
+	and #$00FF
+	beq dh_bp
+	cmp #1
+	beq dh_stop
+	cmp #2
+	bne dh_to
+	tsc
+	cmp @l DBG+4
+	bcs dh_stop               ; the frame of the last stop, or an outer one
+	bra dh_bp
+dh_to
+	lda @l DBG
+	cmp @l DBG+8
+	beq dh_stop
+dh_bp
+	lda @l DBG
+	cmp #$1000
+	bcs dh_ret                ; a unit's line
+	pha
+	lsr a
+	lsr a
+	lsr a
+	tax
+	pla
+	and #7
+	tay
+	lda @l DBGBITS,x
+	and #$00FF
+	cpy #0
+	beq +
+-	lsr a
+	dey
+	bne -
++	lsr a
+	bcs dh_stop
+dh_ret
+	plp
+	rtl
+dh_stop
+	tsc
+	sta @l DBG+16
+	sta @l DBG+4
+	tdc
+	sta @l DBG+18
+	sep #$20
+	.as
+	phb
+	pla
+	sta @l DBG+20
+	lda #1
+	sta @l DBG+3
+	lda @l DBG+12             ; on to the host's handler
+	pha
+	rep #$20
+	.al
+	lda @l DBG+10
+	dec a
+	pha
+	rtl
+
+; the 65C816 editor's stop handler: the program's bank 0 to $34, the
+; editor's back from $31 (rt_runuser kept it there), then back to the editor
+; as if rt_runuser / rt_dbgresume had returned
+rt_dbgstop_ed
+	rep #$30
+	.al
+	.xl
+	phb
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$00,#$34
+	plb
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$31,#$00
+	lda @l RUNSAVE+4
+	tcs
+	lda @l RUNSAVE+6
+	tcd
+	rtl
+
+; external 'dbgresume': the stopped program goes on (like rt_runuser: it
+; returns when the program ends or stops again)
+rt_dbgresume
+	rep #$30
+	.al
+	.xl
+	tsc
+	sta @l RUNSAVE+4
+	tdc
+	sta @l RUNSAVE+6
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$00,#$31
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$34,#$00
+	lda @l DBG+16
+	tcs
+	lda @l DBG+18
+	tcd
+	sep #$20
+	.as
+	lda @l DBG+20
+	pha
+	plb
+	lda #0
+	sta @l DBG+3
+	plp
+	rtl
+
+; external 'dbgsetvec': the hook stops into rt_dbgstop_ed
+rt_dbgsetvec
+	php
+	rep #$30
+	.al
+	lda #rt_dbgstop_ed & $ffff
+	sta @l DBG+10
+	sep #$20
+	.as
+	lda #^rt_dbgstop_ed
+	sta @l DBG+12
+	plp
 	rtl
 `;
 
@@ -335,7 +483,7 @@ export const TC = {
 const RT_EXPORTS = ['rt_mul16', 'rt_div16s', 'rt_div16u', 'rt_mod16s', 'rt_mod16u', 'rt_shl16', 'rt_shr16',
   'rt_mul32', 'rt_div32s', 'rt_div32u', 'rt_mod32s', 'rt_mod32u', 'rt_shl32', 'rt_shr32', 'rt_cmp32s',
   'rt_cmp32u', 'rt_ldf8', 'rt_ldf16', 'rt_ldf32', 'rt_stf8', 'rt_stf16', 'rt_stf32', 'rt_exit',
-  'rt_libinit', 'rt_error', 'rt_runuser', ...RT_VARS_CART.map(v => v[0])];
+  'rt_libinit', 'rt_error', 'rt_runuser', 'rt_dbghook', ...RT_VARS_CART.map(v => v[0])];
 
 export function buildCartridge(source, fileName, opts) {
   const target = TARGETS.m816;
@@ -360,7 +508,7 @@ export function buildCartridge(source, fileName, opts) {
       const p = procs.get(l);
       if (!p) continue;
       live.add(l);
-      for (const ins of p.code) if (ins.o === 'call') work.push(ins.l);
+      for (const ins of p.code) { if (ins.o === 'call') work.push(ins.l); if (ins.o === 'gaddr' && typeof ins.g === 'string') work.push(ins.g); }
       if (p.parent) work.push(p.parent);
     }
     prog = { ...prog, procs: prog.procs.filter(p => live.has(p.label)) };
@@ -473,7 +621,7 @@ ${progInits.map(l => `\tjsl ${l}`).join('\n')}
 	jsl ${prog.main}
 	jml rt_exit
 `;
-    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
+    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + DEBUG_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
     res.asm = asm;
     const a = assemble816(asm, { listing: !!opts.listing });
     res.symbols = a.symbols;

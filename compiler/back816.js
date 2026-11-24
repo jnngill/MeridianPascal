@@ -780,6 +780,26 @@ export function gen816(prog, opts = {}) {
           E('mvn #0,#0');
           break;
         }
+        case 'calli': {
+          // a procedural variable: the address is on top (the arguments are out)
+          if (J !== 'jsr') throw new Error('procedural calls are not supported in the far code model');
+          popA();
+          spill();
+          E('sta @w rt_t0');
+          E('ldx #0');
+          E('jsr (rt_t0,x)');
+          const n = ins.args;
+          if (n) {
+            if (n <= 8) for (let k = 0; k < n; k += 2) E('ply');
+            else {
+              if (ins.ret) E('tay');
+              E('tsc'); E('clc'); E(`adc #${n}`); E('tcs');
+              if (ins.ret) E('tya');
+            }
+          }
+          if (ins.ret) pushReg(ins.ret);
+          break;
+        }
         case 'call': {
           spill();
           E(`${J} ${ins.l}`);

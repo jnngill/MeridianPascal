@@ -28,11 +28,14 @@ export function tokenize(text, file, defines, includeLoader) {
   const toks = [];
   const condStack = []; // {active, taken}
   const isActive = () => condStack.every(c => c.active);
+  // switches ({$R+} range checks, {$Q+} overflow checks, {$I-} I/O checks):
+  // every token's pos carries the ones in force where it stands
+  let sw = { R: false, Q: false, I: true };
 
   function lex(src, fname) {
     let i = 0, line = 1, col = 1;
     const n = src.length;
-    const pos = () => ({ file: fname, line, col });
+    const pos = () => ({ file: fname, line, col, sw });
     const adv = (k = 1) => {
       for (let j = 0; j < k; j++) {
         if (src[i] === '\n') { line++; col = 1; } else col++;
@@ -41,6 +44,12 @@ export function tokenize(text, file, defines, includeLoader) {
     };
 
     function directive(body, p) {
+      if (/^\$[A-Za-z][+-](\s*,\s*[A-Za-z][+-])*\s*$/.test(body)) {
+        if (!isActive()) return;
+        sw = { ...sw };
+        for (const [, l, v] of body.matchAll(/([A-Za-z])([+-])/g)) sw[l.toUpperCase()] = v === '+';
+        return;
+      }
       const m = /^\$([A-Za-z]+)\s*(.*)$/s.exec(body);
       if (!m) return;
       const name = m[1].toUpperCase();

@@ -64,6 +64,7 @@ export function genRV(prog, opts = {}) {
   // the heap starts where the loader says (programs compiled on the MERIDIAN)
   if (opts.heapVar) rt = rt.replace(/rt_heaporg:\n\tla a0, PAS_HEAP\n/, `rt_heaporg:\n\tli t0, ${h(opts.heapVar)}\n\tlw a0, 0(t0)\n`);
   out.push(rt);
+  if (opts.debugHook) out.push(DEBUG_RV);
 
   out.push('# ---- data');
   E('.align 4');
@@ -410,6 +411,18 @@ export function genRV(prog, opts = {}) {
           B('call rt_memcpy');
           break;
         }
+        case 'calli': {
+          // a procedural variable: the address is on top (the arguments are out)
+          const r = popR();
+          matAll();
+          B(`jalr ra, 0(${r})`);
+          if (ins.args) {
+            if (fits12(ins.args)) B(`addi sp, sp, ${ins.args}`);
+            else { B(`li t0, ${ins.args}`); B('add sp, sp, t0'); }
+          }
+          if (ins.ret) { const q = pushR(); B(`mv ${q}, a0`); }
+          break;
+        }
         case 'call': {
           matAll();
           B(`call ${ins.l}`);
@@ -463,6 +476,94 @@ export function genRV(prog, opts = {}) {
     E('ret');
   }
 }
+
+// --------------------------------------------------------------------------
+// The debugger hook (in the cartridge's SCHUB library): a statement of an F5
+// build with breakpoints calls it. The state is at $3D:7F00 (see cart.js,
+// DEBUG_ASM): +0 line, +2 mode (0 breakpoints, 1 into, 2 over, 3 to the line
+// at +8), +3 stopped, +4 sp of the last stop; breakpoints in a bitmap at
+// $3D:7000 (lines of the program, unit 0). To stop, it keeps the registers
+// and asks the host stub (request 10) to stop SCHUB and return; the stub's
+// entry +2 later starts SCHUB again at .dh_resume.
+const DEBUG_RV = String.raw`
+# ---- debugger hook (a0-a7, t0-t2 free; s0-s11, sp, gp kept)
+rt_dbghook:
+	li t0, 0x803D7F00
+	lbu t1, 2(t0)
+	beqz t1, .dh_bp
+	li t2, 1
+	beq t1, t2, .dh_stop
+	li t2, 2
+	bne t1, t2, .dh_to
+	lw t2, 4(t0)
+	bgeu sp, t2, .dh_stop
+	j .dh_bp
+.dh_to:
+	lhu t1, 0(t0)
+	lhu t2, 8(t0)
+	beq t1, t2, .dh_stop
+.dh_bp:
+	lhu t1, 0(t0)
+	srli t2, t1, 12
+	bnez t2, .dh_ret
+	srli t2, t1, 3
+	li a0, 0x803D7000
+	add a0, a0, t2
+	lbu a0, 0(a0)
+	andi t1, t1, 7
+	srl a0, a0, t1
+	andi a0, a0, 1
+	bnez a0, .dh_stop
+.dh_ret:
+	ret
+.dh_stop:
+	la t0, rt_dbgregs
+	sw ra, 0(t0)
+	sw sp, 4(t0)
+	sw gp, 8(t0)
+	sw s0, 12(t0)
+	sw s1, 16(t0)
+	sw s2, 20(t0)
+	sw s3, 24(t0)
+	sw s4, 28(t0)
+	sw s5, 32(t0)
+	sw s6, 36(t0)
+	sw s7, 40(t0)
+	sw s8, 44(t0)
+	sw s9, 48(t0)
+	sw s10, 52(t0)
+	sw s11, 56(t0)
+	li t0, 0x803D7F00
+	sw sp, 4(t0)
+	li t1, 1
+	sb t1, 3(t0)
+	li a0, 10
+	la a1, .dh_resume
+	call rt_sys
+.dh_resume:
+	la t0, rt_dbgregs
+	lw ra, 0(t0)
+	lw sp, 4(t0)
+	lw gp, 8(t0)
+	lw s0, 12(t0)
+	lw s1, 16(t0)
+	lw s2, 20(t0)
+	lw s3, 24(t0)
+	lw s4, 28(t0)
+	lw s5, 32(t0)
+	lw s6, 36(t0)
+	lw s7, 40(t0)
+	lw s8, 44(t0)
+	lw s9, 48(t0)
+	lw s10, 52(t0)
+	lw s11, 56(t0)
+	li t0, 0x803D7F00
+	sb zero, 3(t0)
+	ret
+	.align 4
+rt_dbgregs:
+	.fill 64
+`;
 
 // --------------------------------------------------------------------------
 // RV32 runtime. External routines get their arguments on the stack
@@ -682,10 +783,27 @@ run_direct
 	lda @l run_par+2
 	sta @w $16E6
 run_go
+	rep #$30
+	.al
+	tsc                       ; the program's stack below the stub's (a stop
+	sta @l run_sp             ; comes back to the stub at run_sp)
+	sec
+	sbc #64
+	tcs
+	lda #dbg_stop_stub & $ffff  ; the debugger hook's stop handler
+	sta @l DBG+10
+	sep #$20
+	.as
+	lda #^dbg_stop_stub
+	sta @l DBG+12
 	phk
 	pea run_ret-1
 	jml [$16E4]
 run_ret
+	rep #$30
+	.al
+	lda @l run_sp
+	tcs
 	sep #$20
 	rep #$10
 	.as
@@ -727,6 +845,71 @@ run_par
 	.fill 8
 run_res
 	.byte 0
+run_sp
+	.word 0
+
+; the debugger hook stopped the 65C816 program: its bank 0 to bank $34,
+; then as if it had ended (run_back), with $3D:7F03 = 1
+dbg_stop_stub
+	rep #$30
+	.al
+	.xl
+	phb
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$00,#$34
+	plb
+	lda @l run_sp
+	tcs
+	sep #$20
+	.as
+	lda #0
+	sta @l run_res
+	jmp @w run_back
+
+; request 9: continue the stopped 65C816 program (+12: where SCHUB carries on
+; when it stops again or ends)
+c_dres
+	ldx #0
+-	lda @l MBOX+8,x
+	sta @l run_par,x
+	inx
+	cpx #8
+	bne -
+	jsr @w stop
+	lda #0
+	ldx #0
+-	sta @l MBOX,x
+	inx
+	cpx #16
+	bne -
+	rep #$30
+	.al
+	tsc
+	sta @l run_sp
+	phb
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$00,#$B0
+	ldx #$2000
+	ldy #$2000
+	lda #$97FF
+	mvn #$34,#$00
+	lda @l DBG+16             ; the program's registers (see cart.js)
+	tcs
+	lda @l DBG+18
+	tcd
+	sep #$20
+	.as
+	lda @l DBG+20
+	pha
+	plb
+	lda #0
+	sta @l DBG+3
+	plp
+	rtl
 `;
 
 // --------------------------------------------------------------------------
@@ -745,7 +928,26 @@ SCHUB_CTL  = $CD08
 SCHUB_STAT = $CD09
 SCHUB_START = $CD0C
 MBOX       = ${hex6(MB)}
+DBG        = $3D7F00
 stub
+	bra stub_go               ; +0: start the program
+	phb                       ; +2: continue it after a debugger stop
+	phd
+	php
+	sep #$20
+	rep #$10
+	lda #0
+	pha
+	plb
+	jsr @w stop
+	lda @l resume_adr
+	sta @w SCHUB_START
+	lda @l resume_adr+1
+	sta @w SCHUB_START+1
+	lda @l resume_adr+2
+	sta @w SCHUB_START+2
+	bra stub_run
+stub_go
 	phb
 	phd
 	php
@@ -767,6 +969,7 @@ stub
 	sta @w SCHUB_START+1
 	lda #${(layout.CODE >> 16) & 255}
 	sta @w SCHUB_START+2
+stub_run
 	lda #0
 	sta @w SCHUB_START+3
 	ldx #0
@@ -816,9 +1019,16 @@ request
 	beq c_reset
 	cmp #7
 	beq c_dos
+	cmp #10
+	bne +
+	jmp @w c_dstop
++
 ${layout.RUN ? `	cmp #8
 	bne +
 	jmp @w c_run
++	cmp #9
+	bne +
+	jmp @w c_dres
 +` : ''}
 	lda #0
 	bra answer
@@ -899,6 +1109,21 @@ stop
 	and #$06
 	bne -
 	rts
+; request 10 (the debugger hook): SCHUB stops, the stub returns as if the
+; program had ended, with $3D:7F03 = 1; +2 continues it at a1 later
+c_dstop
+	lda @l MBOX+8
+	sta @l resume_adr
+	lda @l MBOX+9
+	sta @l resume_adr+1
+	lda @l MBOX+10
+	sta @l resume_adr+2
+	jsr @w stop
+	lda #1
+	sta @l DBG+3
+	jmp @w done
+resume_adr
+	.fill 3
 ${layout.RUN ? RUN_REQUEST : ''}
 escn
 	.byte 0

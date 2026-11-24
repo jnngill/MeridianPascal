@@ -30,7 +30,7 @@ export function isInt(t) { return t && t.k === 'int'; }
 export function isReal(t) { return t && t.k === 'real'; }
 export function isNumeric(t) { return isInt(t) || isReal(t); }
 export function isStringy(t) { return t && (t.k === 'string' || t.k === 'char'); }
-export function isPtr(t) { return t && (t.k === 'ptr' || t.k === 'nil'); }
+export function isPtr(t) { return t && (t.k === 'ptr' || t.k === 'nil' || t.k === 'proc'); }
 export function isScalar(t) { return isOrdinal(t) || isReal(t) || isPtr(t); }
 export function isStruct(t) {
   return t && (t.k === 'string' || t.k === 'array' || t.k === 'record' || t.k === 'set');
