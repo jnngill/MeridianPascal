@@ -41,7 +41,8 @@ all. See [Start](#start) for the PC side and
   MERIDIAN itself (`node compiler/mkcart.js`, or the *PASCAL cartridge*
   button in the IDE). Insert it in the MiSTer OSD and the machine starts into
   the editor, which looks and works like the workshop's EDIT (tabs on top,
-  the keys at the bottom, Ctrl+S/O/N/F/G/L/X/C/V as there, Ctrl+Z undo): F5 compiles
+  the keys at the bottom, Ctrl+S/O/N/F/G/L/X/C/V as there, Ctrl+Z undo,
+  Shift+cursor keys or the mouse select): F5 compiles
   and runs, F2/F3 save and open on the drives,
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
   Ctrl+R runs a `.MER` from a drive,
