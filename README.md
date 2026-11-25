@@ -42,7 +42,8 @@ all. See [Start](#start) for the PC side and
   button in the IDE). Insert it in the MiSTer OSD and the machine starts into
   the editor, which looks and works like the workshop's EDIT (tabs on top,
   the keys at the bottom, Ctrl+S/O/N/F/G/L/X/C/V as there, Ctrl+Z undo,
-  Shift+cursor keys or the mouse select): F5 compiles
+  Shift+Ctrl+Z redo, Ctrl+H replace, Shift+cursor keys or the mouse select;
+  an error in a unit opens the unit there): F5 compiles
   and runs, F2/F3 save and open on the drives,
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
   Ctrl+R runs a `.MER` from a drive,

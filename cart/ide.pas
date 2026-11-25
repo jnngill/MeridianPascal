@@ -66,6 +66,9 @@ const
     'MPTX', length (3 bytes), cursor (3 bytes), unsaved (1), name (17). }
   RecBase = $3C0F00;
   UndoMax = 64000;
+  { the redo log (Shift+^Z), the same records: what ^Z took back }
+  RedoBase = $3F1C00;
+  RedoMax = 57000;
 
 procedure RunUser(entry: longint); external 'runuser';
 function RunMerFile: integer; external 'runmer';
@@ -88,6 +91,8 @@ var
   fileName: string[16];
   msg: string;
   findText: string[40];
+  replText: string[40];              { what ^H puts in }
+  primary: string[16];               { an error took the editor into a unit: the program to compile, else '' }
   rtLine: integer;                   { the line of the last runtime error, 0 = none }
   dbgActive: boolean;                { a program is stopped in the debugger }
   dbgLine: integer;                  { its line (in the program, not a unit) }
@@ -128,7 +133,8 @@ var
   uTop: longint;                     { bytes in the undo log }
   uGroup: longint;                   { the edit being logged: ^Z undoes a group }
   uJoin: byte;                       { the key being handled: 1 typing, 2 Backspace, 3 Delete, 4 ^X, 0 other }
-  undoing: boolean;                  { ^Z is at work: nothing is logged }
+  logTo: byte;                       { edits go to: 0 the undo log (and nothing to redo), 1 the redo log (^Z), 2 the undo log (redo) }
+  rTop: longint;                     { bytes in the redo log }
   uFresh: boolean;                   { the next record starts a group whatever uJoin says }
   uKeep: boolean;                    { the next record belongs to the group of the last one }
   selA: longint;                     { the selection runs from here to the cursor; -1 none }
@@ -188,58 +194,57 @@ begin
   Mem[a + 1] := (v shr 8) and 255;
 end;
 
-{ the newest record's offset in the log }
-function UTopRec: longint;
+{ the newest record's offset in a log }
+function UTopRec(base, top: longint): longint;
 begin
-  UTopRec := uTop - UW(UndoBase + uTop - 2);
+  UTopRec := top - UW(base + top - 2);
 end;
 
-function URecSize(o: longint): longint;
+function URecSize(base, o: longint): longint;
 begin
-  if Mem[UndoBase + o] = 2 then URecSize := 10 + UW(UndoBase + o + 4) else URecSize := 10;
+  if Mem[base + o] = 2 then URecSize := 10 + UW(base + o + 4) else URecSize := 10;
 end;
 
 { room for need more bytes: when the log is full the oldest records go, a
   quarter of the log at least, so that it moves seldom }
-function UndoRoom(need: longint): boolean;
+function UndoRoom(base, max: longint; var top: longint; need: longint): boolean;
 var off, keep, s, c: longint;
 begin
   UndoRoom := false;
-  if need > UndoMax then begin uTop := 0; exit; end;
-  if uTop + need > UndoMax then begin
+  if need > max then begin top := 0; exit; end;
+  if top + need > max then begin
     off := 0;
-    while (off < uTop) and ((uTop - off + need > UndoMax) or (off < UndoMax div 4)) do
-      off := off + URecSize(off);
-    if off >= uTop then uTop := 0
+    while (off < top) and ((top - off + need > max) or (off < max div 4)) do
+      off := off + URecSize(base, off);
+    if off >= top then top := 0
     else begin
       { move the rest down in pieces that do not overlap }
-      keep := uTop - off; s := 0;
+      keep := top - off; s := 0;
       while s < keep do begin
         c := keep - s;
         if c > off then c := off;
-        CopyMem(UndoBase + off + s, UndoBase + s, c);
+        CopyMem(base + off + s, base + s, c);
         BlitWait;
         s := s + c;
       end;
-      uTop := keep;
+      top := keep;
     end;
   end;
   UndoRoom := true;
 end;
 
-{ an edit for the log: kind 1 = n bytes inserted at pos, kind 2 = n bytes at
+{ an edit for a log: kind 1 = n bytes inserted at pos, kind 2 = n bytes at
   pos are about to be deleted. Typing in a row, Backspace in a row,
   Delete in a row and ^X in a row make one group, and typing in a row one
   record. }
-procedure UndoLog(kind: byte; pos, n: longint);
+procedure LogRec(base, max: longint; var top: longint; kind: byte; pos, n: longint);
 var t, a, size: longint;
     newGroup: boolean;
 begin
-  if undoing or (n <= 0) then exit;
-  newGroup := (uJoin = 0) or (uTop = 0) or uFresh;
+  newGroup := (uJoin = 0) or (top = 0) or uFresh;
   uFresh := false;
   if not newGroup then begin
-    t := UndoBase + UTopRec;
+    t := base + UTopRec(base, top);
     if Mem[t + 1] <> uJoin then newGroup := true
     else case uJoin of
       1: newGroup := (kind <> 1) or (pos <> UW(t + 2) + UW(t + 4));
@@ -252,13 +257,13 @@ begin
     end;
   end;
   { typing over a selection: the deleted selection and the new text are one }
-  if uKeep and (uTop > 0) then newGroup := false;
+  if uKeep and (top > 0) then newGroup := false;
   uKeep := false;
   if newGroup then uGroup := uGroup + 1;
   size := 10;
   if kind = 2 then size := 10 + n;
-  if not UndoRoom(size) then exit;
-  a := UndoBase + uTop;
+  if not UndoRoom(base, max, top, size) then exit;
+  a := base + top;
   Mem[a] := kind;
   Mem[a + 1] := uJoin;
   PutUW(a + 2, pos);
@@ -266,7 +271,17 @@ begin
   PutUW(a + 6, uGroup);
   if kind = 2 then begin CopyMem(TB + pos, a + 8, n); BlitWait; end;
   PutUW(a + size - 2, size);
-  uTop := uTop + size;
+  top := top + size;
+end;
+
+procedure UndoLog(kind: byte; pos, n: longint);
+begin
+  if n <= 0 then exit;
+  case logTo of
+    0: begin rTop := 0; LogRec(UndoBase, UndoMax, uTop, kind, pos, n); end;   { a new edit: nothing to redo }
+    1: LogRec(RedoBase, RedoMax, rTop, kind, pos, n);
+    2: LogRec(UndoBase, UndoMax, uTop, kind, pos, n);
+  end;
 end;
 
 procedure InsertChars(const s: string);
@@ -1192,22 +1207,18 @@ end;
 
 procedure RunNamed(n: string); forward;
 
-procedure LoadText;
-var n: string;
-    got, i: longint;
+{ the file n from the current drive into the editor }
+function LoadNamed(const n: string): boolean;
+var got, i: longint;
     b: byte;
     lastCR: boolean;
 begin
-  if modified then if not YesNo('The text is not saved. Open another anyway?') then exit;
-  n := '';
-  if not Prompt('Open:', n, 12) then exit;
-  if n = '' then exit;
-  n := WithExt(n);
-  if Pos('.MER', n) > 0 then begin RunNamed(n); exit; end;
+  LoadNamed := false;
   msg := 'Opening ' + n + '...';
   DrawStatus;
   got := LoadFile(n, Stage, MaxText);
   if got < 0 then begin msg := 'Open failed: ' + Lower(DosErrorText(DosError)); exit; end;
+  LoadNamed := true;
   { line ends: CR LF, CR or LF -> LF; tabs -> two spaces }
   len := 0; TextChanged(0);
   lastCR := false;
@@ -1224,10 +1235,22 @@ begin
   end;
   fileName := n;
   modified := false;
-  uTop := 0;                     { another text: nothing to undo }
+  uTop := 0; rTop := 0;                     { another text: nothing to undo }
   left := 0;
   JumpTo(0);
   msg := 'Opened ' + n + ' (' + IntToStr(len) + ' bytes)';
+end;
+
+procedure LoadText;
+var n: string;
+begin
+  if modified then if not YesNo('The text is not saved. Open another anyway?') then exit;
+  n := '';
+  if not Prompt('Open:', n, 12) then exit;
+  if n = '' then exit;
+  n := WithExt(n);
+  if Pos('.MER', n) > 0 then begin RunNamed(n); exit; end;
+  if LoadNamed(n) then primary := '';
 end;
 
 procedure Directory;
@@ -1277,7 +1300,7 @@ begin
   if (c < 0) or (c > len) then c := 0;
   fileName := nm;
   modified := true;
-  uTop := 0;
+  uTop := 0; rTop := 0;
   TextChanged(0);
   left := 0;
   JumpTo(c);
@@ -1299,7 +1322,8 @@ begin
   InsertChars(T1 + #10 + T2 + #10 + #10 + T3 + #10 + T4 + #10 + T5 + #10 + T6 + #10);
   fileName := '';
   modified := false;
-  uTop := 0;                     { a new text: nothing to undo }
+  primary := '';
+  uTop := 0; rTop := 0;                     { a new text: nothing to undo }
   left := 0;
   JumpTo(0);
 end;
@@ -1322,11 +1346,48 @@ begin
   msg := msg + IntToHex(v, 6);
 end;
 
+{ the text as it is, under its name, without asking }
+function SaveQuiet: boolean;
+begin
+  SaveQuiet := true;
+  if not modified then exit;
+  if SaveFile(fileName, TB, len) then modified := false
+  else begin
+    msg := 'Save failed: ' + Lower(DosErrorText(DosError));
+    SaveQuiet := false;
+  end;
+end;
+
+{ an error in a unit: open the unit at the error (the program saved first);
+  F9 F5 F7 there save the unit and compile the program again }
+procedure OpenUnitError;
+var u, p: string[16];
+    m: string;
+    l, c: integer;
+begin
+  u := ErrUnit; l := ErrLine; c := ErrCol; m := msg;
+  if not YesNo('Error in ' + u + ' line ' + IntToStr(l) + '. Open ' + u + ' there?') then begin msg := m; exit; end;
+  if fileName = '' then SaveText
+  else if not SaveQuiet then exit;
+  if modified or (fileName = '') then begin msg := m; exit; end;
+  p := fileName;
+  if not LoadNamed(u) then exit;
+  primary := p;
+  GoToLine(l, c);
+  msg := 'Error line '; AddNum(l); Add(': '); Add(ErrMsg); Add(' (F9: back to '); Add(p); Add(')');
+end;
+
 function Compile: boolean;
 var t: longint;
     ok: boolean;
 begin
   Compile := false;
+  { in a unit because of an error: save it, then the program again }
+  if (primary <> '') and (primary <> fileName) then begin
+    if not SaveQuiet then exit;
+    if not LoadNamed(primary) then exit;
+  end;
+  primary := '';
   t := Frames;
   if IsAsm then begin
     msg := 'Assembling...';
@@ -1349,6 +1410,7 @@ begin
   else begin
     if ErrUnit <> '' then begin
       msg := 'Error in '; Add(ErrUnit); Add(' line '); AddNum(ErrLine); Add(': '); Add(ErrMsg);
+      OpenUnitError;
     end
     else begin
       msg := 'Error line '; AddNum(ErrLine); Add(': '); Add(ErrMsg);
@@ -1626,9 +1688,9 @@ begin
   L('F4  new text           F5  compile and run   F6  next drive (1, 2, 3)');
   L('F7  save as .MER (runs without the cartridge, BRUN in BASIC)');
   L('F8  directory          F9  compile           F10 back to BASIC');
-  L('^F find  ^G find next  ^L go to line  ^Y delete line  ^K colours on/off');
+  L('^F find  ^G next  ^H replace  ^L go to line  ^Y delete line  ^K colours');
   L('As in EDIT: ^S save  ^O open  ^N new text  ^X cut line  ^C copy line  ^V paste');
-  L('^Z undo the last edit; ^Z again: the edit before it, and so on');
+  L('^Z undo the last edit, again: the one before; Shift+^Z redo');
   L('Shift+cursor keys or a mouse drag select (^A: all); ^X ^C ^V, typing, Del');
   L('^T target 65C816 / SCHUB (or {$SCHUB} at the top)  ^R run a .MER file');
   L('^Home/^End start/end of the text, PgUp PgDn Home End, Tab: two spaces');
@@ -1649,21 +1711,14 @@ begin
   redrawAll := true;
 end;
 
-procedure Find(again: boolean);
-var s: string;
-    p, i: longint;
-    n: integer;
+{ where findText comes next from p on (any case), -1 nowhere }
+function FindFrom(p: longint): longint;
+var i, n: integer;
     ok: boolean;
 begin
-  clipRun := false;
-  if not again or (findText = '') then begin
-    s := findText;
-    if not Prompt('Find:', s, 40) then exit;
-    findText := UpperCase(s);
-  end;
+  FindFrom := -1;
   n := length(findText);
   if n = 0 then exit;
-  p := cur + 1;
   while p + n <= len do begin
     ok := true;
     i := 0;
@@ -1671,18 +1726,89 @@ begin
       if UpCase(TC(p + i)) <> findText[i + 1] then ok := false;
       i := i + 1;
     end;
-    if ok then begin
-      { found: selected, so that typing replaces it }
-      ClearSel;
-      JumpTo(p);
-      selA := p + n;
-      redrawAll := true;
-      msg := '';
-      exit;
-    end;
+    if ok then begin FindFrom := p; exit; end;
     p := p + 1;
   end;
-  msg := 'Not found: ' + findText;
+end;
+
+{ show a find at p, selected, so that typing replaces it }
+procedure ShowFound(p: longint);
+begin
+  ClearSel;
+  JumpTo(p);
+  selA := p + length(findText);
+  redrawAll := true;
+end;
+
+procedure Find(again: boolean);
+var s: string;
+    p: longint;
+begin
+  clipRun := false;
+  if not again or (findText = '') then begin
+    s := findText;
+    if not Prompt('Find:', s, 40) then exit;
+    findText := UpperCase(s);
+  end;
+  if findText = '' then exit;
+  p := FindFrom(cur + 1);
+  if p >= 0 then begin ShowFound(p); msg := ''; end
+  else msg := 'Not found: ' + findText;
+end;
+
+{ ^H: find and replace, asking at each place (Y, N, A all, Esc); all the
+  replacements are one edit for ^Z }
+procedure Replace;
+var s: string;
+    p, a, b: longint;
+    k: char;
+    all, first: boolean;
+    count: integer;
+begin
+  clipRun := false;
+  s := findText;
+  if not Prompt('Replace:', s, 40) then exit;
+  findText := UpperCase(s);
+  if findText = '' then exit;
+  s := replText;
+  if not Prompt('Replace ' + findText + ' with:', s, 40) then exit;
+  replText := s;
+  { from the selection's start (a find selects), or else the cursor }
+  p := cur;
+  if HasSel then begin SelRange(a, b); p := a; end;
+  p := FindFrom(p);
+  if p < 0 then begin msg := 'Not found: ' + findText; exit; end;
+  all := false; first := true; count := 0; k := 'Y';
+  while p >= 0 do begin
+    if not all then begin
+      ShowFound(p);
+      msg := '';
+      Refresh;
+      PutStr(1, 30, ' Replace it?  Y yes  N no, the next  A all  Esc stop', aLine, Cols);
+      FlushKeys;
+      repeat k := UpCase(ReadKey) until (k = 'Y') or (k = 'N') or (k = 'A') or (k = #27) or (k = #3);
+      if (k = #27) or (k = #3) then break;
+      if k = 'A' then all := true;
+    end;
+    if k = 'N' then p := FindFrom(p + 1)
+    else begin
+      ClearSel;
+      if first then uFresh := true else uKeep := true;
+      first := false;
+      DeleteChars(p, length(findText));
+      cur := p;
+      uKeep := true;
+      InsertChars(replText);
+      uKeep := false;
+      count := count + 1;
+      p := FindFrom(p + length(replText));
+    end;
+  end;
+  uFresh := false; uKeep := false;
+  ClearSel;
+  JumpTo(cur);
+  if count = 1 then msg := 'Replaced 1 time'
+  else begin msg := 'Replaced '; AddNum(count); Add(' times'); end;
 end;
 
 { ^X / ^C: the cursor's line to the clipboard; cuts in a row collect }
@@ -1761,25 +1887,37 @@ begin
 end;
 
 { ^Z: the last edit undone (typing in a row, Backspace or Delete in a row,
-  a new line, a cut, a paste, a deleted line); ^Z again the one before }
-procedure Undo;
-var t, a, pos, n, g, low: longint;
+  a new line, a cut, a paste, a deleted line); ^Z again the one before.
+  Shift+^Z: what ^Z took back done again. Each takes a group from its log
+  and writes what it does to the other one, as one group. }
+procedure Revert(redo: boolean);
+var t, a, base, lt, pos, n, g, low: longint;
+    first: boolean;
 begin
   clipRun := false;
-  if uTop = 0 then begin msg := 'Nothing to undo'; exit; end;
-  undoing := true;
-  g := UW(UndoBase + UTopRec + 6);
+  if redo then begin base := RedoBase; lt := rTop; logTo := 2; end
+  else begin base := UndoBase; lt := uTop; logTo := 1; end;
+  if lt = 0 then begin
+    logTo := 0;
+    if redo then msg := 'Nothing to redo' else msg := 'Nothing to undo';
+    exit;
+  end;
+  g := UW(base + UTopRec(base, lt) + 6);
   low := len;
+  first := true;
+  uJoin := 0;
   repeat
-    t := UTopRec;
-    a := UndoBase + t;
+    t := UTopRec(base, lt);
+    a := base + t;
     pos := UW(a + 2);
     n := UW(a + 4);
+    if first then uFresh := true else uKeep := true;
+    first := false;
     if Mem[a] = 1 then begin
       DeleteChars(pos, n);
       cur := pos;
     end else begin
-      if len + n > MaxText then begin uTop := 0; break; end;
+      if len + n > MaxText then begin lt := 0; break; end;
       if len > pos then Blit(TB + len - 1, TB + len - 1 + n, len - pos, 1, 0, 0, bmCopy + bmBackwards, 0);
       BlitWait;
       CopyMem(a + 8, TB + pos, n);
@@ -1787,12 +1925,15 @@ begin
       TextChanged(pos);
       len := len + n;
       modified := true;
+      UndoLog(1, pos, n);
       if Mem[a + 1] = 2 then cur := pos + n else cur := pos;
     end;
     if pos < low then low := pos;
-    uTop := t;
-  until (uTop = 0) or (UW(UndoBase + UTopRec + 6) <> g);
-  undoing := false;
+    lt := t;
+  until (lt = 0) or (UW(base + UTopRec(base, lt) + 6) <> g);
+  logTo := 0;
+  uKeep := false; uFresh := false;
+  if redo then rTop := lt else uTop := lt;
   if cur > len then cur := len;
   { an edit above the first shown line moves the text under it: show the
     cursor afresh; otherwise the view stays }
@@ -1802,7 +1943,11 @@ begin
     wantCol := ColOf(cur);
     redrawAll := true;
   end;
-  if uTop = 0 then msg := 'Undone (nothing more to undo)' else msg := 'Undone: ^Z undoes the edit before';
+  if redo then begin
+    if rTop = 0 then msg := 'Redone (nothing more to redo)' else msg := 'Redone: Shift+^Z redoes the next';
+  end else begin
+    if uTop = 0 then msg := 'Undone (nothing more to undo)' else msg := 'Undone: ^Z undoes the edit before';
+  end;
 end;
 
 { ^L: go to a line }
@@ -1939,6 +2084,7 @@ begin
     if Pressed(scY) then begin clipRun := false; DeleteLine; end;
     if Pressed(scF) then Find(false);
     if Pressed(scG) then Find(true);                              { ^G: find next }
+    if Pressed(scH) then Replace;                                 { ^H: replace }
     if Pressed(scL) then GoToKey;
     if Pressed(scS) then FKey(2);                                 { ^S ^O ^N: as in EDIT }
     if Pressed(scO) then FKey(3);
@@ -1946,7 +2092,7 @@ begin
     if Pressed(scX) then CopyLine(true);
     if Pressed(scC) then CopyLine(false);
     if Pressed(scV) then PasteLines;
-    if Pressed(scZ) then Undo;
+    if Pressed(scZ) then Revert(ShiftHeld);                        { ^Z undo, Shift+^Z redo }
     if Pressed($2D) then RunFile;                                  { Ctrl+R }
     if Pressed(scT) then begin
       WantSchub := not WantSchub;
@@ -2095,6 +2241,7 @@ end;
 
 procedure TypedKey(k: char);
 begin
+  if (k = #8) and Held(scH) then exit;     { ^H: replace, not Backspace }
   clipRun := false;
   if (k = #8) or (k = #127) or (k = #9) or (k >= ' ') then NoteEdit;
   { an edit after ^Z: what ^Z said no longer holds }
@@ -2165,7 +2312,8 @@ begin
   FillMem(DbgBits, 512, 0);
   nWatch := 0; dbgActive := false;
   clipLen := 0; clipRun := false;
-  uTop := 0; uGroup := 0; uJoin := 0; undoing := false; uFresh := false; uKeep := false;
+  primary := '';
+  uTop := 0; rTop := 0; uGroup := 0; uJoin := 0; logTo := 0; uFresh := false; uKeep := false;
   selA := -1; dragAnchor := -1; clipChars := false;
   SetDrive(1);
   findText := '';

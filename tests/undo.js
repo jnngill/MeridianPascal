@@ -50,6 +50,19 @@ function session(schub) {
   undo();
   t('^Z brings back both lines cut in a row at once', same(text(), STARTER) && /nothing more to undo/.test(msg()));
 
+  // Shift+^Z: redo, one edit at a time, as they were undone
+  const redo = () => { m.keyState(0x12, true); ctrl(0x1a); m.keyState(0x12, false); frames(20); };
+  redo();
+  t('Shift+^Z redoes the two cuts in a row', same(text(5), [STARTER[0], STARTER[1], STARTER[2], STARTER[5], 'end.']) && /Redone/.test(msg()));
+  redo();
+  t('Shift+^Z redoes the cut on its own', same(text(4), [STARTER[1], STARTER[2], STARTER[5], 'end.']));
+  redo();
+  t('Shift+^Z redoes the paste', same(text(5), [STARTER[1], STARTER[2], STARTER[5], 'program Hello;', 'end.']) && /nothing more to redo/.test(msg()));
+  redo();
+  t('then there is nothing to redo', /Nothing to redo/.test(msg()));
+  undo(); undo(); undo();
+  t('and ^Z takes it all back again', same(text(), STARTER) && /nothing more to undo/.test(msg()));
+
   // typing in a row is one edit, Backspace in a row another
   goLine(1);
   type('abc ');
@@ -59,6 +72,13 @@ function session(schub) {
   t('^Z brings back what Backspace took', row(2) === 'abc program Hello;');
   undo();
   t('^Z takes back the typing', row(2) === 'program Hello;');
+  redo();
+  t('Shift+^Z brings the typing back', row(2) === 'abc program Hello;');
+  type('x');
+  redo();
+  t('a new edit: nothing to redo any more', /Nothing to redo/.test(msg()) && row(2) === 'xabc program Hello;');
+  undo(); undo();
+  t('^Z ^Z: as before', row(2) === 'program Hello;');
 
   // Delete in a row
   goLine(1);

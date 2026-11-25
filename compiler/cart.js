@@ -196,7 +196,7 @@ _dr_next
 // The debugger (65C816 programs): every statement of an F5 build with
 // breakpoints calls rt_dbghook (JSL). State at $3D:7F00: +0 line (unit in
 // bits 12-15), +2 mode (0 breakpoints only, 1 into, 2 over, 3 to the line at
-// +8), +3 1 = stopped, +4 S of the last stop, +8 line, +10 the host's stop
+// +8), +3 1 = stopped, +4 D (the frame) of the last stop, +8 line, +10 the host's stop
 // handler (3 bytes), +16 S, +18 D, +20 DB of the stopped program (P is on its
 // stack, then the return address). Breakpoints: a bitmap at $3D:7000.
 // The host (the 65C816 editor here, or the SCHUB editor's stub) swaps bank 0:
@@ -217,8 +217,8 @@ rt_dbghook
 	beq dh_stop
 	cmp #2
 	bne dh_to
-	tsc
-	cmp @l DBG+4
+	tdc                       ; D: the frame pointer (S would also count a
+	cmp @l DBG+4              ; for loop's end value on the stack)
 	bcs dh_stop               ; the frame of the last stop, or an outer one
 	bra dh_bp
 dh_to
@@ -252,8 +252,8 @@ dh_ret
 dh_stop
 	tsc
 	sta @l DBG+16
-	sta @l DBG+4
 	tdc
+	sta @l DBG+4
 	sta @l DBG+18
 	sep #$20
 	.as

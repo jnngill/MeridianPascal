@@ -115,6 +115,30 @@ function session(schub) {
   undo();
   t('^Z: the found text is back', row(TT - 1) === 'program Hello;');
 
+  // ^H: replace, asking at each place (N, Y), all (A), Esc; one ^Z each time
+  const replace = (what, by, answers) => {
+    goLine(1);
+    ctrl(0x33);
+    key(8, 12); type(what + '\n');
+    key(8, 12); type(by + '\n');
+    for (const a of answers) { frames(40); type(a); }
+    frames(40);
+  };
+  const BYE = "  WriteLn('Bye FROM THE MERIDIAN!');";
+  replace('hello', 'Bye', ['n', 'y']);
+  t('^H with N then Y replaces the second place only', row(TT - 1) === 'program Hello;' && row(TT - 1 + 5) === BYE && /Replaced 1 time/.test(msg()));
+  t('^H is not taken as a Backspace', same(text().filter((l, i) => i !== 5), STARTER.filter((l, i) => i !== 5)));
+  undo();
+  t('^Z takes it back', same(text(), STARTER));
+  replace('hello', 'Bye', ['a']);
+  t('A replaces all of them', row(TT - 1) === 'program Bye;' && row(TT - 1 + 5) === BYE && /Replaced 2 times/.test(msg()));
+  undo();
+  t('one ^Z takes all of them back', same(text(), STARTER) && /nothing more to undo/.test(msg()));
+  replace('hello', 'Bye', ['\x1b']);
+  t('Esc stops: nothing replaced', same(text(), STARTER) && /Replaced 0 times/.test(msg()));
+  replace('nowhere', 'x', []);
+  t('nothing to replace: not found', /Not found: NOWHERE/.test(msg()) && same(text(), STARTER));
+
   // the mouse: dragging selects, a click ends it
   const at = (r, c) => { m.mouse.x = c * 8 + 3; m.mouse.y = (r - 1) * 8 + 3; frames(8); };
   at(TT, 0); m.mouse.b = 1; frames(8);

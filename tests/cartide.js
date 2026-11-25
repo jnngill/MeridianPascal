@@ -69,10 +69,24 @@ hold(0x03);
 frames(200);
 check('program with a unit ran', /UNIT 42/.test(screen()));
 key(32); frames(30);
-key(0x1e, 10); key(0x1f); key(0x01);
-type('uses Broken;\n');
+key(0x1e, 10); key(0x1f); key(0x01); key(0x1c, 5);
+type('Broken, ');                                     // uses Broken, MyLib;
 hold(0x01); frames(60);
-check('error in a unit reported', /Error in BROKEN.PAS line 5/.test(screen()));
+const line = (n) => screen().split('\n')[n] || '';
+check('an error in a unit: the editor offers to open it', /Error in BROKEN\.PAS line 5\. Open BROKEN\.PAS there\? \(Y\/N\)/.test(line(29)));
+m.pushKey(78); frames(30);                            // N
+check('N: the error is reported, the program stays', /Error in BROKEN.PAS line 5/.test(line(29)) && /\(new\)/.test(line(1)));
+hold(0x01); frames(60);
+m.pushKey(89); frames(30);                            // Y: the program has no name yet: save it first
+check('Y: the program is saved first', /Save as:/.test(line(29)));
+type('useprog\n'); frames(120);
+check('the unit is open at the error', m.drives[1].has('USEPROG.PAS') && /BROKEN\.PAS/.test(line(1)) && /Ln 5 /.test(line(1)) &&
+  /^ *Error line 5: .*\(F9: back to USEPROG\.PAS\)/.test(line(29)) && /nothing := 1;/.test(line(6)));
+m.keyState(0x14, true); hold(0x35); m.keyState(0x14, false); frames(20);   // ^Y: the wrong line goes
+hold(0x01); frames(150);                              // F9: save the unit, back to the program, compile
+const unitNow = Buffer.from(m.drives[1].get('BROKEN.PAS') || []).toString('latin1');
+check('F9 in the unit saves it and compiles the program', !unitNow.includes('nothing') && /USEPROG\.PAS/.test(line(1)) &&
+  /^ *Compiled: \d+ lines/.test(line(29)) && /uses Broken, MyLib;/.test(screen()));
 
 // EDIT's keys: ^L go to line, ^X cut (in a row they collect), ^V paste, ^G find next
 const ctrl = (scan) => { m.keyState(0x14, true); hold(scan, 6); m.keyState(0x14, false); frames(6); };
