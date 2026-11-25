@@ -44,8 +44,8 @@ const
   aHead = $67;                { yellow on blue: file and position }
   aLine = $F0;                { black on light grey: message, prompts }
   TabKeys = '  F1 help  F2 save  F3 open  F4 new  F5 run  F9 compile';
-  Hint1 = ' ^F find  ^G next  ^L go to line  ^X cut  ^C copy  ^V paste  ^B break  ^W watch';
-  Hint2 = ' F6 drive  F7 .MER  F8 directory  ^R run .MER  ^F7 trace  ^T target  ^K colours';
+  Hint1 = ' ^Z undo  ^F find  ^G next  ^L go to line  ^X cut  ^C copy  ^V paste  ^B break';
+  Hint2 = ' F6 drive  F7 .MER  F8 dir  ^R run .MER  ^F7 trace  ^W watch  ^K colours';
   HintStop = ' F5 go  F7 into  F8 over  F4 to cursor  ^F2 end  ^B breakpoint  ^W watch';
   { tables in expansion RAM: bank 0 is short (the compiler's stack) }
   KeyWas = $3C0000;           { a key's press was handled (1 byte a scan code) }
@@ -53,6 +53,12 @@ const
   RowPos = $3C0200;           { text position of each row at the last redraw (4 bytes) }
   ClipBase = $3C1000;         { the clipboard: whole lines (^X ^C ^V, as in EDIT) }
   ClipMax = $E000;
+  { the undo log (^Z): records of the edits, the newest last. A record is
+    kind (1 inserted, 2 deleted), join kind, position, count, group (2 bytes
+    each, written byte by byte: SCHUB faults on unaligned words), the
+    deleted bytes, and its size at the end, so the log is read backwards }
+  UndoBase = $3E2000;         { after ScrSave's 4803 bytes }
+  UndoMax = 64000;
 
 procedure RunUser(entry: longint); external 'runuser';
 function RunMerFile: integer; external 'runmer';
@@ -112,6 +118,11 @@ var
   startLine, editLine: integer;      { cursor line at the last Refresh; a line edited since, -1 none }
   clipLen: longint;                  { bytes in the clipboard }
   clipRun: boolean;                  { the last key was ^X: the next cut adds to the clipboard }
+  uTop: longint;                     { bytes in the undo log }
+  uGroup: longint;                   { the edit being logged: ^Z undoes a group }
+  uJoin: byte;                       { the key being handled: 1 typing, 2 Backspace, 3 Delete, 4 ^X, 0 other }
+  undoing: boolean;                  { ^Z is at work: nothing is logged }
+  uFresh: boolean;                   { the next record starts a group whatever uJoin says }
 
 { ------------------------------------------------------------- text }
 function TC(p: longint): char;
@@ -152,12 +163,103 @@ begin
   if dbgActive then begin dbgActive := false; msg := 'Program reset: the text changed.'; end;
 end;
 
+{ ------------------------------------------------------------- undo }
+function UW(a: longint): longint;
+begin
+  UW := Mem[a] + Mem[a + 1] * 256;
+end;
+
+procedure PutUW(a, v: longint);
+begin
+  Mem[a] := v and 255;
+  Mem[a + 1] := (v shr 8) and 255;
+end;
+
+{ the newest record's offset in the log }
+function UTopRec: longint;
+begin
+  UTopRec := uTop - UW(UndoBase + uTop - 2);
+end;
+
+function URecSize(o: longint): longint;
+begin
+  if Mem[UndoBase + o] = 2 then URecSize := 10 + UW(UndoBase + o + 4) else URecSize := 10;
+end;
+
+{ room for need more bytes: when the log is full the oldest records go, a
+  quarter of the log at least, so that it moves seldom }
+function UndoRoom(need: longint): boolean;
+var off, keep, s, c: longint;
+begin
+  UndoRoom := false;
+  if need > UndoMax then begin uTop := 0; exit; end;
+  if uTop + need > UndoMax then begin
+    off := 0;
+    while (off < uTop) and ((uTop - off + need > UndoMax) or (off < UndoMax div 4)) do
+      off := off + URecSize(off);
+    if off >= uTop then uTop := 0
+    else begin
+      { move the rest down in pieces that do not overlap }
+      keep := uTop - off; s := 0;
+      while s < keep do begin
+        c := keep - s;
+        if c > off then c := off;
+        CopyMem(UndoBase + off + s, UndoBase + s, c);
+        BlitWait;
+        s := s + c;
+      end;
+      uTop := keep;
+    end;
+  end;
+  UndoRoom := true;
+end;
+
+{ an edit for the log: kind 1 = n bytes inserted at pos, kind 2 = n bytes at
+  pos are about to be deleted. Typing in a row, Backspace in a row,
+  Delete in a row and ^X in a row make one group, and typing in a row one
+  record. }
+procedure UndoLog(kind: byte; pos, n: longint);
+var t, a, size: longint;
+    newGroup: boolean;
+begin
+  if undoing or (n <= 0) then exit;
+  newGroup := (uJoin = 0) or (uTop = 0) or uFresh;
+  uFresh := false;
+  if not newGroup then begin
+    t := UndoBase + UTopRec;
+    if Mem[t + 1] <> uJoin then newGroup := true
+    else case uJoin of
+      1: newGroup := (kind <> 1) or (pos <> UW(t + 2) + UW(t + 4));
+      2: newGroup := pos + n <> UW(t + 2);
+      3, 4: newGroup := pos <> UW(t + 2);
+    end;
+    if not newGroup and (kind = 1) and (Mem[t] = 1) then begin
+      PutUW(t + 4, UW(t + 4) + n);
+      exit;
+    end;
+  end;
+  if newGroup then uGroup := uGroup + 1;
+  size := 10;
+  if kind = 2 then size := 10 + n;
+  if not UndoRoom(size) then exit;
+  a := UndoBase + uTop;
+  Mem[a] := kind;
+  Mem[a + 1] := uJoin;
+  PutUW(a + 2, pos);
+  PutUW(a + 4, n);
+  PutUW(a + 6, uGroup);
+  if kind = 2 then begin CopyMem(TB + pos, a + 8, n); BlitWait; end;
+  PutUW(a + size - 2, size);
+  uTop := uTop + size;
+end;
+
 procedure InsertChars(const s: string);
 var n: integer;
     i: integer;
 begin
   n := length(s);
   if len + n > MaxText then begin msg := 'The text is full'; exit; end;
+  UndoLog(1, cur, n);
   { make room: KRAN copies backwards from the last byte (it takes the right
     end of the row as the address) }
   if len > cur then Blit(TB + len - 1, TB + len - 1 + n, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
@@ -173,6 +275,7 @@ procedure DeleteChars(p: longint; n: longint);
 begin
   if p + n > len then n := len - p;
   if n <= 0 then exit;
+  UndoLog(2, p, n);
   if p + n < len then begin
     Blit(TB + p + n, TB + p, len - p - n, 1, 0, 0, bmCopy, 0);
     BlitWait;
@@ -1003,6 +1106,7 @@ begin
   end;
   fileName := n;
   modified := false;
+  uTop := 0;                     { another text: nothing to undo }
   left := 0;
   JumpTo(0);
   msg := 'Opened ' + n + ' (' + IntToStr(len) + ' bytes)';
@@ -1040,6 +1144,7 @@ begin
   InsertChars(T1 + #10 + T2 + #10 + #10 + T3 + #10 + T4 + #10 + T5 + #10 + T6 + #10);
   fileName := '';
   modified := false;
+  uTop := 0;                     { a new text: nothing to undo }
   left := 0;
   JumpTo(0);
 end;
@@ -1365,6 +1470,7 @@ begin
   L('F8  directory          F9  compile           F10 back to BASIC');
   L('^F find  ^G find next  ^L go to line  ^Y delete line  ^K colours on/off');
   L('As in EDIT: ^S save  ^O open  ^N new text  ^X cut line  ^C copy line  ^V paste');
+  L('^Z undo the last edit; ^Z again: the edit before it, and so on');
   L('^T target 65C816 / SCHUB (or {$SCHUB} at the top)  ^R run a .MER file');
   L('^Home/^End start/end of the text, PgUp PgDn Home End, Tab: two spaces');
   L('Mouse: a click places the cursor, the wheel scrolls; click the F-keys on top');
@@ -1390,6 +1496,7 @@ var s: string;
     n: integer;
     ok: boolean;
 begin
+  clipRun := false;
   if not again or (findText = '') then begin
     s := findText;
     if not Prompt('Find:', s, 40) then exit;
@@ -1429,18 +1536,27 @@ begin
     clipLen := clipLen + 1;
   end;
   if cut then begin
+    { cuts in a row collect: one edit for ^Z, too }
+    uFresh := not clipRun;
+    uJoin := 4;
     DeleteLine;
+    uJoin := 0;
     clipRun := true;
     msg := 'Cut: ^V pastes it';
-  end else msg := 'Line copied: ^V pastes it';
+  end else begin
+    clipRun := false;
+    msg := 'Line copied: ^V pastes it';
+  end;
 end;
 
 { ^V: the clipboard's lines in front of the cursor's line }
 procedure PasteLines;
 begin
+  clipRun := false;
   if clipLen = 0 then begin msg := 'Clipboard empty: ^X cuts a line, ^C copies it'; exit; end;
   if len + clipLen > MaxText then begin msg := 'The text is full'; exit; end;
   cur := LineStart(cur);
+  UndoLog(1, cur, clipLen);
   if len > cur then Blit(TB + len - 1, TB + len - 1 + clipLen, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
   BlitWait;
   CopyMem(ClipBase, TB + cur, clipLen);
@@ -1454,11 +1570,57 @@ begin
   msg := '';
 end;
 
+{ ^Z: the last edit undone (typing in a row, Backspace or Delete in a row,
+  a new line, a cut, a paste, a deleted line); ^Z again the one before }
+procedure Undo;
+var t, a, pos, n, g, low: longint;
+begin
+  clipRun := false;
+  if uTop = 0 then begin msg := 'Nothing to undo'; exit; end;
+  undoing := true;
+  g := UW(UndoBase + UTopRec + 6);
+  low := len;
+  repeat
+    t := UTopRec;
+    a := UndoBase + t;
+    pos := UW(a + 2);
+    n := UW(a + 4);
+    if Mem[a] = 1 then begin
+      DeleteChars(pos, n);
+      cur := pos;
+    end else begin
+      if len + n > MaxText then begin uTop := 0; break; end;
+      if len > pos then Blit(TB + len - 1, TB + len - 1 + n, len - pos, 1, 0, 0, bmCopy + bmBackwards, 0);
+      BlitWait;
+      CopyMem(a + 8, TB + pos, n);
+      BlitWait;
+      TextChanged(pos);
+      len := len + n;
+      modified := true;
+      if Mem[a + 1] = 2 then cur := pos + n else cur := pos;
+    end;
+    if pos < low then low := pos;
+    uTop := t;
+  until (uTop = 0) or (UW(UndoBase + UTopRec + 6) <> g);
+  undoing := false;
+  if cur > len then cur := len;
+  { an edit above the first shown line moves the text under it: show the
+    cursor afresh; otherwise the view stays }
+  if low < top then JumpTo(cur)
+  else begin
+    curLine := CountLines(cur);
+    wantCol := ColOf(cur);
+    redrawAll := true;
+  end;
+  if uTop = 0 then msg := 'Undone (nothing more to undo)' else msg := 'Undone: ^Z undoes the edit before';
+end;
+
 { ^L: go to a line }
 procedure GoToKey;
 var t: string;
     n, c: integer;
 begin
+  clipRun := false;
   t := '';
   if not Prompt('Go to line:', t, 5) then exit;
   Val(t, n, c);
@@ -1577,7 +1739,7 @@ begin
     if Ctrl then JumpTo(len) else begin cur := LineEnd(cur); wantCol := ColOf(cur); end;
   end;
   if Ctrl then begin
-    if Pressed(scY) then DeleteLine;
+    if Pressed(scY) then begin clipRun := false; DeleteLine; end;
     if Pressed(scF) then Find(false);
     if Pressed(scG) then Find(true);                              { ^G: find next }
     if Pressed(scL) then GoToKey;
@@ -1587,6 +1749,7 @@ begin
     if Pressed(scX) then CopyLine(true);
     if Pressed(scC) then CopyLine(false);
     if Pressed(scV) then PasteLines;
+    if Pressed(scZ) then Undo;
     if Pressed($2D) then RunFile;                                  { Ctrl+R }
     if Pressed(scT) then begin
       WantSchub := not WantSchub;
@@ -1721,6 +1884,11 @@ procedure TypedKey(k: char);
 begin
   clipRun := false;
   if (k = #8) or (k = #127) or (k = #9) or (k >= ' ') then NoteEdit;
+  { which edits in a row make one for ^Z }
+  if k = #8 then uJoin := 2
+  else if k = #127 then uJoin := 3
+  else if (k = #9) or (k >= ' ') then uJoin := 1
+  else uJoin := 0;
   case k of
     #13: NewLine;
     #8: Backspace;
@@ -1734,6 +1902,7 @@ begin
   else
     if (k >= ' ') and (k <> #127) then InsertChars(k);
   end;
+  uJoin := 0;
 end;
 
 { ------------------------------------------------------------- main }
@@ -1767,6 +1936,7 @@ begin
   FillMem(DbgBits, 512, 0);
   nWatch := 0; dbgActive := false;
   clipLen := 0; clipRun := false;
+  uTop := 0; uGroup := 0; uJoin := 0; undoing := false; uFresh := false;
   SetDrive(1);
   findText := '';
 {$IFDEF SCHUB}
