@@ -439,6 +439,8 @@ end;
 const
   stNormal = 0; stBrace = 1; stParen = 2; stString = 3; stLine = 4; stDirective = 5;
   stOpening = 6; stClosing = 7;
+  { in an asm block: its text, a ; comment, a brace comment, a "string" }
+  stAsm = 8; stAsmLine = 9; stAsmBrace = 10; stAsmStr = 11;
   CkStep = 256;
   colKeyword = 1; colComment = 13; colString = 7; colNumber = 3; colDirective = 8;
   cLetter = 1; cDigit = 2; cHex = 4;
@@ -446,7 +448,7 @@ const
 function IsKeyword(const s: string): boolean;
 begin
   case s[1] of
-    'a': IsKeyword := (s = 'and') or (s = 'array') or (s = 'absolute');
+    'a': IsKeyword := (s = 'and') or (s = 'array') or (s = 'absolute') or (s = 'asm') or (s = 'assembler');
     'b': IsKeyword := s = 'begin';
     'c': IsKeyword := (s = 'case') or (s = 'const');
     'd': IsKeyword := (s = 'do') or (s = 'div') or (s = 'downto');
@@ -475,12 +477,27 @@ end;
 function StateAttr(st: byte): byte;
 begin
   case st of
-    stBrace, stParen, stLine, stOpening, stClosing: StateAttr := (aText and $F0) or colComment;
+    stBrace, stParen, stLine, stOpening, stClosing, stAsmLine, stAsmBrace: StateAttr := (aText and $F0) or colComment;
+    stAsmStr: StateAttr := (aText and $F0) or colString;
     stDirective: StateAttr := (aText and $F0) or colDirective;
     stString: StateAttr := (aText and $F0) or colString;
   else
     StateAttr := aText;
   end;
+end;
+
+{ the word s (lower case) stands at q: not part of a longer word (checkpoints
+  may cut a word, so the text around is looked at, not just up to upto) }
+function WordAt(q: longint; const s: string): boolean;
+var i, n: integer;
+begin
+  WordAt := false;
+  n := length(s);
+  if (q > 0) and ((cls[Mem[TB + q - 1]] and (cLetter or cDigit)) <> 0) then exit;
+  if q + n > len then exit;
+  for i := 1 to n do if chr(Mem[TB + q + i - 1] or 32) <> s[i] then exit;
+  if (q + n < len) and ((cls[Mem[TB + q + n]] and (cLetter or cDigit)) <> 0) then exit;
+  WordAt := true;
 end;
 
 { Scan the text from q up to (not including) upto, from state st. With paint,
@@ -497,12 +514,13 @@ begin
     case st of
       stNormal:
         if (cls[c] and cLetter) <> 0 then begin
-          { a word: keyword or name (state unchanged) }
+          { a word: keyword or name (ASM starts an asm block) }
           e := q; i := 0;
           while (e < upto) and ((cls[Mem[TB + e]] and (cLetter or cDigit)) <> 0) do begin
             if i < 15 then begin i := i + 1; w[i] := chr(Mem[TB + e] or 32); end;
             e := e + 1;
           end;
+          if (c or 32 = 97) and WordAt(q, 'asm') then st := stAsm;
           if paint then begin
             w[0] := chr(i);
             a := aText;
@@ -587,6 +605,61 @@ begin
           q := q + 1;
         end;
         if q < upto then begin q := q + 1; st := stNormal; end;
+      end;
+      stAsm: begin
+        { an asm block: mnemonics, numbers, comments, strings, END }
+        e := q + 1;
+        a := aText;
+        if (q > 0) and (Mem[TB + q - 1] = 39) and (q + 1 < len) and (Mem[TB + q + 1] = 39) then
+          a := attrString                                       { the c of 'c' (a checkpoint cut it) }
+        else if c = 59 then begin st := stAsmLine; a := attrComment; end
+        else if c = 123 then begin st := stAsmBrace; a := attrComment; end
+        else if c = 34 then begin st := stAsmStr; a := attrString; end
+        else if (c = 39) and (q + 2 < len) and (Mem[TB + q + 2] = 39) then begin
+          e := q + 3; a := attrString;
+        end
+        else if (cls[c] and cLetter) <> 0 then begin
+          while (e < upto) and ((cls[Mem[TB + e]] and (cLetter or cDigit)) <> 0) do e := e + 1;
+          if (c or 32 = 101) and WordAt(q, 'end') then begin st := stNormal; a := attrKw; end
+          else if paint and (e - q <= 6) then begin
+            w[0] := chr(e - q);
+            for i := 1 to e - q do w[i] := chr(Mem[TB + q + i - 1]);
+            if IsMnemonic(w) then a := attrKw;
+          end;
+        end
+        else if (c = 46) and (q + 1 < upto) and ((cls[Mem[TB + q + 1]] and cLetter) <> 0) then begin
+          while (e < upto) and ((cls[Mem[TB + e]] and (cLetter or cDigit)) <> 0) do e := e + 1;
+          a := (aText and $F0) or colDirective;
+        end
+        else if ((cls[c] and cDigit) <> 0) or (((c = 36) or (c = 37)) and (q + 1 < upto) and ((cls[Mem[TB + q + 1]] and cHex) <> 0)) then begin
+          while (e < upto) and ((cls[Mem[TB + e]] and cHex) <> 0) do e := e + 1;
+          a := attrNumber;
+        end;
+        if e > upto then e := upto;
+        while q < e do begin
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1;
+        end;
+      end;
+      stAsmLine: begin
+        while (q < upto) and (Mem[TB + q] <> 10) do begin
+          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin q := q + 1; st := stAsm; end;
+      end;
+      stAsmBrace, stAsmStr: begin
+        { to the closing brace / quote (a string also ends with its line) }
+        a := StateAttr(st);
+        if st = stAsmBrace then n := 125 else n := 34;
+        while (q < upto) and (Mem[TB + q] <> n) and not ((n = 34) and (Mem[TB + q] = 10)) do begin
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1; st := stAsm;
+        end;
       end;
     end;
   end;
@@ -717,6 +790,7 @@ begin
     Scan(q, e, st, true, col);
     { a line ends strings and // comments }
     if (st = stString) or (st = stLine) then st := stNormal;
+    if (st = stAsmLine) or (st = stAsmStr) then st := stAsm;
   end;
   { the visible part: from column left, at most 80 characters }
   n := e - p - left;

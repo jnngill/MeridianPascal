@@ -111,6 +111,46 @@ check('long line scrolled sideways: string, comment and keyword coloured in plac
   colourOf("'far right'") === STRING && colourOf('{ comment }') === COMMENT && colourOf('WriteLn(', 'WriteLn') === NAME,
   rowText(rowOf('far right')) + '\n' + rowCol(rowOf('far right')).join(','));
 
+// asm blocks: mnemonics like keywords, ; comments (an apostrophe in one is
+// no string), { } comments, numbers, "strings"; END ends the block
+load('ASMCOL.PAS', [
+  'program AsmCol;',
+  'var n: integer;',
+  'begin',
+  '  asm',
+  "    lda #$10        ; the function's result",
+  '    sta n           { a brace comment }',
+  '    .byte "a;b{", 7',
+  '    adc frontend',
+  '  end;',
+  "  WriteLn('after');",
+  'end.', ''].join('\n'));
+check('asm block: asm and end in white', colourOf('  asm', 'asm') === K && colourOf('  end;', 'end') === K);
+check('asm block: mnemonics in white, names in light blue', colourOf('lda #$10', 'lda') === K && colourOf('sta n', 'sta') === K
+  && colourOf('sta n ', 'n ') === NAME && colourOf('adc frontend', 'frontend') === NAME);
+check("asm block: ; comment in green, an apostrophe in it is no string", colourOf("; the function's result") === COMMENT,
+  rowCol(rowOf('lda #$10')).join(','));
+check('asm block: brace comment in green, numbers, "strings"', colourOf('{ a brace comment }') === COMMENT
+  && colourOf('$10') === NUMBER && colourOf('"a;b{"') === STRING && colourOf('.byte') === DIRECTIVE);
+check('after the asm block: Pascal again', colourOf("WriteLn('after')", 'WriteLn') === NAME && colourOf("'after'") === STRING
+  && colourOf('end.', 'end') === K);
+
+// a long asm block above the screen (its words cross the 256-byte checkpoints):
+// the text after it is Pascal again
+const asmLines = [];
+for (let i = 0; i < 150; i++) asmLines.push(i % 5 === 2 ? `    lda frontend  ; it's line ${i}` : `    sta n${i}`);
+// a comment of the right length puts the checkpoint at 1024 right on the "end" of a "frontend"
+const asmFar = (pad) => ['program AsmFar;', `{${'x'.repeat(pad)}}`, 'var n: integer;', 'begin', '  asm', ...asmLines, '  end;', "  WriteLn('below');", '  { the end }', 'end.', ''].join('\n');
+const fe = asmFar(0).indexOf('frontend', 900) + 5;            // its "end"
+const farText = asmFar(1024 - fe);
+check('the checkpoint at 1024 cuts "frontend" before its "end"', farText.slice(1019, 1027) === 'frontend', farText.slice(1010, 1030));
+load('ASMFAR.PAS', farText);
+ctrl(0x80 + 0x69); frames(30);                                                      // Ctrl+End
+check('long asm block: the Pascal below it coloured as Pascal', colourOf("WriteLn('below')", 'WriteLn') === NAME
+  && colourOf("'below'") === STRING && colourOf('{ the end }') === COMMENT && colourOf('end.', 'end') === K,
+  rowText(rowOf('below')) + '\n' + rowCol(rowOf('below')).join(','));
+check('long asm block: its last lines coloured as asm', colourOf('sta n149', 'sta') === K && colourOf("; it's line 147") === COMMENT);
+
 // ---- scrolling by moving screen rows, and several keys handled at once:
 // after each step the screen must be exactly what a full redraw gives
 // (Ctrl+K twice redraws everything)
