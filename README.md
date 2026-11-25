@@ -43,7 +43,8 @@ all. See [Start](#start) for the PC side and
   button in the IDE). Insert it in the MiSTer OSD and the machine starts into
   the editor, which looks and works like the workshop's EDIT (tabs on top,
   the keys at the bottom, Ctrl+S/O/N/F/G/L/X/C/V as there, Ctrl+Z undo,
-  Shift+Ctrl+Z redo, Ctrl+H replace, Shift+cursor keys or the mouse select;
+  Shift+Ctrl+Z redo, Ctrl+H replace, Shift+cursor keys or the mouse select,
+  Tab and Shift+Tab indent the selected lines;
   an error in a unit opens the unit there): F5 compiles
   and runs, F2/F3 save and open on the drives,
   F7 saves a standalone `.MER` (start it from BASIC with `BRUN "NAME"`),
@@ -115,6 +116,63 @@ end;
 - The debugger treats a block as one statement. Ctrl+B on a line inside a
   block puts the breakpoint on the block's `asm` line, where the program
   stops before the block runs; F7 and F8 run the whole block in one step.
+
+## ExitProc and interrupts
+
+**ExitProc** is a procedure variable that runs when the program ends: at its
+`end.`, at `Halt`, after a runtime error, or when Esc stops it. Each exit
+procedure may set the next one, so they chain:
+
+```pascal
+var OldExit: procedure;
+
+procedure Done;
+begin
+  Mem[$C00B] := 1;           { the frame interrupt only, as before }
+  ExitProc := OldExit;       { the one before runs next }
+end;
+
+begin
+  OldExit := ExitProc;
+  ExitProc := Done;
+  ...
+```
+
+**IntProc** (65C816 programs) is a procedure variable that runs at every
+interrupt. The frame interrupt comes once every frame, and a raster
+line interrupt can be switched on with the graphics chip's registers:
+
+- `Mem[$C00B]` enables interrupts: bit 0 the frame end, bit 1 the raster line.
+- `Mem[$C00D]`/`Mem[$C00E]` set the raster line.
+- Inside IntProc, **IntStatus** says which interrupt came (the same bits).
+
+```pascal
+procedure Tick;                { uses Graph, for SetRGB }
+begin
+  if IntStatus and 2 <> 0 then SetRGB(6, 10, 0, 0);   { from the raster line: red }
+  if IntStatus and 1 <> 0 then SetRGB(6, 2, 3, 8);    { the top of the frame: blue }
+end;
+
+begin
+  IntProc := Tick;
+  Mem[$C00D] := 120; Mem[$C00E] := 0;
+  Mem[$C00B] := 3;           { frame end and raster line }
+  ...
+```
+
+- The program puts its own entry into the kernel's interrupt hook ($00:0300)
+  when it uses IntProc, calls the hook that was there after IntProc, and puts
+  it back however the program ends. The old hook acknowledges the raster line
+  and the timers.
+- IntProc can use the whole language. The runtime's work variables are saved
+  around it, so it does not disturb the program it interrupts. Keep it short:
+  it runs inside the interrupt.
+- While IntProc is set, a BASIC `SONG` playing in the background stops (the
+  kernel gives Timer A to a program's own hook).
+- In the cartridge editor a breakpoint inside IntProc does not stop the
+  program there.
+- SCHUB has no interrupts of its own: IntProc and IntStatus are for 65C816
+  programs; ExitProc works for both.
 
 ## Start
 

@@ -2322,6 +2322,63 @@ begin
   end;
 end;
 
+{ Tab with a selection, Shift+Tab: two spaces more (or up to two less) at
+  the start of every line the selection touches (Shift+Tab without one: the
+  cursor's line). One ^Z; afterwards the lines are selected. }
+procedure IndentLines(more: boolean);
+var a, b, p, q, n, line0: longint;
+    lines: integer;
+    sel, first: boolean;
+begin
+  sel := HasSel;
+  if sel then SelRange(a, b) else begin a := cur; b := cur; end;
+  { a selection that ends at the start of a line leaves that line alone }
+  if (b > a) and (Mem[TB + b - 1] = 10) then b := b - 1;
+  line0 := curLine;
+  for p := a to cur - 1 do if Mem[TB + p] = 10 then line0 := line0 - 1;
+  p := LineStart(a);
+  a := p;
+  lines := 0;
+  first := true;
+  uJoin := 0;
+  repeat
+    if more then begin
+      if LineEnd(p) > p then begin            { not on empty lines }
+        if first then uFresh := true else uKeep := true;
+        first := false;
+        cur := p; InsertChars('  ');
+        b := b + 2;
+      end;
+    end else begin
+      n := 0;
+      while (n < 2) and (p + n < len) and (Mem[TB + p + n] = 32) do n := n + 1;
+      if n > 0 then begin
+        if first then uFresh := true else uKeep := true;
+        first := false;
+        DeleteChars(p, n);
+        if sel or (cur > p + n) then b := b - n else b := p;
+      end;
+    end;
+    uFresh := false; uKeep := false;
+    lines := lines + 1;
+    q := LineEnd(p);
+    if (q >= b) or (q >= len) then break;
+    p := q + 1;
+  until false;
+  if sel then begin
+    selA := a;
+    cur := LineEnd(p);
+    curLine := line0 + lines - 1;
+  end else begin
+    { Shift+Tab on the cursor's line: the cursor stays on its character }
+    cur := b;
+    if cur < p then cur := p;
+    curLine := line0;
+  end;
+  wantCol := ColOf(cur);
+  redrawAll := true;
+end;
+
 procedure TypedKey(k: char);
 begin
   if (k = #8) and Held(scH) then exit;     { ^H: replace, not Backspace }
@@ -2345,7 +2402,9 @@ begin
       #1: begin cur := LineStart(cur); wantCol := 0; end;
     end;
     MoveTo;
-  end else begin
+  end else if (k = #9) and (HasSel or ShiftHeld) then
+    IndentLines(not ShiftHeld)
+  else begin
     { an edit over a selection: it goes first; Backspace and Delete only take it }
     if HasSel and ((k = #8) or (k = #127) or (k = #13) or (k = #9) or (k >= ' ')) then begin
       DeleteSel;

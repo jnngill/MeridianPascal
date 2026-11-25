@@ -16,6 +16,9 @@
 
 import { assemble816, formatListing } from './asm816.js';
 
+// ExitProc of SCHUB programs compiled on the MERIDIAN (cart/ncomp.pas: RvExitProc)
+export const RV_EXITPROC = 0x0403e4;
+
 export const RVLAYOUT = {
   LOAD: 0x040000,
   MBOX: 0x0403f0,
@@ -47,6 +50,13 @@ export function genRV(prog, opts = {}) {
   E('sw zero, 0(t0)');
   E('addi t0, t0, 4');
   E(`bltu t0, t1, ${lc}`);
+  if (opts.userEntry) {
+    // the library for programs compiled on the MERIDIAN: their ExitProc is
+    // the word at $04:03E4 (next to the heap start)
+    out.push(`rt_exitproc = ${h(RV_EXITPROC)}`);
+    E(`li t0, ${h(RV_EXITPROC)}`);
+    E('sw zero, 0(t0)');
+  }
   for (const l of prog.inits) E(`call ${l}`);
   if (opts.userEntry) {
     // library build for the on-device compiler: the program follows at userEntry
@@ -63,6 +73,14 @@ export function genRV(prog, opts = {}) {
   let rt = RUNTIME_RV.replace(/MBOXADDR/g, h((layout.MBOX | RVLAYOUT.UNCACHED) >>> 0));
   // the heap starts where the loader says (programs compiled on the MERIDIAN)
   if (opts.heapVar) rt = rt.replace(/rt_heaporg:\n\tla a0, PAS_HEAP\n/, `rt_heaporg:\n\tli t0, ${h(opts.heapVar)}\n\tlw a0, 0(t0)\n`);
+  // programs compiled on the MERIDIAN: the editor's line ($3D:7F00) stays the
+  // one the program ended on while ExitProc runs
+  if (opts.userEntry) {
+    const call = '\tsw a0, 0(sp)\n\tjalr ra, 0(t0)\n\tlw a0, 0(sp)\n';
+    if (!rt.includes(call)) throw new Error('internal: rt_exit changed');
+    rt = rt.replace(call, '\tsw a0, 0(sp)\n\tli t2, 0x3d7f00\n\tlhu t3, 0(t2)\n\tsw t3, 4(sp)\n\tjalr ra, 0(t0)\n' +
+      '\tli t2, 0x3d7f00\n\tlw t3, 4(sp)\n\tsh t3, 0(t2)\n\tlw a0, 0(sp)\n');
+  }
   out.push(rt);
   if (opts.debugHook) out.push(DEBUG_RV);
 
@@ -81,6 +99,7 @@ export function genRV(prog, opts = {}) {
     E(`.fill ${b.size}`);
   }
   E('.align 4');
+  if (!opts.userEntry) { LBL('rt_exitproc'); E('.fill 4'); }
   LBL('PAS_BSS_END');
   LBL('PAS_HEAP');
 
@@ -629,6 +648,18 @@ rt_dos:
 rt_halt:
 	lw a0, 0(sp)
 rt_exit:
+	# ExitProc first, however the program ends (each one may set the next)
+	la t1, rt_exitproc
+	lw t0, 0(t1)
+	beqz t0, .exit_now
+	sw zero, 0(t1)
+	addi sp, sp, -16
+	sw a0, 0(sp)
+	jalr ra, 0(t0)
+	lw a0, 0(sp)
+	addi sp, sp, 16
+	j rt_exit
+.exit_now:
 	mv a1, a0
 	li a0, 4
 	call rt_sys

@@ -259,6 +259,13 @@ export class Meridian {
     // native mode, display reset and MODE 40 through the real kernel
     this.callRoutine(0xffca, { long: true });
     this.callRoutine(0xff92, { a: 40 });
+    // the interrupt hook ($0300) as after boot: the kernel's standard hook,
+    // found by its "lda #irq_standard / sta $0300"
+    this.stdHook = 0;
+    for (let i = 0; i + 5 < k.length; i++) {
+      if (k[i] === 0xa9 && k[i + 3] === 0x8d && k[i + 4] === 0x00 && k[i + 5] === 0x03) { this.stdHook = k[i + 1] | (k[i + 2] << 8); break; }
+    }
+    this.mem[0x300] = this.stdHook & 255; this.mem[0x301] = this.stdHook >> 8;
     this.state = 'idle';
     this.message = '';
     for (const c of 'MERIDIAN PASCAL - EMULATOR READY\r') this.kputc(c.charCodeAt(0));
@@ -391,6 +398,30 @@ export class Meridian {
     let b = this.mem[0x50] | (this.mem[0x51] << 8) | (this.mem[0x52] << 16);
     b = (b + 1) & 0xffffff;
     this.mem[0x50] = b & 255; this.mem[0x51] = (b >> 8) & 255; this.mem[0x52] = b >> 16;
+    this.userIrq();
+  }
+
+  // the kernel's frame interrupt calls the program's own interrupt hook
+  // ($0300, when a program set one): JSR with A 8 bit = the graphics chip's
+  // status (bit 0: frame end), X 16 bit = 0, D 0, data bank 0. Run here to
+  // its RTS, on the program's stack, while interrupts are on.
+  userIrq() {
+    const c = this.cpu;
+    const hook = this.mem[0x300] | (this.mem[0x301] << 8);
+    if (this.state !== 'running' || !hook || hook === this.stdHook || c.e || (c.p & 0x04) || c.stopped) return;
+    const saved = { a: c.a, x: c.x, y: c.y, s: c.s, d: c.d, dbr: c.dbr, pbr: c.pbr, pc: c.pc, p: c.p };
+    c.p = 0x20 | 0x04; c.d = 0; c.dbr = 0;
+    c.a = (c.a & 0xff00) | 0x01; c.x = 0;
+    c.pushN16(0xfff0 - 1);
+    c.pbr = 0; c.pc = hook;
+    try {
+      for (let n = 0; n < 500000; n++) {
+        if (c.pbr === 0 && c.pc === 0xfff0) break;
+        this.step816();
+        if (c.stopped) { this.halt('STP executed'); return; }
+      }
+    } catch (e) { this.halt(e.message); return; }
+    Object.assign(c, saved);
   }
 
   programEnded() {

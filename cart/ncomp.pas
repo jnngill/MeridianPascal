@@ -31,6 +31,7 @@ const
   { SCHUB programs (RISC-V addresses = MERIDIAN addresses) }
   RvStub = $040000;          { 65C816 host stub }
   RvHeapVar = $0403E0;       { start of the heap, read by the library }
+  RvExitProc = $0403E4;      { ExitProc (the library's rt_exit runs it) }
   RvLib = $040400;           { the RV32 library }
   RvCode = $080000;          { program code }
   RvData = $0A0000;          { program variables }
@@ -234,6 +235,12 @@ var
   openHi: integer;                     { Selector: the hidden index of the open array indexed }
   curUnit: integer;                    { 0: the program, else the unit being compiled }
   msgsBuilt: boolean;
+  { ExitProc, IntProc (65C816), IntStatus: predefined variables; the program's
+    end (ExitProc, the interrupt hook back) and its interrupt entry }
+  sExitProc, sIntProc, sIntStat: integer;
+  usesInt: boolean;
+  aOldHook, aExitFlag, aExitLine, aIrqTramp: longint;
+  endFix, intFix: longint;
 
 const
   MsgBase = $3D1000;         { error messages, 64 bytes each (up to $3D:4FFF) }
@@ -1305,6 +1312,19 @@ begin
   MemL[MsgBase + 9044] := 1852121199;
   MemL[MsgBase + 9048] := 100;
   { the asm block has no end }
+  MemL[MsgBase + 9088] := 1953384749;
+  MemL[MsgBase + 9092] := 1668248144;
+  MemL[MsgBase + 9096] := 1684955424;
+  MemL[MsgBase + 9100] := 1953384736;
+  MemL[MsgBase + 9104] := 1952543827;
+  MemL[MsgBase + 9108] := 1629516661;
+  MemL[MsgBase + 9112] := 1713399154;
+  MemL[MsgBase + 9116] := 908096111;
+  MemL[MsgBase + 9120] := 825770805;
+  MemL[MsgBase + 9124] := 1919950902;
+  MemL[MsgBase + 9128] := 1634887535;
+  MemL[MsgBase + 9132] := 29549;
+  { IntProc and IntStatus are for 65C816 programs }
   msgsBuilt := true;
 end;
 
@@ -3154,6 +3174,10 @@ end;
 procedure Designator(var x: TItem; s: integer);
 var dp: longint;
 begin
+  if ((s = sIntProc) or (s = sIntStat)) and (s <> 0) then begin
+    if rv then ErrorN(142, '');
+    usesInt := true;
+  end;
   callDone := false;
   x.typ := syms[s].typ;
   x.tmp := false;
@@ -6742,6 +6766,133 @@ begin
   end;
 end;
 
+{ ---------------------------------------------------------------- ExitProc, IntProc }
+{ the predefined variables (after dataOrg is set): ExitProc, and for the
+  65C816 IntProc, IntStatus and the program's own: the hook before IntProc,
+  the end's flag and saved line, a trampoline in bank 0 for the kernel's
+  interrupt hook (JML to the entry, then JMP (old hook)). A SCHUB program's
+  ExitProc is the library's word at $04:03E4. }
+procedure ExitIntSyms;
+var f, t: integer;
+begin
+  f := NewSym('', skProc, 0);
+  syms[f].lev := 1; syms[f].flags := 2;
+  t := NewType(fProc, 4);
+  types[t].base := f;
+  sExitProc := NewSym('exitproc', skVar, t);
+  sIntProc := NewSym('intproc', skVar, t);
+  sIntStat := NewSym('intstatus', skVar, tByte);
+  usesInt := false;
+  if rv then begin
+    syms[sExitProc].adr := RvExitProc;
+    exit;
+  end;
+  syms[sExitProc].adr := AllocData(4);
+  syms[sIntProc].adr := AllocData(4);
+  syms[sIntStat].adr := AllocData(2);
+  aOldHook := AllocData(2);
+  aExitFlag := AllocData(2);
+  aExitLine := AllocData(2);
+  aIrqTramp := AllocData(8);
+end;
+
+{ the 65C816 program's end: rt_exit returns here (the frame the entry put
+  on the stack). The interrupt hook back, then ExitProc: each runs on a
+  fresh stack with the frame again, so it comes back here however it ends.
+  The editor's line (DbgLineAdr) stays the one the program ended on. }
+procedure ProgramEnd;
+var e, back, f, done: longint;
+begin
+  e := pc;
+  Put16(endFix, e - 1 - (endFix + 2));
+  Op8($C2, $30);                                   { rep #$30 }
+  if DebugLines then begin
+    LdaAbs(aExitFlag);
+    Gen($D0); f := pc; Gen(0);                     { bne: not the first time }
+    Op24($AF, DbgLineAdr); StaAbs(aExitLine);      { lda line / sta }
+    Op16($EE, aExitFlag);                          { inc flag }
+    Mem[cBase + f] := pc - (f + 1);
+  end;
+  if usesInt then begin
+    LdaAbs(aOldHook);
+    Gen($F0); f := pc; Gen(0);                     { beq }
+    Gen($78);                                      { sei }
+    Op24($8F, $000300);                            { sta $00:0300 }
+    Op16($9C, aOldHook);                           { stz }
+    Gen($58);                                      { cli }
+    Mem[cBase + f] := pc - (f + 1);
+  end;
+  LdaAbs(syms[sExitProc].adr); Op16($0D, syms[sExitProc].adr + 2);   { lda / ora }
+  Gen($D0); Gen(3); Gen($82); done := pc; Gen16(0);  { bne +3 / brl done }
+  LdaAbs(syms[sExitProc].adr); StaAbs(aT0);
+  LdaAbs(syms[sExitProc].adr + 2); StaAbs(aT0 + 2);
+  Op16($9C, syms[sExitProc].adr); Op16($9C, syms[sExitProc].adr + 2);  { stz stz }
+  Gen($4B); Gen($62); Gen16(e - 1 - (pc + 2));     { phk / per end-1 }
+  Gen($8B); Gen($0B); Gen($08);                    { phb phd php }
+  Gen($3B); StaAbs(aSavesp);                       { tsc / sta rt_savesp }
+  LdaImm(UserStack); Gen($1B); LdaImm(0); Gen($5B); { a fresh stack, D 0 }
+  Gen($4B); Gen($62); back := pc; Gen16(0);        { phk / per back-1 }
+  Op16($DC, aT0);                                  { jml [rt_t0] }
+  Put16(back, pc - 1 - (back + 2));
+  Op24($5C, aExit);                                { jml rt_exit }
+  Put16(done, pc - (done + 2));                    { done: }
+  if DebugLines then begin LdaAbs(aExitLine); Op24($8F, DbgLineAdr); end;
+  Gen($28); Gen($2B); Gen($AB); Gen($6B);         { plp pld plb rtl }
+end;
+
+{ IntProc for the 65C816: installing the hook (the entry calls it), and the
+  interrupt entry the trampoline jumps to - as the kernel's JSR: A 8 bit =
+  the graphics chip's status, X 16 bit, data bank 0. IntProc runs with the
+  runtime's work variables, the editor's line and the debugger's "in an
+  interrupt" flag saved; then on to the hook that was there. }
+procedure IntCode;
+const Scratch = 38;                                { rt_stp .. rt_cT }
+var entry, skip, l: longint;
+begin
+  Mem[cBase + intFix] := $22; Put16(intFix + 1, cBase + pc); Mem[cBase + intFix + 3] := $30;   { jsl install }
+  Gen($78);                                        { sei }
+  Op24($AF, $000300); StaAbs(aOldHook);            { lda $00:0300 / sta }
+  LdaImm(aIrqTramp); Op24($8F, $000300);           { lda #tramp / sta $00:0300 }
+  Gen($58); Gen($6B);                              { cli / rtl }
+  entry := cBase + pc;
+  Gen($08); Op8($E2, $20);                         { php / sep #$20 }
+  StaAbs(syms[sIntStat].adr);                      { sta IntStatus }
+  Op8($C2, $30);                                   { rep #$30 }
+  LdaAbs(syms[sIntProc].adr); Op16($0D, syms[sIntProc].adr + 2);
+  Gen($F0); skip := pc; Gen(0);                    { beq skip }
+  Gen($0B);                                        { phd }
+  LdxImm(Scratch - 2);
+  l := pc;
+  Op16($BD, aStp); Gen($48); Gen($CA); Gen($CA);   { lda rt_stp,x / pha / dex / dex }
+  Op8($10, (l - (pc + 2)) and 255);                { bpl }
+  Op24($AF, DbgLineAdr); Gen($48);                 { lda line / pha }
+  LdaImm(1); Op24($8F, DbgLineAdr + 24);           { the debugger: in an interrupt }
+  LdaAbs(syms[sIntProc].adr); StaAbs(aT0);
+  LdaAbs(syms[sIntProc].adr + 2); StaAbs(aT0 + 2);
+  Gen($4B); Op16($62, 2);                          { phk / per: back after the jml }
+  Op16($DC, aT0);                                  { jml [rt_t0] }
+  Op8($C2, $30);                                   { rep #$30 }
+  LdaImm(0); Op24($8F, DbgLineAdr + 24);
+  Gen($68); Op24($8F, DbgLineAdr);                 { pla / sta line }
+  LdxImm(0);
+  l := pc;
+  Gen($68); Op16($9D, aStp); Gen($E8); Gen($E8);   { pla / sta rt_stp,x / inx / inx }
+  Op16($E0, Scratch); Op8($D0, (l - (pc + 2)) and 255);   { cpx / bne }
+  Gen($2B);                                        { pld }
+  Mem[cBase + skip] := pc - (skip + 1);
+  Gen($28);                                        { plp }
+  LdaAbs(syms[sIntStat].adr);                      { lda IntStatus (8 bit again) }
+  Op24($5C, aIrqTramp + 4);                        { jml tramp+4: jmp (old hook) }
+  { the trampoline in bank 0 }
+  Mem[DataImg + aIrqTramp - dataOrg] := $5C;
+  Mem[DataImg + aIrqTramp - dataOrg + 1] := entry and 255;
+  Mem[DataImg + aIrqTramp - dataOrg + 2] := (entry shr 8) and 255;
+  Mem[DataImg + aIrqTramp - dataOrg + 3] := entry shr 16;
+  Mem[DataImg + aIrqTramp - dataOrg + 4] := $6C;
+  Mem[DataImg + aIrqTramp - dataOrg + 5] := aOldHook and 255;
+  Mem[DataImg + aIrqTramp - dataOrg + 6] := (aOldHook shr 8) and 255;
+end;
+
 function CompileSource(srcLen: longint): boolean;
 var mainFix, lenAt, heapAt: longint;
     i: integer;
@@ -6779,6 +6930,7 @@ begin
   InitStdSyms;
   InitRuntime;
   if rv then dataOrg := RvData else dataOrg := UserData;
+  ExitIntSyms;
   ctxLoc[0] := 0; ctxFrozen[0] := false; ctxProc[0] := 0; ctxExit[0] := 0; ctxFS[0] := 0;
   { entry code }
   if rv then begin
@@ -6793,6 +6945,9 @@ begin
   end else begin
   Gen($8B); Gen($0B); Gen($08);              { phb phd php }
   Op8($C2, $30);                             { rep #$30 }
+  { a frame rt_exit returns into: the program's end (ProgramEnd) }
+  Gen($4B); Gen($62); endFix := pc; Gen16(0); { phk / per end-1 (patched) }
+  Gen($8B); Gen($0B); Gen($08);              { phb phd php }
   Gen($3B); StaAbs(aSavesp);                 { tsc / sta rt_savesp }
   LdaImm(UserStack); Gen($1B);               { lda #stack / tcs }
   LdaImm(0); Gen($5B);                       { tcd }
@@ -6804,7 +6959,9 @@ begin
   Gen($A9); heapAt := pc; Gen16(0);          { lda #heap (patched) }
   StaAbs(aHeapbase);
   LdaImm(StrStackTop); StaAbs(aStp);
+  if DebugHooks then begin LdaImm(0); Op24($8F, DbgLineAdr + 24); end;   { not in an interrupt }
   Jsl(aLibinit);
+  intFix := pc; Gen($EA); Gen($EA); Gen($EA); Gen($EA);   { IntProc used: jsl install (patched) }
   Gen($22); mainFix := pc; Gen24(0);         { jsl main (patched) }
   DbgEnd;
   Op24($5C, aExit);                          { jml rt_exit }
@@ -6842,6 +6999,10 @@ begin
   preLabels := nLab;                         { the program's labels belong to its body }
   Block;
   if sym <> sPeriod then ErrorN(140, '');
+  if not rv then begin
+    ProgramEnd;
+    if usesInt then IntCode;
+  end;
   FillVmts;
   if not rv then begin
     Put16(lenAt, dataTop - 1);

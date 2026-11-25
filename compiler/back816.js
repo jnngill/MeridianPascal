@@ -66,14 +66,81 @@ export function gen816(prog, opts = {}) {
     E('ldy #PAS_BSS+1');
     E('lda #PAS_BSS_END-PAS_BSS-2');
     E('mvn #0,#0');
+    if (prog.usesInt) {
+      // IntProc: the kernel's interrupt hook ($00:0300) goes to rt_irqentry,
+      // which runs IntProc and then the hook that was there
+      E('sei');
+      E('lda @l $000300');
+      E('sta @w rt_oldhook');
+      E('lda #rt_irqentry');
+      E('sta @l $000300');
+      E('cli');
+    }
     for (const l of prog.inits) E(`${J} ${l}`);
     E(`${J} ${prog.main}`);
+    // the end, however the program ends (Halt, a runtime error, Esc): the
+    // interrupt hook back, then ExitProc (each one may set the next)
     LBL('rt_exit');
+    E('rep #$30');
+    E(`lda #${hex(opts.stackTop || M816.STACK_TOP)}`);
+    E('tcs');
+    E('lda #0');
+    E('tcd');
+    E('lda @w rt_oldhook');
+    E('beq +');
+    E('sei');
+    E('sta @l $000300');
+    E('stz @w rt_oldhook');
+    E('cli');
+    LBL('+');
+    E('lda @w rt_exitproc');
+    E('beq +');
+    E('stz @w rt_exitproc');
+    E('sta @w rt_t0');
+    E('ldx #0');
+    E('jsr (rt_t0,x)');
+    E('bra rt_exit');
+    LBL('+');
     E('rep #$30');
     E('lda @w rt_savesp');
     E('tcs');
     E('plp'); E('pld'); E('plb');
     E('rtl');
+    // the interrupt hook: the kernel's JSR with A 8 bit = the graphics chip's
+    // interrupt status, X/Y 16 bit, data bank 0. IntProc runs with the
+    // runtime's work variables saved (the program may be in the middle of
+    // using them); then on to the hook that was there before.
+    LBL('rt_irqentry');
+    E('php');
+    E('sep #$20');
+    E('sta @w rt_intstat');
+    E('rep #$30');
+    E('lda @w rt_intproc');
+    E('beq rt_irqdone');
+    E('phd');
+    E('ldx #RT_SCRATCH_END-rt_t0-2');
+    LBL('-');
+    E('lda @w rt_t0,x');
+    E('pha');
+    E('dex');
+    E('dex');
+    E('bpl -');
+    E('ldx #0');
+    E('jsr (rt_intproc,x)');
+    E('rep #$30');
+    E('ldx #0');
+    LBL('-');
+    E('pla');
+    E('sta @w rt_t0,x');
+    E('inx');
+    E('inx');
+    E('cpx #RT_SCRATCH_END-rt_t0');
+    E('bne -');
+    E('pld');
+    LBL('rt_irqdone');
+    E('plp');
+    E('lda @w rt_intstat');
+    E('jmp (rt_oldhook)');
   }
 
   // ------------------------------------------------------------ procedures
@@ -124,7 +191,7 @@ export function gen816(prog, opts = {}) {
   for (const d of prog.data) emitData(d);
   out.push('; ---- bss (cleared at start)');
   LBL('PAS_BSS');
-  for (const v of RT_VARS) { LBL(v[0]); E(`.fill ${v[1]}`); }
+  for (const v of RT_VARS) { LBL(v[0]); if (v[1]) E(`.fill ${v[1]}`); }
   for (const b of prog.bss) { LBL(b.label); E(`.fill ${b.size}`); }
   E('.fill 2');
   LBL('PAS_BSS_END');
