@@ -1,6 +1,6 @@
 {
   "name": "meridian-pascal",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "description": "Pascal IDE, compiler and libraries for the MERIDIAN 816 (65C816) and its SCHUB RISC-V co-processor",
   "type": "module",
   "bin": { "mpc": "compiler/mpc.js" },
