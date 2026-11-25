@@ -28,6 +28,9 @@ const jobs = [
   // objects: the VMTs go into the data image, at odd addresses too
   ['OBJ.PAS', fs.readFileSync(new URL('cases/22_objects.pas', import.meta.url), 'latin1')],
   ['SOBJ.PAS', '{$SCHUB}\n' + fs.readFileSync(new URL('cases/22_objects.pas', import.meta.url), 'latin1')],
+  // asm blocks: the cartridge's assembler inside the compiler
+  ['ASMB.PAS', fs.readFileSync(new URL('cases/23_asm.pas', import.meta.url), 'latin1')],
+  ['SASMB.PAS', '{$SCHUB}\n' + fs.readFileSync(new URL('cases/23_asm.pas', import.meta.url), 'latin1')],
   ['HELLO.ASM', ex('hello.asm')],
   ['HELLORV.ASM', ex('hellorv.asm')],
 ];
@@ -132,6 +135,16 @@ for (let i = 0; i < jobs.length; i++) {
   load('HELLORV.ASM', ex('hellorv.asm'));
   r = f5(/HELLO FROM SCHUB!/, click);
   check('F5 runs HELLORV.ASM (SCHUB) from the SCHUB editor', r.ran && r.ended && r.back && ok(), r.scr);
+
+  // asm blocks in Pascal, for both CPUs
+  const asmProg = fs.readFileSync(new URL('cases/23_asm.pas', import.meta.url), 'latin1');
+  const ASMOUT = /42\s+42\s+55\s+1000 -3\s+done/;
+  load('ASMB.PAS', asmProg);
+  r = f5(ASMOUT);
+  check('F5 runs a program with asm blocks (65C816) from the SCHUB editor', r.ran && r.ended && r.back && ok(), r.scr);
+  load('SASMB.PAS', '{$SCHUB}\n' + asmProg);
+  r = f5(ASMOUT);
+  check('F5 runs a program with asm blocks (SCHUB) from the SCHUB editor', r.ran && r.ended && r.back && ok(), r.scr);
 
   // F7: standalone .MER files, run without the cartridge
   const f7 = (name) => { m.drives[1].delete(name); hold(0x02); frames(300); type('\n'); frames(200); return m.drives[1].get(name); };

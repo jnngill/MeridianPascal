@@ -20,7 +20,7 @@ unit NComp;
 
 interface
 
-uses Dos, Blitter;
+uses Dos, Blitter, NAsm;
 
 const
   SrcBase = $200000;
@@ -37,9 +37,7 @@ const
   RvTmpTop = $07FFF0;        { string temporaries (register s1) grow down from here }
 
 var
-  ErrMsg: string;
-  ErrUnit: string[12];      { the unit file the error is in ('' = the program) }
-  ErrLine, ErrCol: integer;
+  { ErrMsg, ErrUnit, ErrLine, ErrCol: in NAsm }
   CodeSize, DataSize: longint;
   MerSize: longint;         { size of the last standalone .MER saved }
   WantSchub: boolean;       { compile for SCHUB (also with $SCHUB at the top of the text) }
@@ -1299,6 +1297,14 @@ begin
   MemL[MsgBase + 8992] := 1634887535;
   MemL[MsgBase + 8996] := 109;
   { . expected at the end of the program }
+  MemL[MsgBase + 9024] := 1701344280;
+  MemL[MsgBase + 9028] := 1836278048;
+  MemL[MsgBase + 9032] := 1869373984;
+  MemL[MsgBase + 9036] := 1746955107;
+  MemL[MsgBase + 9040] := 1847620449;
+  MemL[MsgBase + 9044] := 1852121199;
+  MemL[MsgBase + 9048] := 100;
+  { the asm block has no end }
   msgsBuilt := true;
 end;
 
@@ -5436,6 +5442,115 @@ begin
   lastDbg := -1;
 end;
 
+function AsmName(const n: string; var v: longint): integer;
+var s, i, k: integer;
+    nm: TName;
+begin
+  AsmName := 0;
+  k := length(n);
+  if k > 15 then k := 15;
+  nm[0] := chr(k);
+  for i := 1 to k do nm[i] := LoCase(n[i]);
+  s := Find(nm);
+  if s = 0 then exit;
+  AsmName := 2;
+  case syms[s].kind of
+    skConst: if IsOrd(syms[s].typ) then begin v := syms[s].adr; AsmName := 1; end;
+    skVar:
+      if syms[s].lev = 0 then begin v := syms[s].adr; AsmName := 1; end
+      else if syms[s].lev = curLev then begin
+        if syms[s].isPar then v := ParDp(curLev, syms[s].adr) else v := LocDp(syms[s].adr);
+        AsmName := 1;
+      end;
+    skProc:
+      { the function's name: its result }
+      if (s = ctxProc[curLev]) and (syms[s].typ <> 0) and (syms[s].flags and 1 = 0) then begin
+        v := ctxRes[curLev]; AsmName := 1;
+      end;
+  end;
+end;
+
+{ a word of an asm block: a Pascal name goes into the assembler's table }
+procedure AsmNote(const w: TName);
+var k, i, j: integer;
+    v, a: longint;
+begin
+  k := MemW[AsmNames];
+  for j := 0 to k - 1 do begin
+    a := AsmNames + 4 + longint(j) * 20;
+    if Mem[a] and 127 = length(w) then begin
+      i := 1;
+      while (i <= length(w)) and (Mem[a + i] = ord(UpCase(w[i]))) do i := i + 1;
+      if i > length(w) then exit;
+    end;
+  end;
+  if k >= MaxAsmNames then exit;
+  v := 0;
+  i := AsmName(w, v);
+  if i = 0 then exit;
+  a := AsmNames + 4 + longint(k) * 20;
+  Mem[a] := length(w);
+  if i = 2 then Mem[a] := length(w) + 128;
+  for j := 1 to length(w) do Mem[a + j] := ord(UpCase(w[j]));
+  MemL[a + 16] := v;
+  MemW[AsmNames] := k + 1;
+end;
+
+{ asm ... end (sym is the word asm, ch the character after it): the text up
+  to the word END goes to the cartridge's assembler, its bytes into the code.
+  ; starts a comment to the end of the line, braces make one too }
+procedure AsmStat;
+var a, e, k, n: longint;
+    l0, i: integer;
+    w: TName;
+    prev: char;
+begin
+  a := curBase + srcPos - 1;
+  l0 := line;
+  if ch = #10 then l0 := line - 1;
+  MemW[AsmNames] := 0;
+  prev := ' ';
+  e := -1;
+  while e < 0 do begin
+    case ch of
+      #0: ErrorN(141, '');
+      ';': while (ch <> #10) and (ch <> #0) do NextCh;
+      '{': begin
+        while (ch <> '}') and (ch <> #0) do NextCh;
+        if ch = '}' then NextCh;
+      end;
+      '"': begin
+        NextCh;
+        while (ch <> '"') and (ch <> #10) and (ch <> #0) do NextCh;
+        if ch = '"' then NextCh;
+      end;
+      '''': begin
+        NextCh; if ch <> #0 then NextCh;
+        if ch = '''' then NextCh;
+      end;
+      'a'..'z', 'A'..'Z', '_', '0'..'9': begin
+        k := curBase + srcPos - 1;
+        i := 0;
+        while ((ch >= 'a') and (ch <= 'z')) or ((ch >= 'A') and (ch <= 'Z')) or ((ch >= '0') and (ch <= '9')) or (ch = '_') do begin
+          if i < 15 then begin i := i + 1; w[i] := LoCase(ch); end;
+          NextCh;
+        end;
+        w[0] := chr(i);
+        if (w = 'end') and (prev <> '.') and (prev <> '$') and (prev <> '%') and (prev <> '@') then e := k
+        else if (prev <> '.') and (prev <> '@') and (w[1] > '9') then AsmNote(w);
+        prev := 'a';
+      end;
+    else
+      begin prev := ch; NextCh; end;
+    end;
+  end;
+  AsmUnit := curFile;
+  n := InlineAsmBlock(a, e, l0, cBase + pc, rv);
+  k := 0;
+  while k < n do begin Gen(Mem[$330000 + k]); k := k + 1; end;
+  Next;
+end;
+
 procedure Statement;
 var x: TItem;
     s, k: integer;
@@ -5461,6 +5576,7 @@ begin
     end;
     sIdent: begin
       n := id;
+      if n = 'asm' then begin AsmStat; exit; end;
       k := FindLabel(n);
       if k >= 0 then begin
         Next; Expect(sColon);
@@ -6276,6 +6392,7 @@ begin
     if (sym = sIdent) and (id = 'forward') then begin Next; Expect(sSemi); exit; end;
   end;
   if (sym = sIdent) and (id = 'forward') then ErrorN(122, '');
+  if (sym = sIdent) and (id = 'assembler') then begin Next; Expect(sSemi); end;
   { body }
   if curLev >= MaxLev - 1 then ErrorN(123, '');
   if curLev > 0 then PlaceLocals;      { nested procedures address our frame through ctxFS }
@@ -6339,6 +6456,13 @@ begin
   withTyp[nWith] := syms[p].typ; withMode[nWith] := mInd; withA[nWith] := ParDp(curLev, syms[p].adr);
 end;
 
+{ a routine's statements: begin ... end, or asm ... end (an assembler routine) }
+procedure Body;
+begin
+  if sym = sBegin then begin Next; StatSeq; Expect(sEnd); end
+  else Statement;
+end;
+
 procedure Block;
 var entry, fs: longint;
     s, p, q, w0: integer;
@@ -6359,7 +6483,7 @@ begin
       break;
     end;
   until false;
-  if sym <> sBegin then ErrorN(126, '');
+  if (sym <> sBegin) and not ((sym = sIdent) and (id = 'asm')) then ErrorN(126, '');
   { procedure entry }
   lastDbg := -1;                               { DebugLines: this body stores its lines anew }
   PlaceLocals;
@@ -6384,9 +6508,7 @@ begin
       end;
     w0 := nWith;
     if s <> 0 then if syms[s].kind = skField then SelfWith(s);
-    Next;
-    StatSeq;
-    Expect(sEnd);
+    Body;
     nWith := w0;
     EndLabels; nLab := labStart; labStart := saveLab; nFix := saveFix; stkSlots := saveSlots;
     FixChain(ctxExit[curLev], pc);
@@ -6410,9 +6532,7 @@ begin
     end;
   w0 := nWith;
   if s <> 0 then if syms[s].kind = skField then SelfWith(s);
-  Next;
-  StatSeq;
-  Expect(sEnd);
+  Body;
   nWith := w0;
   EndLabels; nLab := labStart; labStart := saveLab; nFix := saveFix; stkSlots := saveSlots;
   FixChain(ctxExit[curLev], pc);

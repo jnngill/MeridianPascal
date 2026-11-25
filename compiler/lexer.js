@@ -85,6 +85,46 @@ export function tokenize(text, file, defines, includeLoader) {
       }
     }
 
+    // the text of an asm block, up to the word END: one token {k:'asm', v: text,
+    // pos: where the text starts}. ; starts a comment to the end of the line,
+    // { } and (* *) comments become blanks (the lines stay where they are).
+    function asmBlock() {
+      const p = pos();
+      let t = '';
+      while (i < n) {
+        const c = src[i];
+        if (c === ';') { while (i < n && src[i] !== '\n') { t += src[i]; adv(); } continue; }
+        if (c === '{' || (c === '(' && src[i + 1] === '*')) {
+          const close = c === '{' ? '}' : '*)';
+          const e = src.indexOf(close, i + 1);
+          if (e < 0) throw new CompileError('unterminated comment', pos());
+          const k = e + close.length - i;
+          for (let j = 0; j < k; j++) { t += src[i] === '\n' ? '\n' : ' '; adv(); }
+          continue;
+        }
+        if (c === '"' || (c === "'" && src[i + 2] === "'")) {
+          // a string or a character constant: copied as it is
+          const e = c === '"' ? src.indexOf('"', i + 1) : i + 2;
+          const k = (e < 0 ? n : e + 1) - i;
+          for (let j = 0; j < k; j++) { t += src[i]; adv(); }
+          continue;
+        }
+        if (/[A-Za-z_]/.test(c)) {
+          let j = i;
+          while (j < n && /[A-Za-z0-9_]/.test(src[j])) j++;
+          const w = src.slice(i, j);
+          if (w.toLowerCase() === 'end' && !/[.$%@]/.test(src[i - 1] || '')) {
+            toks.push({ k: 'asm', v: t, pos: p });
+            return;
+          }
+          t += w; adv(j - i);
+          continue;
+        }
+        t += c; adv();
+      }
+      throw new CompileError("the asm block has no 'end'", p);
+    }
+
     while (i < n) {
       const c = src[i];
       if (c === ' ' || c === '\t' || c === '\r' || c === '\n' || c === '\f') { adv(); continue; }
@@ -121,6 +161,7 @@ export function tokenize(text, file, defines, includeLoader) {
         adv(j - i);
         if (KEYWORDS.has(lw)) toks.push({ k: 'kw', v: lw, pos: p });
         else toks.push({ k: 'id', v: lw, raw: word, pos: p });
+        if (lw === 'asm') asmBlock();
         continue;
       }
       // numbers

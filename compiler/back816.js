@@ -15,6 +15,7 @@
 // stack. Arguments are pushed straight onto the hardware stack.
 
 import { runtime816, RT_VARS, RT_VARS_CART } from './rt816.js';
+import { CompileError } from './lexer.js';
 const hex = (v, n = 4) => '$' + ((v >>> 0) & (n === 2 ? 0xff : n === 4 ? 0xffff : n === 6 ? 0xffffff : 0xffffffff)).toString(16).padStart(n, '0');
 const isNum = (v) => typeof v === 'number';
 const lo16 = (v) => isNum(v) ? hex(v & 0xffff) : `${v}`;
@@ -456,6 +457,24 @@ export function gen816(prog, opts = {}) {
       const ins = code[i];
       switch (ins.o) {
         case 'line': C(`line ${ins.line}`); break;
+        case 'asm': {
+          // an asm block (front.js parseAsm): locals and parameters are direct page places
+          if (vs.length) throw new Error(`internal: expression stack not empty before asm in ${p.name}`);
+          for (const l of ins.lines) {
+            if (l.label) LBL(l.label);
+            if (!l.parts.length) continue;
+            const s = l.parts.map(q => {
+              if (typeof q === 'string') return q;
+              if (q.r === 'glob') return typeof q.g === 'number' ? hex(q.g, q.g > 0xffff ? 6 : 4) : q.g;
+              const o = dpOff(q.kind, q.off);
+              if (o > 255) throw new CompileError(`a local or parameter beyond the direct page ($${o.toString(16)}) cannot be used in asm`, { file: ins.file, line: l.line, col: 1 });
+              return hex(o, 2);
+            }).join('');
+            E(`${s}\t; asm ${l.line} ${ins.file}`);     // compile.js: an assembler error is at this line
+          }
+          E('.al'); E('.xl');
+          break;
+        }
         case 'lit': {
           const t = top();
           if (t && t.k === 'const') spill();

@@ -865,10 +865,16 @@ export class Front {
       this.emit({ o: 'ldl', hops: 0, off: c.from, kind: 'par', mt: this.mtOf(this.ptrT) });
       this.emit({ o: 'copy', n: c.size });
     }
-    if (this.is('asm')) this.err('asm blocks are not supported; use Mem[], absolute variables or the hardware units');
-    this.expect('begin');
-    this.parseStmtSeq('end');
-    this.expect('end');
+    if (this.is('asm')) {
+      // an assembler routine: asm ... end; is the body
+      const t = this.tk;
+      this.emit({ o: 'line', file: t.pos.file, line: t.pos.line });
+      this.parseAsm();
+    } else {
+      this.expect('begin');
+      this.parseStmtSeq('end');
+      this.expect('end');
+    }
     this.expect(';');
     this.endProc();
     this.ctx = savedCtx;
@@ -1003,6 +1009,108 @@ export class Front {
     return { kind: 'var', type, loc: { k: 'local', lvl: this.ctx.level, off } };
   }
 
+  // asm ... end: one instruction a line in the target's assembler syntax
+  // (compiler/asm816.js or asmrv.js), ; comments, labels as `name:`. Names of
+  // the routine's own locals and parameters stand for their place in the
+  // frame (65C816: the direct page address, D is the frame; SCHUB: the offset
+  // from s0), global variables for their address, constants for their value,
+  // the function's name (or Result) for its result variable. A var parameter
+  // is the place of its address.
+  parseAsm() {
+    this.expect('asm');
+    const t = this.tk;
+    if (t.k !== 'asm') this.err('asm block expected', t.pos);
+    this.next();
+    this.expect('end');
+    const rv = this.target.name === 'schub';
+    const id = ++this.lbl;
+    const src = t.v.split('\n');
+    const labels = new Set();
+    const lines = [];
+    // first the labels, so a jump may go forward
+    const LBL = /^\s*([A-Za-z_][A-Za-z0-9_]*):/;
+    for (const s of src) { const m = LBL.exec(s); if (m) labels.add(m[1].toLowerCase()); }
+    const REG816 = new Set(['a', 'x', 'y', 's']);
+    const REGRV = new Set(['zero', 'ra', 'sp', 'gp', 'tp', 'fp', ...Array.from({ length: 32 }, (_, k) => `x${k}`),
+      ...Array.from({ length: 7 }, (_, k) => `t${k}`), ...Array.from({ length: 12 }, (_, k) => `s${k}`),
+      ...Array.from({ length: 8 }, (_, k) => `a${k}`)]);
+    const resolve = (name, pos) => {
+      const ln = name.toLowerCase();
+      if (labels.has(ln)) return `ASM${id}_${ln}`;
+      let sym = this.lookup(ln);
+      if (sym && sym.kind === 'proc' && this.ctx.sym === sym && this.ctx.resultSym) sym = this.ctx.resultSym;
+      if (!sym) this.err(`unknown identifier '${name}' in the asm block`, pos);
+      if (sym.kind === 'const') {
+        if (typeof sym.v !== 'number' || !Number.isInteger(sym.v)) this.err(`'${name}': only integer constants can be used in asm`, pos);
+        return sym.v < 0 ? `(${sym.v})` : String(sym.v);
+      }
+      if (sym.kind !== 'var') this.err(`'${name}' cannot be used in asm (variables, parameters, constants and labels can)`, pos);
+      const l = sym.loc;
+      if (l.k === 'global') return l.addr !== undefined ? { r: 'glob', g: l.addr } : { r: 'glob', g: l.label };
+      if (l.lvl !== this.ctx.level) this.err(`'${name}' belongs to an outer routine: asm can use the routine's own locals and parameters only`, pos);
+      return { r: 'loc', kind: l.k === 'param' ? 'par' : 'loc', off: l.off };
+    };
+    src.forEach((s, k) => {
+      const pos = { ...t.pos, line: t.pos.line + k, col: 1 };
+      // the comment goes (outside strings and character constants)
+      let c = '';
+      for (let i = 0; i < s.length; i++) {
+        if (s[i] === '"') { const e = s.indexOf('"', i + 1); const j = e < 0 ? s.length : e + 1; c += s.slice(i, j); i = j - 1; continue; }
+        if (s[i] === "'" && s[i + 2] === "'") { c += s.slice(i, i + 3); i += 2; continue; }
+        if (s[i] === ';') break;
+        c += s[i];
+      }
+      let label = null;
+      const m = LBL.exec(c);
+      if (m) { label = `ASM${id}_${m[1].toLowerCase()}`; c = c.slice(m[0].length); }
+      c = c.trim();
+      const parts = [];
+      if (c) {
+        const mn = /^\S+/.exec(c)[0];
+        parts.push(mn);
+        let rest = c.slice(mn.length);
+        const isDir = mn.startsWith('.');
+        // the operand: names become frame places, addresses or values
+        let i = 0, out = '';
+        while (i < rest.length) {
+          const ch = rest[i];
+          if (ch === '"') { const e = rest.indexOf('"', i + 1); const j = e < 0 ? rest.length : e + 1; out += rest.slice(i, j); i = j; continue; }
+          if (ch === "'" && rest[i + 2] === "'") { out += rest.slice(i, i + 3); i += 3; continue; }
+          if (ch === '$' || ch === '%' || /[0-9]/.test(ch)) {
+            // a number (0x.., $.., %..): its letters are no names
+            let j = i + 1;
+            while (j < rest.length && /[0-9A-Za-z_]/.test(rest[j])) j++;
+            out += rest.slice(i, j); i = j; continue;
+          }
+          if (/[A-Za-z_]/.test(ch)) {
+            let j = i;
+            while (j < rest.length && /[A-Za-z0-9_]/.test(rest[j])) j++;
+            const w = rest.slice(i, j), lw = w.toLowerCase();
+            const before = out.trimEnd();
+            const after = rest.slice(j).trimStart();
+            // 65C816: @b @w @l, the index registers after a comma, A alone
+            const keep = isDir ? false
+              : rv ? REGRV.has(lw)
+              : (before.endsWith('@') && /^[bwl]$/.test(lw)) ||
+                (REG816.has(lw) && before.endsWith(',')) ||
+                (lw === 'a' && before === '' && after === '');
+            if (keep) out += w;
+            else {
+              const r = resolve(w, pos);
+              if (typeof r === 'string') out += r;
+              else { if (out) parts.push(out); parts.push(r); out = ''; }
+            }
+            i = j; continue;
+          }
+          out += ch; i++;
+        }
+        if (out) parts.push(out);
+      }
+      if (label || parts.length) lines.push({ label, parts, line: pos.line });
+    });
+    this.emit({ o: 'asm', lines, file: t.pos.file });
+  }
+
   parseStatement() {
     const t = this.tk;
     const mark = this.tempMark();
@@ -1040,7 +1148,7 @@ export class Front {
           this.emit({ o: 'jmp', l: sym.lbl });
           break;
         }
-        case 'asm': this.err('asm blocks are not supported');
+        case 'asm': this.parseAsm(); break;
         default: break; // empty statement (e.g. before 'end' / 'else' / 'until')
       }
     } else if (t.k === 'id') {

@@ -25,7 +25,15 @@ unit NAsm;
 
 interface
 
-uses NComp, Blitter, Dos;
+uses Blitter, Dos;
+
+const
+  { asm blocks of Pascal texts (NComp): the Pascal names the block uses, a
+    word count, then from +4 (SCHUB: the values word aligned) 20 bytes a
+    name: its length (+128: asm cannot use it), 15 characters in upper
+    case, its value (longint) }
+  AsmNames = $3B2000;
+  MaxAsmNames = 64;
 
 type
   { the assembler's buffers, only used while it assembles: the editor lays
@@ -40,6 +48,11 @@ type
   PAsmWork = ^TAsmWork;
 
 var
+  { errors of the assembler and of the compiler (NComp) }
+  ErrMsg: string;
+  ErrUnit: string[12];      { the unit file the error is in ('' = the program) }
+  ErrLine, ErrCol: integer;
+  AsmUnit: string[12];      { the file an asm block is in (NComp) }
   { set by the editor before the first assembly: 512 bytes of its own }
   AsmWorkPtr: PAsmWork;
   AsmSize: longint;       { bytes assembled }
@@ -59,6 +72,10 @@ function AsmPrepareRun: boolean;
 function SaveAsmMer(const name: string): boolean;
 { for the editor's colours }
 function IsMnemonic(const s: string): boolean;
+{ an asm block of a Pascal text (NComp): the lines from address a up to e,
+  the first is line line0 of the file AsmUnit, assembled for address org into
+  $33:0000; the number of bytes. The Pascal names are in AsmNames. }
+function InlineAsmBlock(a, e: longint; line0: integer; org: longint; schub: boolean): longint;
 
 implementation
 
@@ -115,6 +132,7 @@ var
   exprFwd: boolean;         { a symbol defined further down (or unknown in pass 1) }
   minusN, plusN, plusTotal: integer;
   tablesReady: boolean;
+  inlineAt: integer;        { an asm block of a Pascal text: the line its text starts on (else 0) }
 
 function CatchError: integer; external 'catch';
 procedure ThrowError; external 'throw';
@@ -123,6 +141,7 @@ procedure Fail(const msg: string);
 begin
   ErrMsg := msg;
   ErrUnit := '';
+  if inlineAt > 0 then begin ErrUnit := AsmUnit; curLine := inlineAt + curLine - 1; end;
   ErrLine := curLine;
   ErrCol := ip;
   if ErrCol < 1 then ErrCol := 1;
@@ -140,6 +159,7 @@ begin
   for i := 1 to k do ErrMsg[i] := chr(Mem[a + i]);
   if extra <> '' then ErrMsg := ErrMsg + extra;
   ErrUnit := '';
+  if inlineAt > 0 then begin ErrUnit := AsmUnit; curLine := inlineAt + curLine - 1; end;
   ErrLine := curLine;
   ErrCol := ip;
   if ErrCol < 1 then ErrCol := 1;
@@ -493,6 +513,13 @@ begin
   MemL[MsgBase + 2444] := 1702064993;
   MemL[MsgBase + 2448] := 1701601901;
   { nothing to assemble }
+  MemL[MsgBase + 2496] := 1851876119;
+  MemL[MsgBase + 2500] := 544501614;
+  MemL[MsgBase + 2504] := 1965057378;
+  MemL[MsgBase + 2508] := 543450483;
+  MemL[MsgBase + 2512] := 1629515369;
+  MemL[MsgBase + 2516] := 540700019;
+  { cannot be used in asm:  }
 end;
 
 { the names into the hash table (all of them; a name may be there twice) }
@@ -828,13 +855,28 @@ begin
 end;
 
 function SymValue(const rawName: string): longint;
-var i: integer;
-    a: longint;
+var i, k: integer;
+    a, v: longint;
 begin
   SymValue := 0;
   MakeName(rawName);
   i := FindSym(nm);
   if i = 0 then begin
+    { in an asm block: a name of the Pascal program }
+    if inlineAt > 0 then begin
+      for k := 0 to MemW[AsmNames] - 1 do begin
+        a := AsmNames + 4 + longint(k) * 20;
+        if Mem[a] and 127 = length(nm) then begin
+          i := 1;
+          while (i <= length(nm)) and (Mem[a + i] = ord(nm[i])) do i := i + 1;
+          if i > length(nm) then begin
+            if Mem[a] and 128 <> 0 then FailN(39, rawName);
+            SymValue := MemL[a + 16];
+            exit;
+          end;
+        end;
+      end;
+    end;
     if pass = 2 then FailN(4, rawName);
     exprUndef := true; exprFwd := true;
     exit;
@@ -1689,7 +1731,7 @@ begin
     while (k <= length(AsmWorkPtr^.lne)) and IsIdChar(AsmWorkPtr^.lne[k]) do k := k + 1;
     if (k <= length(AsmWorkPtr^.lne)) and (AsmWorkPtr^.lne[k] = ':') then begin
       label_ := Copy(AsmWorkPtr^.lne, ip, k - ip); ip := k + 1; hadColon := true;
-    end else if (ip = 1) and not rvMode then begin
+    end else if (ip = 1) and not rvMode and (inlineAt = 0) then begin
       label_ := Copy(AsmWorkPtr^.lne, ip, k - ip); ip := k;
     end;
   end
@@ -1795,6 +1837,7 @@ begin
   AssembleSource := false;
   ErrMsg := ''; ErrUnit := ''; ErrLine := 0; ErrCol := 0;
   curLine := 0; ip := 1;
+  inlineAt := 0;
   if CatchError <> 0 then exit;
   if not tablesReady then BuildTables;
   rvMode := schub;
@@ -1837,6 +1880,56 @@ begin
   p := FindSym('START');
   if p <> 0 then AsmEntry := MemL[SymAdr(p) + 16] else AsmEntry := AsmOrigin;
   AssembleSource := true;
+end;
+
+{ an asm block of a Pascal text (NComp): the lines from a up to e
+  for the address org, into Stage; labels are `name:` anywhere on a line,
+  the names the block does not define come from the Pascal program
+  (AsmNames, written by NComp); braces make a comment too }
+function InlineAsmBlock(a, e: longint; line0: integer; org: longint; schub: boolean): longint;
+var p, q: longint;
+    n, k: integer;
+    c: char;
+    inBr, semi: boolean;
+begin
+  if not tablesReady then BuildTables;
+  rvMode := schub;
+  nSyms := 0;
+  FillMem(SymBase, 512, 0);
+  plusTotal := 0;
+  inlineAt := line0;
+  for pass := 1 to 2 do begin
+    pc := org; origin := org; haveOrigin := true;
+    outLen := 0;
+    mWide := true; xWide := true;
+    minusN := 0; plusN := 0;
+    curLine := 0;
+    inBr := false;
+    p := a;
+    while p < e do begin
+      q := p;
+      while (q < e) and (Mem[q] <> 10) do q := q + 1;
+      curLine := curLine + 1;
+      if q - p > 250 then begin ip := 1; FailN(37, ''); end;
+      n := q - p;
+      semi := false;
+      AsmWorkPtr^.lne[0] := chr(n);
+      for k := 1 to n do begin
+        c := chr(Mem[p + k - 1]);
+        if (c = #13) or (c = #9) then c := ' ';
+        if inBr then begin if c = '}' then inBr := false; c := ' '; end
+        else if not semi then begin
+          if c = ';' then semi := true
+          else if c = '{' then begin inBr := true; c := ' '; end;
+        end;
+        AsmWorkPtr^.lne[k] := c;
+      end;
+      DoLine;
+      p := q + 1;
+    end;
+  end;
+  inlineAt := 0;
+  InlineAsmBlock := outLen;
 end;
 
 { where the cartridge keeps the SCHUB host stub (byte by byte: the address

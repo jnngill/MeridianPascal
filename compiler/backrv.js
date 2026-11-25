@@ -155,6 +155,20 @@ export function genRV(prog, opts = {}) {
     for (const ins of p.code) {
       switch (ins.o) {
         case 'line': body.push(`# line ${ins.line} ${ins.file || ''}`); break;
+        case 'asm': {
+          // an asm block (front.js parseAsm): locals and parameters are offsets from s0
+          if (depth) throw new Error(`internal: expression stack not empty before asm in ${p.name}`);
+          for (const l of ins.lines) {
+            if (l.label) BL(l.label);
+            if (!l.parts.length) continue;
+            B(l.parts.map(q => {
+              if (typeof q === 'string') return q;
+              if (q.r === 'glob') return typeof q.g === 'number' ? h(q.g) : q.g;
+              return String(q.kind === 'loc' ? q.off - FS : 8 + q.off);
+            }).join('') + `\t; asm ${l.line} ${ins.file}`);     // compile.js: an assembler error is at this line
+          }
+          break;
+        }
         case 'lit': pushC(ins.v); break;
         case 'gaddr': {
           if (typeof ins.g === 'number') pushC(ins.g + ins.off);

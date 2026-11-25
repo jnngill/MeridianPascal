@@ -30,6 +30,9 @@ function prune(prog) {
     live.add(l);
     for (const ins of p.code) {
       if (ins.o === 'call' && !live.has(ins.l)) work.push(ins.l);
+      if (ins.o === 'asm') {
+        for (const l of ins.lines) for (const q of l.parts) if (typeof q === 'object' && q.r === 'glob' && typeof q.g === 'string') liveData.add(q.g);
+      }
       if ((ins.o === 'gaddr' || ins.o === 'ldg' || ins.o === 'stg') && typeof ins.g === 'string') { liveData.add(ins.g); if (ins.o === 'gaddr' && procs.has(ins.g) && !live.has(ins.g)) work.push(ins.g); }
     }
     // parents of nested procedures are needed for frame sizes
@@ -121,6 +124,10 @@ export function compile(source, fileName, opts = {}) {
   } catch (e) {
     if (e instanceof CompileError) {
       res.errors.push({ msg: e.message, file: e.pos && e.pos.file, line: e.pos && e.pos.line, col: e.pos && e.pos.col });
+    } else if (e instanceof AsmError && /; asm (\d+) (.*)$/.test(e.src || '')) {
+      // in an asm block of the Pascal text
+      const m = /; asm (\d+) (.*)$/.exec(e.src);
+      res.errors.push({ msg: `asm: ${e.message}`, file: m[2], line: +m[1], col: 1 });
     } else if (e instanceof AsmError) {
       res.errors.push({ msg: `assembler: ${e.message} (line ${e.line}: ${e.src && e.src.trim()})` });
     } else {
