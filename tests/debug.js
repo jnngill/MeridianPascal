@@ -119,5 +119,49 @@ for (const ed of ['65C816', 'SCHUB']) {
   }
 }
 
+// ---- an asm block is one statement: Ctrl+B on a line inside it puts the
+// breakpoint on the block's asm line, where the debugger can stop
+const asrc = (schub) => (schub ? '{$SCHUB}\n' : '') + [
+  'program B;', 'var n: integer;', 'begin', '  n := 1;', '  asm',
+  ...(schub ? ['    la t1, n', '    lh t0, 0(t1)', '    { a comment', '      over lines }', '    addi t0, t0, 1', '    sh t0, 0(t1)']
+            : ['    lda n', '    inc a', '    { a comment', '      over lines }', '    nop', '    sta n']),
+  '  end;', "  WriteLn('N ', n);", 'end.', ''].join('\n');
+for (const ed of ['65C816', 'SCHUB']) {
+  for (const schub of [false, true]) {
+    const m = new Meridian(roms);
+    m.insertCartridge(cart.bytes);
+    if (ed === '65C816') startPascal816(m); else m.startCartridge();
+    const frames = (k) => { for (let i = 0; i < k && m.state === 'running'; i++) m.runFrame(); };
+    const type = (s) => { for (const c of s) { m.pushKey(c === '\n' ? 13 : c.charCodeAt(0)); frames(3); } frames(10); };
+    const hold = (scan, k = 8) => { m.keyState(scan, true); frames(k); m.keyState(scan, false); frames(4); };
+    const ctrl = (scan) => { m.keyState(0x14, true); hold(scan); m.keyState(0x14, false); frames(6); };
+    const msg = () => (m.screenText().split('\n')[29] || '').trim();
+    const watches = () => m.screenText().split('\n').slice(20, 28).filter(x => / = /.test(x)).map(x => x.trim()).join(' ; ');
+    const off = schub ? 1 : 0;
+    const what = `${ed} editor, ${schub ? 'SCHUB' : '65C816'} program`;
+    frames(120);
+    m.drives[1].set('B.PAS', Buffer.from(asrc(schub), 'latin1'));
+    hold(0x04); frames(20); type('b.pas\n'); frames(40);
+    for (let k = 0; k < 8 + off; k++) { m.pushKey(0x1F); frames(4); }       // line 9: inside the brace comment
+    frames(20);
+    ctrl(0x32);
+    check(`${what}: Ctrl+B inside an asm block: the breakpoint goes on its asm line`,
+      msg() === `Breakpoint at line ${5 + off} (the asm line)`, msg());
+    ctrl(0x1D); type('n\n');
+    hold(0x03); frames(400);
+    check(`${what}: F5 stops at the asm line, before the block`, msg().startsWith(`Stopped at line ${5 + off}`) && watches() === 'N = 1', `${msg()}\n${watches()}`);
+    hold(0x02); frames(300);
+    check(`${what}: F7 runs the block in one step`, msg().startsWith(`Stopped at line ${13 + off}`) && watches() === 'N = 2', `${msg()}\n${watches()}`);
+    ctrl(0x06); frames(30);
+    // Ctrl+B again in the block (on its end line) takes the breakpoint off; on a Pascal line as before
+    const goLine = (n) => { ctrl(0x4b); type(`${n}\n`); frames(10); };
+    goLine(12 + off);                                                     // end;
+    ctrl(0x32);
+    check(`${what}: Ctrl+B on the block's end line takes it off again`, msg() === `No breakpoint at line ${5 + off} (the asm line)`, msg());
+    goLine(13 + off); ctrl(0x32);
+    check(`${what}: on the Pascal line after it: there`, msg() === `Breakpoint at line ${13 + off}`, msg());
+  }
+}
+
 console.log(fail ? `${fail} failed` : 'all ok');
 process.exit(fail ? 1 : 0);

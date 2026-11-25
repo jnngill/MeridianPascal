@@ -741,6 +741,23 @@ begin
   BreakAt := (line < 4096) and (Mem[DbgBits + (line shr 3)] and (1 shl (line and 7)) <> 0);
 end;
 
+{ the line a breakpoint at the cursor goes on: the debugger stops at the
+  start of statements, and an asm block is one statement, so inside a block
+  it is the block's asm line (the first line whose start is not in it) }
+function BreakLine: integer;
+var p: longint;
+    l: integer;
+begin
+  p := LineStart(cur);
+  l := curLine;
+  if not asmMode then
+    while (p > 0) and (StateAt(p) in [stAsm, stAsmBrace]) do begin
+      p := LineStart(p - 1);
+      l := l - 1;
+    end;
+  BreakLine := l;
+end;
+
 { the debugger's colours on a row: the line the program stopped at, a
   breakpoint }
 procedure MarkRow(row: integer);
@@ -2165,10 +2182,12 @@ begin
       else msg := 'Target: 65C816';
     end;
     if Pressed(scB) then begin                                     { Ctrl+B: breakpoint }
-      if curLine < 4096 then begin
-        Mem[DbgBits + (curLine shr 3)] := Mem[DbgBits + (curLine shr 3)] xor (1 shl (curLine and 7));
-        if BreakAt(curLine) then msg := 'Breakpoint at line ' else msg := 'No breakpoint at line ';
-        AddNum(curLine);
+      i := BreakLine;
+      if i < 4096 then begin
+        Mem[DbgBits + (i shr 3)] := Mem[DbgBits + (i shr 3)] xor (1 shl (i and 7));
+        if BreakAt(i) then msg := 'Breakpoint at line ' else msg := 'No breakpoint at line ';
+        AddNum(i);
+        if i <> curLine then Add(' (the asm line)');
         redrawAll := true;
       end;
     end;
