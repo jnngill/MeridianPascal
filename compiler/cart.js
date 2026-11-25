@@ -30,6 +30,7 @@ import { gen816 } from './back816.js';
 import { RT_VARS_CART } from './rt816.js';
 import { realBits } from './types.js';
 import { assemble816, formatListing, AsmError } from './asm816.js';
+import { helpAsm816 } from './helptext.js';
 import { genRV, buildStub, RVLAYOUT } from './backrv.js';
 import { assembleRV } from './asmrv.js';
 
@@ -621,7 +622,7 @@ ${progInits.map(l => `\tjsl ${l}`).join('\n')}
 	jsl ${prog.main}
 	jml rt_exit
 `;
-    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + DEBUG_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
+    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + helpAsm816() + DEBUG_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
     res.asm = asm;
     const a = assemble816(asm, { listing: !!opts.listing });
     res.symbols = a.symbols;

@@ -5,6 +5,7 @@
 import { buildPascalCart } from '../compiler/mkcart.js';
 import { Meridian } from '../emu/meridian.js';
 import { roms, startPascal816 } from './harness.js';
+import { HELP_LINES } from '../compiler/helptext.js';
 
 const cart = buildPascalCart();
 if (!cart.ok) { console.log(cart.errors); process.exit(1); }
@@ -153,6 +154,14 @@ function session(schub) {
   t('^X cuts what the mouse selected', same(text(5), ['program Hello;', 'uses Crt;', '', 'begin', '  .']));
   undo();
   t('^Z brings it back', same(text(), STARTER));
+
+  // F1: the help screen, its lines from the cartridge ROM (compiler/helptext.js)
+  hold(0x05); frames(40);
+  const shown = m.screenText().split('\n').slice(TT + 1, TT + 1 + HELP_LINES.length).map(l => l.slice(1).trimEnd());
+  t('F1: the title and every help line from the ROM', same(shown, HELP_LINES) &&
+    (schub ? /the editor on SCHUB/ : /on the MERIDIAN 816/).test(row(TT - 1)));
+  key(32); frames(30);
+  t('a key closes the help', same(text(), STARTER));
 }
 
 session(false);

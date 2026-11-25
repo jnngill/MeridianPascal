@@ -23,6 +23,7 @@ import { Front } from './front.js';
 import { TARGETS, makeMer } from './compile.js';
 import { genRV } from './backrv.js';
 import { assembleRV } from './asmrv.js';
+import { helpAsmRV } from './helptext.js';
 
 // RUN: its host stub can run programs while the editor waits (request 8)
 export const IDE_LAYOUT = { LOAD: 0xa00000, MBOX: 0xa003f0, CODE: 0xa00400, STACK_TOP: 0xaffff0, RUN: true };
@@ -239,7 +240,7 @@ export function buildSchubIde() {
   // the externals go before the bss (which is cleared at start, not saved)
   const at = asm.indexOf('\nPAS_BSS:');
   if (at < 0) throw new Error('PAS_BSS not found');
-  const ext = `MBOX_U = 0x${((L.MBOX | 0x80000000) >>> 0).toString(16)}\n` + EXTERNALS_RV;
+  const ext = `MBOX_U = 0x${((L.MBOX | 0x80000000) >>> 0).toString(16)}\n` + EXTERNALS_RV + helpAsmRV();
   asm = asm.slice(0, at) + '\n' + ext + asm.slice(at);
   const a = assembleRV(asm, { org: L.CODE });
   const bss = a.symbols.get('PAS_BSS');
