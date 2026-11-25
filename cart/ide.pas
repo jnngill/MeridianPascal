@@ -43,6 +43,7 @@ const
   aTabOn = $70;               { black on yellow: this tab }
   aHead = $67;                { yellow on blue: file and position }
   aLine = $F0;                { black on light grey: message, prompts }
+  aSel = $C1;                 { white on grey: the selection }
   TabKeys = '  F1 help  F2 save  F3 open  F4 new  F5 run  F9 compile';
   Hint1 = ' ^Z undo  ^F find  ^G next  ^L go to line  ^X cut  ^C copy  ^V paste  ^B break';
   Hint2 = ' F6 drive  F7 .MER  F8 dir  ^R run .MER  ^F7 trace  ^W watch  ^K colours';
@@ -123,6 +124,11 @@ var
   uJoin: byte;                       { the key being handled: 1 typing, 2 Backspace, 3 Delete, 4 ^X, 0 other }
   undoing: boolean;                  { ^Z is at work: nothing is logged }
   uFresh: boolean;                   { the next record starts a group whatever uJoin says }
+  uKeep: boolean;                    { the next record belongs to the group of the last one }
+  selA: longint;                     { the selection runs from here to the cursor; -1 none }
+  dragAnchor: longint;               { where the mouse button went down; -1 none }
+  clipChars: boolean;                { the clipboard holds a selection, not whole lines }
+  mvLine: integer;                   { the cursor's line before a cursor key (MoveFrom) }
 
 { ------------------------------------------------------------- text }
 function TC(p: longint): char;
@@ -160,6 +166,7 @@ procedure TextChanged(p: longint);
 begin
   if p < ckValid then ckValid := p;
   rowsValid := false;
+  if selA >= 0 then begin selA := -1; redrawAll := true; end;
   if dbgActive then begin dbgActive := false; msg := 'Program reset: the text changed.'; end;
 end;
 
@@ -238,6 +245,9 @@ begin
       exit;
     end;
   end;
+  { typing over a selection: the deleted selection and the new text are one }
+  if uKeep and (uTop > 0) then newGroup := false;
+  uKeep := false;
   if newGroup then uGroup := uGroup + 1;
   size := 10;
   if kind = 2 then size := 10 + n;
@@ -283,6 +293,62 @@ begin
   len := len - n;
   TextChanged(p);
   modified := true;
+end;
+
+{ ------------------------------------------------------------- selection }
+function HasSel: boolean;
+begin
+  HasSel := (selA >= 0) and (selA <> cur);
+end;
+
+{ the selection as a <= b }
+procedure SelRange(var a, b: longint);
+begin
+  if selA < cur then begin a := selA; b := cur; end else begin a := cur; b := selA; end;
+end;
+
+procedure ClearSel;
+begin
+  if selA < 0 then exit;
+  { a selection over more lines than the cursor's: draw them all anew }
+  if (selA < LineStart(cur)) or (selA > LineEnd(cur)) then redrawAll := true;
+  selA := -1;
+end;
+
+function ShiftHeld: boolean; forward;
+
+{ the selected text goes; the cursor is where it began. One edit for ^Z;
+  the caller sets uKeep when what it types or pastes belongs to it }
+procedure DeleteSel;
+var a, b, q: longint;
+    j: byte;
+begin
+  SelRange(a, b);
+  for q := a to cur - 1 do if Mem[TB + q] = 10 then curLine := curLine - 1;
+  j := uJoin;
+  uJoin := 0;
+  DeleteChars(a, b - a);
+  uJoin := j;
+  cur := a;
+  wantCol := ColOf(cur);
+  selA := -1;
+  redrawAll := true;
+end;
+
+{ a cursor key with or without Shift: start/extend or end the selection
+  (MoveFrom before the move, MoveTo after it) }
+procedure MoveFrom;
+begin
+  if ShiftHeld then begin
+    if selA < 0 then selA := cur;
+  end else ClearSel;
+  mvLine := curLine;
+end;
+
+procedure MoveTo;
+begin
+  if selA = cur then selA := -1;
+  if abs(curLine - mvLine) > 1 then redrawAll := true;
 end;
 
 { ------------------------------------------------------------- screen }
@@ -570,6 +636,24 @@ begin
   for c := 0 to Cols - 1 do Scr[o + c] := (Scr[o + c] and $FF) or (a shl 8);
 end;
 
+{ the selected part of the line p..e (with its line end) in aSel }
+procedure MarkSel(row: integer; p, e: longint);
+var a, b, q: longint;
+    c: integer;
+    o: word;
+begin
+  if not HasSel then exit;
+  SelRange(a, b);
+  if a < p then a := p;
+  if b > e + 1 then b := e + 1;
+  if a >= b then exit;
+  o := (row - 1) * Cols;
+  for q := a to b - 1 do begin
+    c := q - p - left;
+    if (c >= 0) and (c < Cols) then Scr[o + c] := (Scr[o + c] and $FF) or (aSel shl 8);
+  end;
+end;
+
 function DrawLine(row: integer; p: longint; st: byte): byte;
 { draw the text line starting at p on screen row (TT..); st is the state at
   p, the result the state at the start of the next line }
@@ -598,6 +682,7 @@ begin
     DrawRow($0400 + (row - 1) * Cols * 2, p + left, n, @plainAttr[0], (word(aText) shl 8) or 32);
   if not colours then st := stNormal;
   MarkRow(row);
+  MarkSel(row, p, e);
   DrawLine := st;
 end;
 
@@ -908,6 +993,7 @@ procedure GoToLine(n: integer; col: integer);
 var p: longint;
     l: integer;
 begin
+  ClearSel;
   p := 0; l := 1;
   while (l < n) and (p < len) do begin
     if Mem[TB + p] = 10 then l := l + 1;
@@ -1471,6 +1557,7 @@ begin
   L('^F find  ^G find next  ^L go to line  ^Y delete line  ^K colours on/off');
   L('As in EDIT: ^S save  ^O open  ^N new text  ^X cut line  ^C copy line  ^V paste');
   L('^Z undo the last edit; ^Z again: the edit before it, and so on');
+  L('Shift+cursor keys or a mouse drag select (^A: all); ^X ^C ^V, typing, Del');
   L('^T target 65C816 / SCHUB (or {$SCHUB} at the top)  ^R run a .MER file');
   L('^Home/^End start/end of the text, PgUp PgDn Home End, Tab: two spaces');
   L('Mouse: a click places the cursor, the wheel scrolls; click the F-keys on top');
@@ -1512,21 +1599,48 @@ begin
       if UpCase(TC(p + i)) <> findText[i + 1] then ok := false;
       i := i + 1;
     end;
-    if ok then begin JumpTo(p); msg := ''; exit; end;
+    if ok then begin
+      { found: selected, so that typing replaces it }
+      ClearSel;
+      JumpTo(p);
+      selA := p + n;
+      redrawAll := true;
+      msg := '';
+      exit;
+    end;
     p := p + 1;
   end;
   msg := 'Not found: ' + findText;
 end;
 
 { ^X / ^C: the cursor's line to the clipboard; cuts in a row collect }
+procedure CopySel(cut: boolean);
+var a, b: longint;
+begin
+  SelRange(a, b);
+  if b - a > ClipMax then begin msg := 'Too much for the clipboard'; exit; end;
+  CopyMem(TB + a, ClipBase, b - a);
+  BlitWait;
+  clipLen := b - a;
+  clipChars := true;
+  clipRun := false;
+  if cut then begin
+    DeleteSel;
+    msg := 'Cut: ^V pastes it';
+  end else msg := 'Copied: ^V pastes it';
+end;
+
 procedure CopyLine(cut: boolean);
 var ls, le, n: longint;
 begin
+  { a selection: that, not the line }
+  if HasSel then begin CopySel(cut); exit; end;
   ls := LineStart(cur);
   le := LineEnd(cur);
   if le < len then le := le + 1;
   n := le - ls;
   if not (cut and clipRun) then clipLen := 0;
+  clipChars := false;
   if clipLen + n + 1 > ClipMax then begin msg := 'Clipboard full'; exit; end;
   if n > 0 then CopyMem(TB + ls, ClipBase + clipLen, n);
   clipLen := clipLen + n;
@@ -1555,8 +1669,12 @@ begin
   clipRun := false;
   if clipLen = 0 then begin msg := 'Clipboard empty: ^X cuts a line, ^C copies it'; exit; end;
   if len + clipLen > MaxText then begin msg := 'The text is full'; exit; end;
-  cur := LineStart(cur);
+  { over a selection: it goes, and the paste is the same edit for ^Z }
+  if HasSel then begin DeleteSel; uKeep := true; end;
+  { whole lines go in front of the cursor's line, a selection at the cursor }
+  if not clipChars then cur := LineStart(cur);
   UndoLog(1, cur, clipLen);
+  uKeep := false;
   if len > cur then Blit(TB + len - 1, TB + len - 1 + clipLen, len - cur, 1, 0, 0, bmCopy + bmBackwards, 0);
   BlitWait;
   CopyMem(ClipBase, TB + cur, clipLen);
@@ -1564,7 +1682,7 @@ begin
   len := len + clipLen;
   cur := cur + clipLen;
   curLine := CountLines(cur);
-  wantCol := 0;
+  wantCol := ColOf(cur);
   modified := true;
   redrawAll := true;
   msg := '';
@@ -1656,6 +1774,11 @@ begin
   end else if not now then Mem[KeyWas + sc] := 0;
 end;
 
+function ShiftHeld: boolean;
+begin
+  ShiftHeld := Held(scShift) or Held(scRShift);
+end;
+
 function Ctrl: boolean;
 begin
   Ctrl := Held($14) or Held($94);
@@ -1733,10 +1856,12 @@ begin
   if Pressed($0A) then FKey(8);
   if Pressed($01) then FKey(9);
   if Pressed($09) then FKey(10);
-  if Pressed($80 + $7D) then for i := 1 to Rows - 1 do CurUp;      { PgUp }
-  if Pressed($80 + $7A) then for i := 1 to Rows - 1 do CurDown;    { PgDn }
+  if Pressed($80 + $7D) then begin MoveFrom; for i := 1 to Rows - 1 do CurUp; MoveTo; end;     { PgUp }
+  if Pressed($80 + $7A) then begin MoveFrom; for i := 1 to Rows - 1 do CurDown; MoveTo; end;   { PgDn }
   if Pressed($80 + $69) then begin                                  { End }
+    MoveFrom;
     if Ctrl then JumpTo(len) else begin cur := LineEnd(cur); wantCol := ColOf(cur); end;
+    MoveTo;
   end;
   if Ctrl then begin
     if Pressed(scY) then begin clipRun := false; DeleteLine; end;
@@ -1772,7 +1897,12 @@ begin
       if colours then msg := 'Colours on' else msg := 'Colours off';
       redrawAll := true;
     end;
-    if Pressed($80 + $6C) then JumpTo(0);                             { Ctrl+Home }
+    if Pressed($80 + $6C) then begin MoveFrom; JumpTo(0); MoveTo; end;   { Ctrl+Home }
+    if Pressed(scA) then begin                                     { Ctrl+A: all }
+      JumpTo(len);
+      if len > 0 then selA := 0;
+      redrawAll := true;
+    end;
   end;
 end;
 
@@ -1863,10 +1993,21 @@ begin
         if Copy(msg, 1, 11) = 'Error line ' then GoToLine(ErrLine, ErrCol)
         else if rtLine > 0 then GoToLine(rtLine, 1);
       end
-      else if (row >= TT) and (row <= Rows + TT - 1) then PlaceCursor(row, col);
+      else if (row >= TT) and (row <= Rows + TT - 1) then begin
+        ClearSel;
+        PlaceCursor(row, col);
+        dragAnchor := cur;
+      end;
   end
-  else if ((b and 1) <> 0) and (row >= TT) and (row <= Rows + TT - 1) and ((x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8)) then
-    PlaceCursor(row, col);                       { dragged: the cursor follows }
+  else if ((b and 1) <> 0) and (row >= TT) and (row <= Rows + TT - 1) and ((x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8)) then begin
+    { dragged: the cursor follows and selects from where the button went down }
+    if dragAnchor < 0 then dragAnchor := cur;
+    mvLine := curLine;
+    PlaceCursor(row, col);
+    selA := dragAnchor;
+    MoveTo;
+  end;
+  if (b and 1) = 0 then dragAnchor := -1;
   if (x div 8 <> lastMX div 8) or (y div 8 <> lastMY div 8) then ptrMoved := true;
   lastMX := x; lastMY := y; lastButtons := MouseButtons; lastWheel := w;
 end;
@@ -1884,25 +2025,41 @@ procedure TypedKey(k: char);
 begin
   clipRun := false;
   if (k = #8) or (k = #127) or (k = #9) or (k >= ' ') then NoteEdit;
+  { an edit after ^Z: what ^Z said no longer holds }
+  if ((k = #8) or (k = #127) or (k = #9) or (k = #13) or (k >= ' ')) and (Copy(msg, 1, 6) = 'Undone') then msg := '';
   { which edits in a row make one for ^Z }
   if k = #8 then uJoin := 2
   else if k = #127 then uJoin := 3
   else if (k = #9) or (k >= ' ') then uJoin := 1
   else uJoin := 0;
-  case k of
-    #13: NewLine;
-    #8: Backspace;
-    #127: DeleteKey;
-    #28: CurRight;
-    #29: CurLeft;
-    #30: CurUp;
-    #31: CurDown;
-    #1: if not Ctrl then begin cur := LineStart(cur); wantCol := 0; end;
-    #9: InsertChars('  ');
-  else
-    if (k >= ' ') and (k <> #127) then InsertChars(k);
+  if (k = #1) or ((k >= #28) and (k <= #31)) then begin
+    { the cursor keys: with Shift they select }
+    MoveFrom;
+    case k of
+      #28: CurRight;
+      #29: CurLeft;
+      #30: CurUp;
+      #31: CurDown;
+      #1: begin cur := LineStart(cur); wantCol := 0; end;
+    end;
+    MoveTo;
+  end else begin
+    { an edit over a selection: it goes first; Backspace and Delete only take it }
+    if HasSel and ((k = #8) or (k = #127) or (k = #13) or (k = #9) or (k >= ' ')) then begin
+      DeleteSel;
+      if (k = #8) or (k = #127) then k := #0 else uKeep := true;
+    end;
+    case k of
+      #13: NewLine;
+      #8: Backspace;
+      #127: DeleteKey;
+      #9: InsertChars('  ');
+    else
+      if (k >= ' ') and (k <> #127) then InsertChars(k);
+    end;
   end;
   uJoin := 0;
+  uKeep := false;
 end;
 
 { ------------------------------------------------------------- main }
@@ -1936,7 +2093,8 @@ begin
   FillMem(DbgBits, 512, 0);
   nWatch := 0; dbgActive := false;
   clipLen := 0; clipRun := false;
-  uTop := 0; uGroup := 0; uJoin := 0; undoing := false; uFresh := false;
+  uTop := 0; uGroup := 0; uJoin := 0; undoing := false; uFresh := false; uKeep := false;
+  selA := -1; dragAnchor := -1; clipChars := false;
   SetDrive(1);
   findText := '';
 {$IFDEF SCHUB}
