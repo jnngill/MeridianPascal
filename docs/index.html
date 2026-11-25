@@ -141,6 +141,7 @@ node compiler/mkcart.js -l         # also a listing, PASCAL.lst</pre>
 <tr><td><code>Ctrl+F</code> <code>Ctrl+G</code> <code>Ctrl+L</code></td><td>find, find next, go to line (as in EDIT; <code>Ctrl+L</code> was <i>find again</i> before 1.7)</td></tr>
 <tr><td><code>Ctrl+X</code> <code>Ctrl+C</code> <code>Ctrl+V</code></td><td>cut the cursor's line (cuts in a row collect), copy it, paste the lines in front of the cursor's line</td></tr>
 <tr><td><code>Ctrl+Y</code></td><td>delete the line</td></tr>
+<tr><td><code>Ctrl+Z</code></td><td>undo the last edit; again, the edit before it, and so on. Typing in a row, Backspace or Delete in a row and cuts in a row are one edit each; a new line, a paste and a deleted line are one each. The editor keeps the last 64&nbsp;000 bytes or so of edits (older ones are dropped); opening a text or starting a new one clears them.</td></tr>
 <tr><td><code>Ctrl+R</code></td><td>run a program file (<code>.MER</code>) from the current drive: one saved with <code>F7</code> or one from the PC compiler, for either target (<code>F3</code> with a name ending in <code>.MER</code> does the same)</td></tr>
 <tr><td><code>Ctrl+T</code></td><td>target: 65C816 or SCHUB (shown in the second line)</td></tr>
 <tr><td><code>Ctrl+K</code></td><td>syntax colours on or off: keywords white, comments green, strings and character codes (<code>#13</code>) yellow, numbers turquoise, directives such as <code>{$SCHUB}</code> orange, names light blue. Comments over several lines are coloured, too.</td></tr>
