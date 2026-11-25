@@ -89,7 +89,7 @@ var
   wantCol: integer;
   modified, quit, redrawAll: boolean;
   fileName: string[16];
-  msg: string;
+  msg: string[80];                  { the screen is 80 wide }
   findText: string[40];
   replText: string[40];              { what ^H puts in }
   primary: string[16];               { an error took the editor into a unit: the program to compile, else '' }
@@ -102,7 +102,7 @@ var
   aText: byte;
   repT: longint;
   lastRow: integer;
-  lastMsg: string;
+  lastMsg: string[80];
   lastCur: longint;
   colours: boolean;                  { syntax colours on (Ctrl+K) }
   asmMode: boolean;                  { the text is assembly: its own colours }
@@ -1668,45 +1668,35 @@ begin
   RunResult(dl, err);
 end;
 
+{ the help screen: the title here, the rest from the cartridge ROM
+  (compiler/helptext.js), which keeps it out of bank 0 }
+function HelpText: longint; external 'helptext';
+
 procedure Help;
-var r: integer;
-procedure L(const s: string);
-begin
-  PutStr(2, r, s, aText, 78);
-  r := r + 1;
-end;
+var r, c: integer;
+    a: longint;
+    o: word;
 begin
   for r := TT to Rows + TT - 1 do PutStr(1, r, '', aText, Cols);
-  r := TT;
 {$IFDEF SCHUB}
-  L('MERIDIAN Pascal - the editor on SCHUB.  Ctrl+F10: the 65C816 editor');
+  PutStr(2, TT, 'MERIDIAN Pascal - the editor on SCHUB.  Ctrl+F10: the 65C816 editor', aText, 78);
 {$ELSE}
-  L('MERIDIAN Pascal - on the MERIDIAN 816');
+  PutStr(2, TT, 'MERIDIAN Pascal - on the MERIDIAN 816', aText, 78);
 {$ENDIF}
-  L('');
-  L('F1  this help          F2  save              F3  open (NAME.MER: run it)');
-  L('F4  new text           F5  compile and run   F6  next drive (1, 2, 3)');
-  L('F7  save as .MER (runs without the cartridge, BRUN in BASIC)');
-  L('F8  directory          F9  compile           F10 back to BASIC');
-  L('^F find  ^G next  ^H replace  ^L go to line  ^Y delete line  ^K colours');
-  L('As in EDIT: ^S save  ^O open  ^N new text  ^X cut line  ^C copy line  ^V paste');
-  L('^Z undo the last edit, again: the one before; Shift+^Z redo');
-  L('Shift+cursor keys or a mouse drag select (^A: all); ^X ^C ^V, typing, Del');
-  L('^T target 65C816 / SCHUB (or {$SCHUB} at the top)  ^R run a .MER file');
-  L('^Home/^End start/end of the text, PgUp PgDn Home End, Tab: two spaces');
-  L('Mouse: a click places the cursor, the wheel scrolls; click the F-keys on top');
-  L('Debug: ^B breakpoint, ^F7 trace from the start, ^W watch a variable.');
-  L('Stopped: F5 go, F7 into, F8 over, F4 to the cursor, ^F2 end.');
-  L('The language is the PC compiler''s: units, nested routines, records, sets,');
-  L('pointers, reals, strings, files, objects, procedural types, open arrays,');
-  L('goto, {$R+} {$Q+} {$I-}, {$DEFINE}/{$IFDEF}, {$I file}. Your own units:');
-  L('USES MYUNIT reads MYUNIT.PAS from the current drive.');
-  L('All library units are built in: Crt Graph Sprites Audio Input Dos Blitter');
-  L('Copper Schub Basic, and System.');
-  L('Assembler: NAME.ASM or ; on top; 65C816 (ends with RTL), .SCHUB: RISC-V.');
-  L('Programs run in 40 columns; Esc in ReadKey or ReadLn ends them. After a');
-  L('crash, reset: the editor offers the unsaved text back.');
-  L('Press a key.');
+  a := HelpText;
+  r := TT + 2;
+  { straight onto the screen (the rows are clear), from column 2 }
+  while (Mem[a] <> 0) and (r <= Rows + TT - 1) do begin
+    o := (r - 1) * Cols + 1;
+    c := 0;
+    while (Mem[a] <> 10) and (Mem[a] <> 0) do begin
+      if c < 78 then Scr[o + c] := Mem[a] or (word(aText) shl 8);
+      c := c + 1;
+      a := a + 1;
+    end;
+    if Mem[a] = 10 then a := a + 1;
+    r := r + 1;
+  end;
   WaitAnyKey;
   redrawAll := true;
 end;
