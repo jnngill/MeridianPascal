@@ -25,7 +25,8 @@ all. See [Start](#start) for the PC side and
 
 - **Compiler**: a Turbo Pascal-style language (units, nested procedures,
   records, sets, pointers, strings, software reals, files, objects with
-  virtual methods, procedural types, open arrays, `goto`) with two native back ends:
+  virtual methods, procedural types, open arrays, `goto`, [`asm` blocks](#asm-blocks))
+  with two native back ends:
   65C816 code, or RISC-V code for SCHUB with a 65C816 host stub. Its output is
   `.MER` files that run on the real machine.
 - **Libraries**: `System`, `Crt`, `Graph` (PINSEL), `Sprites` (KOBOLD),
@@ -62,6 +63,55 @@ all. See [Start](#start) for the PC side and
   scrolls about three times faster, with the same results. The welcome line
   says "on SCHUB"; Ctrl+F10 switches to the 65C816 editor. On a core without
   SCHUB the cartridge starts the 65C816 editor.
+
+## asm blocks
+
+`asm ... end` is a statement of assembly for the CPU the program is compiled
+for, in the syntax of the MERIDIAN assemblers. A routine marked `assembler`
+has an `asm ... end` block as its body. Both compilers, the PC one and the one
+in the cartridge, understand the same blocks.
+
+```pascal
+function SumTo(n: integer): integer;
+var s: integer;
+begin
+  asm
+    stz s           ; locals and parameters: direct page addresses
+    ldx n
+  loop:             ; a label: a name and a colon, anywhere on the line
+    beq done
+    txa
+    clc
+    adc s
+    sta s
+    dex
+    bra loop
+  done:
+  end;
+  SumTo := s;
+end;
+```
+
+- There is one instruction on each line. A comment starts with `;`, and
+  `{ }` comments work too. The block ends at the word `end`.
+- Names of Pascal things stand for these values:
+  - the routine's own local variables and parameters: their place in the frame;
+  - global variables: their address;
+  - integer constants: their value;
+  - the function's name, or `Result`: its result variable.
+
+  A `var` parameter is the place that holds its variable's address. Locals of
+  an outer routine, routines, strings and reals can't be used.
+- **65C816**: D is the frame, so a local is a direct page address (`lda n`,
+  `sta (v)` for a `var` parameter, `lda x+2` for the high word of a
+  longint). A, X and Y are free to use. The data bank must stay 0, the stack
+  must be left as it was, and registers must be back to 16 bits
+  (`rep #$30`) by the end of the block.
+- **SCHUB**: a local is an offset from `s0` (`lw a0, n(s0)`; integers are
+  16 bit: `lh`/`sh`). Parameters take 4 bytes each. a0-a7 and t0-t6 are free
+  to use; s0-s11, sp, gp and tp must keep their values.
+- To write code for both CPUs, use `{$IFDEF SCHUB} ... {$ELSE} ... {$ENDIF}`
+  around the routines (see `tests/cases/23_asm.pas`).
 
 ## Start
 
