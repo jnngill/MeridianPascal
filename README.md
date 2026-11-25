@@ -112,6 +112,9 @@ end;
   to use; s0-s11, sp, gp and tp must keep their values.
 - To write code for both CPUs, use `{$IFDEF SCHUB} ... {$ELSE} ... {$ENDIF}`
   around the routines (see `tests/cases/23_asm.pas`).
+- The debugger treats a block as one statement. Ctrl+B on a line inside a
+  block puts the breakpoint on the block's `asm` line, where the program
+  stops before the block runs; F7 and F8 run the whole block in one step.
 
 ## Start
 
