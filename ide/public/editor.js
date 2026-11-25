@@ -2,7 +2,7 @@
 
 const KW = new Set(('and array asm begin case const div do downto else end file for function goto if ' +
   'implementation in interface label mod nil not of or packed procedure program record repeat set shl shr ' +
-  'string then to type unit until uses var while with xor initialization finalization forward external absolute').split(' '));
+  'string then to type unit until uses var while with xor initialization finalization forward external absolute assembler').split(' '));
 const TYPES = new Set(('integer word byte shortint longint longword cardinal smallint dword char boolean real ' +
   'single pointer ptruint ptrint shortstring true false').split(' '));
 const BUILTIN = new Set(('write writeln read readln inc dec new dispose halt exit break continue str val include ' +
@@ -11,6 +11,49 @@ const BUILTIN = new Set(('write writeln read readln inc dec new dispose halt exi
   'randomize inttostr sin cos arctan exp ln').split(' '));
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// where the asm block starting at i ends: the word END outside ; comments,
+// { } comments, "strings" and 'c' characters (compiler/lexer.js asmBlock)
+function asmEnd(src, i) {
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === ';') { while (i < n && src[i] !== '\n') i++; continue; }
+    if (c === '{') { const e = src.indexOf('}', i + 1); if (e < 0) return n; i = e + 1; continue; }
+    if (c === '(' && src[i + 1] === '*') { const e = src.indexOf('*)', i + 2); if (e < 0) return n; i = e + 2; continue; }
+    if (c === '"') { const e = src.indexOf('"', i + 1); i = e < 0 ? n : e + 1; continue; }
+    if (c === "'" && src[i + 2] === "'") { i += 3; continue; }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < n && /[A-Za-z0-9_]/.test(src[j])) j++;
+      if (src.slice(i, j).toLowerCase() === 'end' && !/[.$%@]/.test(src[i - 1] || '')) return i;
+      i = j; continue;
+    }
+    i++;
+  }
+  return n;
+}
+
+// the text of an asm block: the first word of an instruction (after a label)
+// like a keyword, .directives, numbers, strings, comments
+function highlightAsm(s) {
+  const re = /(;[^\n]*|\{[^}]*\}?|\(\*[\s\S]*?(?:\*\)|$))|("[^"\n]*"?|'[^\n]')|(\$[0-9A-Fa-f]+|%[01]+|0x[0-9A-Fa-f]+|\d+)|(\.?[A-Za-z_][A-Za-z0-9_]*)(:?)|(\n)|([\s\S])/g;
+  let out = '', first = true, m;
+  while ((m = re.exec(s))) {
+    if (m[1]) out += `<span class="t-com">${esc(m[1])}</span>`;
+    else if (m[2]) out += `<span class="t-str">${esc(m[2])}</span>`;
+    else if (m[3]) { out += `<span class="t-num">${m[3]}</span>`; first = false; }
+    else if (m[4]) {
+      if (m[5]) out += m[4] + ':';                                  // a label
+      else if (m[4][0] === '.') out += `<span class="t-dir">${m[4]}</span>`;
+      else if (first) out += `<span class="t-kw">${m[4]}</span>`;
+      else out += m[4];
+      if (!m[5]) first = false;
+    } else if (m[6]) { out += '\n'; first = true; }
+    else out += esc(m[0]);
+  }
+  return out;
+}
 
 export function highlight(src) {
   const re = /(\{\$[^}]*\}|\(\*\$[\s\S]*?\*\))|(\{[^}]*\}?|\(\*[\s\S]*?(?:\*\)|$)|\/\/[^\n]*)|((?:'(?:[^'\n]|'')*'?|#\$?[0-9A-Fa-f]+)+)|(\$[0-9A-Fa-f]+|%[01]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([A-Za-z_][A-Za-z0-9_]*)|([^A-Za-z0-9_\s{('#$%/]+|[\s\S])/g;
@@ -23,7 +66,13 @@ export function highlight(src) {
     else if (m[4]) out += `<span class="t-num">${esc(m[4])}</span>`;
     else if (m[5]) {
       const w = m[5].toLowerCase();
-      if (KW.has(w)) out += `<span class="t-kw">${m[5]}</span>`;
+      if (w === 'asm') {
+        // an asm block: up to the word END (as the compiler's lexer finds it)
+        out += `<span class="t-kw">${m[5]}</span>`;
+        const e = asmEnd(src, re.lastIndex);
+        out += highlightAsm(src.slice(re.lastIndex, e));
+        re.lastIndex = e;
+      } else if (KW.has(w)) out += `<span class="t-kw">${m[5]}</span>`;
       else if (TYPES.has(w)) out += `<span class="t-type">${m[5]}</span>`;
       else if (BUILTIN.has(w)) out += `<span class="t-fn">${m[5]}</span>`;
       else out += m[5];
