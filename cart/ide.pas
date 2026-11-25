@@ -59,6 +59,12 @@ const
     each, written byte by byte: SCHUB faults on unaligned words), the
     deleted bytes, and its size at the end, so the log is read backwards }
   UndoBase = $3E2000;         { after ScrSave's 4803 bytes }
+  { crash protection: what the editor knows about the text (its length,
+    cursor, name, whether it is saved), kept next to the text in expansion
+    RAM, which a reset leaves alone. When a program hangs or crashes and the
+    machine is reset, the editor finds the unsaved text again on its start.
+    'MPTX', length (3 bytes), cursor (3 bytes), unsaved (1), name (17). }
+  RecBase = $3C0F00;
   UndoMax = 64000;
 
 procedure RunUser(entry: longint); external 'runuser';
@@ -293,6 +299,31 @@ begin
   len := len - n;
   TextChanged(p);
   modified := true;
+end;
+
+{ ------------------------------------------------------------- crash protection }
+procedure Put3(a, v: longint);
+begin
+  Mem[a] := v and 255;
+  Mem[a + 1] := (v shr 8) and 255;
+  Mem[a + 2] := (v shr 16) and 255;
+end;
+
+function Get3(a: longint): longint;
+begin
+  Get3 := Mem[a] + Mem[a + 1] * 256 + longint(Mem[a + 2]) * 65536;
+end;
+
+{ the record up to date (after every screen update and before a program runs) }
+procedure SaveRecord;
+var i: integer;
+begin
+  Mem[RecBase] := ord('M'); Mem[RecBase + 1] := ord('P');
+  Mem[RecBase + 2] := ord('T'); Mem[RecBase + 3] := ord('X');
+  Put3(RecBase + 4, len);
+  Put3(RecBase + 7, cur);
+  Mem[RecBase + 10] := ord(modified);
+  for i := 0 to 16 do Mem[RecBase + 16 + i] := ord(fileName[i]);
 end;
 
 { ------------------------------------------------------------- selection }
@@ -969,6 +1000,7 @@ begin
   ShowCursor(true);
   ShowPointer;
   ptrMoved := false;
+  SaveRecord;
 end;
 
 { ------------------------------------------------------------- cursor }
@@ -1218,6 +1250,43 @@ begin
   redrawAll := true;
 end;
 
+{ on start: unsaved text from before a reset? Offer it back }
+function RecoverText: boolean;
+var n, c, i: longint;
+    bad: longint;
+    nm: string[16];
+    q: string;
+begin
+  RecoverText := false;
+  if (Mem[RecBase] <> ord('M')) or (Mem[RecBase + 1] <> ord('P')) or
+     (Mem[RecBase + 2] <> ord('T')) or (Mem[RecBase + 3] <> ord('X')) then exit;
+  n := Get3(RecBase + 4);
+  c := Get3(RecBase + 7);
+  if (Mem[RecBase + 10] <> 1) or (n <= 0) or (n > MaxText) or (Mem[RecBase + 16] > 16) then exit;
+  nm[0] := chr(Mem[RecBase + 16]);
+  for i := 1 to length(nm) do nm[i] := chr(Mem[RecBase + 16 + i]);
+  { a program that ran wild may have written into it: text has no control
+    characters but line ends }
+  bad := 0;
+  for i := 0 to n - 1 do if (Mem[TB + i] < 32) and (Mem[TB + i] <> 10) then bad := bad + 1;
+  if nm = '' then q := 'a new text' else q := nm;
+  q := 'Unsaved text from before the restart: ' + q + ', ' + IntToStr(n) + ' bytes';
+  if bad > 0 then q := q + ', damaged';
+  if not YesNo(q + '. Recover it?') then exit;
+  len := n;
+  if (c < 0) or (c > len) then c := 0;
+  fileName := nm;
+  modified := true;
+  uTop := 0;
+  TextChanged(0);
+  left := 0;
+  JumpTo(c);
+  if bad = 1 then msg := 'Recovered, but 1 byte looks damaged: check it before saving'
+  else if bad > 0 then msg := 'Recovered, but ' + IntToStr(bad) + ' bytes look damaged: check it before saving'
+  else msg := 'Recovered. F2 saves it.';
+  RecoverText := true;
+end;
+
 procedure NewText;
 const T1 = 'program Hello;';
       T2 = 'uses Crt;';
@@ -1321,6 +1390,7 @@ end;
 procedure RunNamed(n: string);
 var r, e, i: integer;
 begin
+  SaveRecord;
   if Pos('.', n) = 0 then n := n + '.MER';
   n := UpperCase(n);
   msg := 'Running ' + n + '...';
@@ -1480,6 +1550,7 @@ procedure StartRun(hooks: boolean; mode: integer);
 var r: integer;
     isA: boolean;
 begin
+  SaveRecord;
   DebugLines := true;
   DebugHooks := hooks;
   if not Compile then exit;
@@ -1506,6 +1577,7 @@ var r, err: integer;
     isA: boolean;
     dl: word;
 begin
+  SaveRecord;
   if dbgActive then begin DbgGo(0); exit; end;
   if AnyBreak then begin StartRun(true, 0); exit; end;
   DebugLines := true;
@@ -1563,7 +1635,6 @@ begin
   L('Mouse: a click places the cursor, the wheel scrolls; click the F-keys on top');
   L('Debug: ^B breakpoint, ^F7 trace from the start, ^W watch a variable.');
   L('Stopped: F5 go, F7 into, F8 over, F4 to the cursor, ^F2 end.');
-  L('');
   L('The language is the PC compiler''s: units, nested routines, records, sets,');
   L('pointers, reals, strings, files, objects, procedural types, open arrays,');
   L('goto, {$R+} {$Q+} {$I-}, {$DEFINE}/{$IFDEF}, {$I file}. Your own units:');
@@ -1571,7 +1642,8 @@ begin
   L('All library units are built in: Crt Graph Sprites Audio Input Dos Blitter');
   L('Copper Schub Basic, and System.');
   L('Assembler: NAME.ASM or ; on top; 65C816 (ends with RTL), .SCHUB: RISC-V.');
-  L('Programs run in 40 columns; Esc in ReadKey or ReadLn ends them.');
+  L('Programs run in 40 columns; Esc in ReadKey or ReadLn ends them. After a');
+  L('crash, reset: the editor offers the unsaved text back.');
   L('Press a key.');
   WaitAnyKey;
   redrawAll := true;
@@ -2103,8 +2175,9 @@ begin
   msg := 'Welcome to MERIDIAN Pascal. F1 for help.';
 {$ENDIF}
   if not CartPresent then msg := 'The cartridge directory is missing';
-  NewText;
   DrawTitle;
+  for i := TT to Rows + TT - 1 do PutStr(1, i, '', aText, Cols);
+  if not RecoverText then NewText;
   redrawAll := true;
   quit := false;
   lastRow := 0;
@@ -2127,6 +2200,7 @@ begin
       if redrawAll or (msg <> lastMsg) or (cur <> lastCur) or (scrollBy <> 0) or ptrMoved then Refresh;
     end;
   until quit;
+  Mem[RecBase] := 0;             { left on purpose: nothing to offer back }
   EditorMouse(false);
   ResetDisplay;
   r := KernelMode(40);
