@@ -6,7 +6,10 @@
 // ($FFC1 ...), so the runtime works from any bank (cartridge ROM too).
 
 // runtime variables (near model: in the bss)
-export const RT_VARS = [['rt_t0', 4], ['rt_a', 4], ['rt_b', 4], ['rt_fp', 4], ['rt_v', 4], ['rt_q', 4], ['rt_sign', 2]];
+// rt_t0 .. RT_SCRATCH_END: the work variables an interrupt handler saves; then
+// ExitProc, IntProc, IntStatus and the kernel's interrupt hook before IntProc
+export const RT_VARS = [['rt_t0', 4], ['rt_a', 4], ['rt_b', 4], ['rt_fp', 4], ['rt_v', 4], ['rt_q', 4], ['rt_sign', 2],
+  ['RT_SCRATCH_END', 0], ['rt_exitproc', 2], ['rt_intproc', 2], ['rt_intstat', 2], ['rt_oldhook', 2]];
 // cartridge: fixed block at $2000 that the library init never overwrites
 export const RT_VARS_CART = [['rt_savesp', 2], ['rt_heapbase', 2], ['rt_stp', 2], ['rt_t0', 4], ['rt_a', 4],
   ['rt_b', 4], ['rt_fp', 4], ['rt_v', 4], ['rt_q', 4], ['rt_sign', 2], ['rt_cS', 2], ['rt_cD', 2], ['rt_cR', 4],

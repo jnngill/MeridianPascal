@@ -211,6 +211,8 @@ rt_dbghook
 	rep #$30
 	.al
 	.xl
+	lda @l DBG+24             ; in IntProc (an interrupt): never stop there
+	bne dh_ret
 	lda @l DBG+2
 	and #$00FF
 	beq dh_bp

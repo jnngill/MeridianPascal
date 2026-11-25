@@ -155,6 +155,38 @@ function session(schub) {
   undo();
   t('^Z brings it back', same(text(), STARTER));
 
+  // Tab / Shift+Tab: indent the selected lines, one ^Z each
+  goLine(4); key(0x01);
+  shift(() => key(31, 2));                      // lines 4 and 5 (ends at the start of 6)
+  key(9);
+  t('Tab indents the selected lines by two', same(text(), ['program Hello;', 'uses Crt;', '', '  begin', '    ClrScr;', STARTER[5], 'end.'])
+    && selCols(4) === '0-7' && selCols(6) === '');
+  key(9);
+  t('Tab again: two more, still selected', row(TT - 1 + 3) === '    begin' && row(TT - 1 + 4) === '      ClrScr;' && selCols(4) === '0-9');
+  shift(() => key(9));
+  t('Shift+Tab takes two away', row(TT - 1 + 3) === '  begin' && row(TT - 1 + 4) === '    ClrScr;');
+  undo();
+  t('^Z takes back the Shift+Tab in one step', row(TT - 1 + 3) === '    begin' && row(TT - 1 + 4) === '      ClrScr;');
+  undo(); undo();
+  t('^Z ^Z: as before', same(text(), STARTER));
+  // the empty line 3 is left alone; Shift+Tab where there are no spaces does nothing
+  goLine(2); key(0x01);
+  shift(() => key(31, 2));
+  key(9);
+  t('Tab leaves an empty line empty', row(TT - 1 + 1) === '  uses Crt;' && row(TT - 1 + 2) === '');
+  undo();
+  goLine(1); shift(() => key(9));
+  t('Shift+Tab on a line without spaces changes nothing', same(text(), STARTER));
+  // without a selection: Tab puts in two spaces, Shift+Tab takes the line's indent back
+  goLine(6); key(0x01); key(28, 9);             // after "  WriteLn"
+  shift(() => key(9));
+  t('Shift+Tab without a selection: the line two less, the cursor stays on its character',
+    row(TT - 1 + 5) === "WriteLn('HELLO FROM THE MERIDIAN!');" && /Ln 6 +Col 8/.test(row(1)));
+  key(9);
+  t('Tab without a selection: two spaces at the cursor', row(TT - 1 + 5) === "WriteLn  ('HELLO FROM THE MERIDIAN!');");
+  undo(); undo();
+  t('^Z ^Z: as before', same(text(), STARTER));
+
   // F1: the help screen, its lines from the cartridge ROM (compiler/helptext.js)
   hold(0x05); frames(40);
   const shown = m.screenText().split('\n').slice(TT + 1, TT + 1 + HELP_LINES.length).map(l => l.slice(1).trimEnd());

@@ -144,6 +144,17 @@ export class Front {
     add('mem', { kind: 'memarr', mt: 'u8', type: T.byte });
     add('memw', { kind: 'memarr', mt: 'u16', type: T.word });
     add('meml', { kind: 'memarr', mt: '32', type: T.longint });
+    // ExitProc: a procedure run when the program ends (any way); IntProc: a
+    // procedure run at every interrupt (65C816), IntStatus: the graphics
+    // chip's interrupt status meanwhile. Variables of the runtime.
+    const procT = () => {
+      const ps = { kind: 'proc', name: '(procedural)', params: [], ret: null, level: 1, procType: true };
+      this.layoutParams(ps);
+      return { k: 'proc', params: [], ret: null, sym: ps, size: this.target.ptrSize, name: 'procedure' };
+    };
+    add('exitproc', { kind: 'var', name: 'ExitProc', type: procT(), loc: { k: 'global', label: 'rt_exitproc' } });
+    add('intproc', { kind: 'var', name: 'IntProc', type: procT(), loc: { k: 'global', label: 'rt_intproc' }, intOnly: true });
+    add('intstatus', { kind: 'var', name: 'IntStatus', type: T.byte, loc: { k: 'global', label: 'rt_intstat' }, intOnly: true });
     return s;
   }
 
@@ -158,6 +169,11 @@ export class Front {
     }
     for (let s = this.scope; s; s = s.parent) {
       const sym = s.syms.get(name);
+      if (sym && sym.intOnly) {
+        // IntProc / IntStatus: the program installs its interrupt hook
+        if (this.target.name !== 'm816') this.err(`${sym.name} is for 65C816 programs: SCHUB has no interrupts of its own`);
+        this.usesInt = true;
+      }
       if (sym) return sym;
       for (let u = s.uses.length - 1; u >= 0; u--) {
         const us = s.uses[u].syms.get(name);
@@ -211,6 +227,7 @@ export class Front {
       inits: this.unitInits,
       main: 'PMAIN',
       units: [...this.units.keys()],
+      usesInt: !!this.usesInt,
     };
   }
 
