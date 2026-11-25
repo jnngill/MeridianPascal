@@ -102,6 +102,14 @@ for (const ed of ['65C816', 'SCHUB']) {
     // Ctrl+F7: trace from the first statement; Ctrl+F2 ends it
     m.keyState(0x14, true); hold(0x02); m.keyState(0x14, false); frames(300);
     check(`${what}: Ctrl+F7 stops at the first statement`, msg().startsWith(`Stopped at line ${9 + off}`), msg());
+    // F8 on a for line goes into the loop's body (the loop's end value is on
+    // the stack while the body runs: F8 compares frames, not stack pointers)
+    hold(0x0A); frames(300);
+    check(`${what}: F8 to the for line`, msg().startsWith(`Stopped at line ${10 + off}`), msg());
+    hold(0x0A); frames(300);
+    check(`${what}: F8 on the for line stops in the loop's body`, msg().startsWith(`Stopped at line ${11 + off}`) && /I = 1/.test(watches()), `${msg()}\n${watches()}`);
+    hold(0x0A); frames(300);
+    check(`${what}: F8 again: the body's next round`, msg().startsWith(`Stopped at line ${11 + off}`) && /TOTAL = 1 ; I = 2/.test(watches()), `${msg()}\n${watches()}`);
     ctrl(0x06); frames(30);
     check(`${what}: Ctrl+F2 ends the stopped program`, /Program ended \(Ctrl\+F2\)/.test(msg()) && m.state === 'running', msg());
     hold(0x03);

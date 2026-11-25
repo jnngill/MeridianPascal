@@ -481,7 +481,8 @@ export function genRV(prog, opts = {}) {
 // The debugger hook (in the cartridge's SCHUB library): a statement of an F5
 // build with breakpoints calls it. The state is at $3D:7F00 (see cart.js,
 // DEBUG_ASM): +0 line, +2 mode (0 breakpoints, 1 into, 2 over, 3 to the line
-// at +8), +3 stopped, +4 sp of the last stop; breakpoints in a bitmap at
+// at +8), +3 stopped, +4 s0 (the frame) of the last stop: sp would also
+// count a for loop's end value; breakpoints in a bitmap at
 // $3D:7000 (lines of the program, unit 0). To stop, it keeps the registers
 // and asks the host stub (request 10) to stop SCHUB and return; the stub's
 // entry +2 later starts SCHUB again at .dh_resume.
@@ -496,7 +497,7 @@ rt_dbghook:
 	li t2, 2
 	bne t1, t2, .dh_to
 	lw t2, 4(t0)
-	bgeu sp, t2, .dh_stop
+	bgeu s0, t2, .dh_stop
 	j .dh_bp
 .dh_to:
 	lhu t1, 0(t0)
@@ -534,7 +535,7 @@ rt_dbghook:
 	sw s10, 52(t0)
 	sw s11, 56(t0)
 	li t0, 0x803D7F00
-	sw sp, 4(t0)
+	sw s0, 4(t0)
 	li t1, 1
 	sb t1, 3(t0)
 	li a0, 10
