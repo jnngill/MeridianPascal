@@ -4,14 +4,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, run } from './harness.js';
+import { compile } from '../compiler/compile.js';
+import { cLoaders } from '../compiler/mcc.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dir = path.join(here, '..', 'examples');
 let bad = 0;
-for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.pas')).sort()) {
+for (const f of fs.readdirSync(dir).filter(f => /\.(pas|c)$/.test(f)).sort()) {
   for (const t of ['m816', 'schub']) {
     const src = fs.readFileSync(path.join(dir, f), 'latin1');
-    const r = build(src, t, path.join(dir, f), dir);
+    const r = f.endsWith('.c')
+      ? compile(src, path.join(dir, f), { target: t, lang: 'c', ...cLoaders([dir]) })
+      : build(src, t, path.join(dir, f), dir);
     if (!r.ok) { bad++; console.log(`FAIL ${f} [${t}]: ${r.errors[0].msg} ${r.errors[0].file ? path.basename(r.errors[0].file) : ''}@${r.errors[0].line}`); continue; }
     const o = run(r, { frames: 240, keys: '50\r' });
     const err = o.state === 'stopped' || o.m.rv.error;

@@ -37,7 +37,7 @@ if (!fs.existsSync(WORKSPACE)) {
   fs.mkdirSync(WORKSPACE, { recursive: true });
   const ex = path.join(ROOT, 'examples');
   if (fs.existsSync(ex)) {
-    for (const f of fs.readdirSync(ex)) if (/\.pas$/i.test(f)) fs.copyFileSync(path.join(ex, f), path.join(WORKSPACE, f));
+    for (const f of fs.readdirSync(ex)) if (/\.(pas|c)$/i.test(f)) fs.copyFileSync(path.join(ex, f), path.join(WORKSPACE, f));
   }
   fs.mkdirSync(path.join(WORKSPACE, 'disk'), { recursive: true });
 }
@@ -46,12 +46,13 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.pas': 'text/plain; charset=utf-8', '.bin': 'application/octet-stream',
   '.mer': 'application/octet-stream', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-  '.md': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8', '.c': 'text/plain; charset=utf-8', '.h': 'text/plain; charset=utf-8',
 };
 const STATIC = [
   ['/compiler/', path.join(ROOT, 'compiler')],
   ['/emu/', path.join(ROOT, 'emu')],
   ['/lib/', path.join(ROOT, 'lib')],
+  ['/clib/', path.join(ROOT, 'clib')],
   ['/docs/', path.join(ROOT, 'docs')],
   ['/', path.join(ROOT, 'ide', 'public')],
 ];
@@ -142,17 +143,26 @@ async function api(req, res, url) {
     const add = (dir, prefix) => {
       if (!fs.existsSync(dir)) return;
       for (const f of fs.readdirSync(dir)) {
-        if (!/\.(pas|pp|inc)$/i.test(f)) continue;
+        if (!/\.(pas|pp|inc|c|h)$/i.test(f)) continue;
         const name = f.replace(/\.(pas|pp)$/i, '').toLowerCase();
         const text = fs.readFileSync(path.join(dir, f), 'latin1');
         // a program file must not hide a library unit of the same name
         if (prefix !== 'lib/' && out[name] && /^\s*(\{[^}]*\}\s*|\/\/[^\n]*\n\s*)*program\b/i.test(text)) continue;
-        out[/\.inc$/i.test(f) ? f.toLowerCase() : name] = { text, path: prefix + f };
+        out[/\.(inc|c|h)$/i.test(f) ? f.toLowerCase() : name] = { text, path: prefix + f };
       }
     };
     add(path.join(ROOT, 'lib'), 'lib/');
     const d = q.get('dir');
     add(d ? wsPath(d) : WORKSPACE, (d ? d + '/' : ''));
+    return send(res, 200, out);
+  }
+  // the C library: headers (clib/include) and sources (clib/src)
+  if (route === '/clib' && m === 'GET') {
+    const out = { include: {}, src: {} };
+    for (const k of ['include', 'src']) {
+      const d = path.join(ROOT, 'clib', k);
+      if (fs.existsSync(d)) for (const f of fs.readdirSync(d)) if (/\.[ch]$/i.test(f)) out[k][f] = fs.readFileSync(path.join(d, f), 'latin1');
+    }
     return send(res, 200, out);
   }
   if (route === '/libs' && m === 'GET') {
@@ -161,9 +171,9 @@ async function api(req, res, url) {
   }
   if (route === '/examples' && m === 'GET') {
     const dir = path.join(ROOT, 'examples');
-    return send(res, 200, fs.readdirSync(dir).filter(f => f.endsWith('.pas')).map(f => {
+    return send(res, 200, fs.readdirSync(dir).filter(f => /\.(pas|c)$/.test(f)).map(f => {
       const t = fs.readFileSync(path.join(dir, f), 'latin1');
-      const d = /\{\s*([^}]*)\}/.exec(t);
+      const d = f.endsWith('.c') ? /\/\*\s*([\s\S]*?)\*\//.exec(t) : /\{\s*([^}]*)\}/.exec(t);
       return { name: f, title: d ? d[1].split('\n')[0].trim() : f };
     }));
   }
@@ -173,8 +183,8 @@ async function api(req, res, url) {
     let dst = wsPath(name);
     if (fs.existsSync(dst)) {
       let i = 2;
-      while (fs.existsSync(wsPath(name.replace(/\.pas$/, `_${i}.pas`)))) i++;
-      dst = wsPath(name.replace(/\.pas$/, `_${i}.pas`));
+      while (fs.existsSync(wsPath(name.replace(/\.(pas|c)$/, `_${i}.$1`)))) i++;
+      dst = wsPath(name.replace(/\.(pas|c)$/, `_${i}.$1`));
     }
     fs.copyFileSync(src, dst);
     return send(res, 200, { ok: true, path: path.relative(WORKSPACE, dst).split(path.sep).join('/') });
