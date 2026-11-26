@@ -7,7 +7,7 @@
 
   How it works: BASIC keeps its program and variables in bank 1, which BRUN
   leaves alone. Its pointers to them are in page zero ($87-$94), which BRUN
-  saves in bank $E0 while the program runs and puts back afterwards; this
+  saves in bank $E7 while the program runs and puts back afterwards; this
   unit reads and changes them there. Numbers are converted between BASIC's
   5-byte format and real (BASIC has about 9 digits, real about 7). Arrays:
   one dimension (DIM A(n)), created by BASIC. Works on 65C816 and SCHUB. }
@@ -39,7 +39,7 @@ function  SetBasicArrStr(const name: string; i: integer; const s: string): boole
 implementation
 
 const
-  Saved = $E00000;      { BRUN's copy of page zero }
+  Saved = $E70000;      { BRUN's copy of page zero }
   Bank1 = $010000;      { BASIC program, variables and strings }
   zTXTTAB = $87; zVARTAB = $89; zARYTAB = $8B; zSTREND = $8D;
   zFRETOP = $8F; zFRESPC = $91; zMEMSIZ = $93;

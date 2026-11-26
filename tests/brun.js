@@ -1,4 +1,4 @@
-// BRUN in the system ROM ($FF:4030), called the way MERIDIAN BASIC calls it:
+// BRUN in the system ROM ($FF:402D), called the way MERIDIAN BASIC calls it:
 // emulation mode, data bank 1, name in bank 1, drive as value 0. The program
 // must run, and bank 0 ($2000-$BFFF, BASIC's direct page, page 3) must come
 // back exactly as it was, so BASIC can carry on.
@@ -124,8 +124,8 @@ function brun(name, drive, setup) {
   mem[0x20] = 0xff; mem[0x21] = 0;                     // the kernel's count of memory banks (SDRAM module)
   const keep = Uint8Array.from(mem.subarray(0, 0xc000));
   const layerA = m.read ? m.read(0xc000) : mem[0xc000];
-  // JSL $FF4030 from BASIC: emulation mode, data bank 1
-  m.startProgram(0xff4030);
+  // JSL $FF402D from BASIC: emulation mode, data bank 1
+  m.startProgram(0xff402d);
   const c = m.cpu;
   c.e = 1; c.p = 0x34; c.dbr = 1; c.s = 0x01fc;
   let back = null;                                     // registers at the RTL back to the caller
