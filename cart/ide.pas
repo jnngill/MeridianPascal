@@ -14,7 +14,7 @@
          PgUp PgDn Home End and the cursor keys move }
 program PascalIDE;
 
-uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, NComp, NAsm;
+uses Crt, Graph, Sprites, Audio, Input, Dos, Blitter, Copper, Schub, Basic, Workshop, NComp, NAsm;
 
 const
   RtText = 'RUNTIME ERROR ';  { what rt_error writes }

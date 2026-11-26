@@ -53,7 +53,7 @@ export function runMer(mer, { maxFrames = 20000, keys = null } = {}) {
 }
 
 // boot BASIC, type a program, RUN it; returns frames until READY comes back
-export function runBasic(program, { maxFrames = 20000, keys = null } = {}) {
+export function runBasic(program, { maxFrames = 20000, keys = null, setup = null } = {}) {
   const m = coreMachine();
   m.mem[0x20] = 0xff; m.mem[0x21] = 0;          // memory banks (SDRAM module)
   m.startProgram(BASIC_KALT);
@@ -68,6 +68,7 @@ export function runBasic(program, { maxFrames = 20000, keys = null } = {}) {
   const c = m.cpu; let ready = false;
   const st = m.step816.bind(m);
   m.step816 = () => { if (c.pbr === 0 && c.pc === 0x234b) ready = true; return st(); };
+  if (setup) setup(m);
   type('RUN');
   ready = false;
   m.pushKey(13);

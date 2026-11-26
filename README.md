@@ -32,7 +32,9 @@ all. See [Start](#start) for the PC side and
 - **Libraries**: `System`, `Crt`, `Graph` (PINSEL), `Sprites` (KOBOLD),
   `Audio` (ORGEL), `Input` (PFORTE), `Dos` (TRUHE/DOS), `Blitter` (KRAN),
   `Copper` (LOTSE), `Schub`, `Basic` (read and set the variables of the BASIC
-  program that started the program with `BRUN`).
+  program that started the program with `BRUN`), `Workshop` (the sprites,
+  tiles, maps, sounds, look and font made in BASIC's workshop: load them from
+  a `.BAS` file and use them like `MAP`, `TILE`, `SFX` and `LOOK`).
 - **IDE**: runs in the browser and is served by a local Node.js server with no
   dependencies. It has a code editor, build, error navigation, assembly and
   listing views, a built-in MERIDIAN emulator, and *Send to MiSTer*.

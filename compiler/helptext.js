@@ -26,7 +26,7 @@ export const HELP_LINES = [
   'goto, {$R+} {$Q+} {$I-}, {$DEFINE}/{$IFDEF}, {$I file}. Your own units:',
   'USES MYUNIT reads MYUNIT.PAS from the current drive. ExitProc; IntProc (816).',
   'All library units are built in: Crt Graph Sprites Audio Input Dos Blitter',
-  'Copper Schub Basic, and System.',
+  'Copper Schub Basic Workshop, and System.',
   'Assembler: NAME.ASM or ; on top; 65C816 (ends with RTL), .SCHUB: RISC-V.',
   'In Pascal: asm ... end; locals, parameters, globals, constants by name.',
   'Programs run in 40 columns; Esc in ReadKey or ReadLn ends them. After a',

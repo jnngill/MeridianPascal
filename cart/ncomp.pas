@@ -6767,7 +6767,7 @@ end;
 function BuiltinUnit(const n: TName): boolean;
 begin
   BuiltinUnit := (n = 'system') or (n = 'crt') or (n = 'graph') or (n = 'sprites') or (n = 'audio') or
-    (n = 'input') or (n = 'dos') or (n = 'blitter') or (n = 'copper') or (n = 'schub') or (n = 'basic');
+    (n = 'input') or (n = 'dos') or (n = 'blitter') or (n = 'copper') or (n = 'schub') or (n = 'basic') or (n = 'workshop');
 end;
 
 procedure CompileUnit(const n: TName); forward;
