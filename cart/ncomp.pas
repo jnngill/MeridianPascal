@@ -71,6 +71,15 @@ function DebugUnitName(u: integer): string;
   name, name.field, name[n] (a 65C816 program's bank 0 is in bank $34 while
   it is stopped) }
 function DebugValue(const name: string): string;
+{$IFDEF CCART}
+{ C (the C cartridge): the text (srcLen bytes at SrcBase) is a C program
+  (cart/ccomp.inc); name is its file's name (for __FILE__) }
+function CompileC(srcLen: longint; const name: string): boolean;
+{ the file is C (NAME.C) }
+function IsCText(const fileName: string): boolean;
+{ the C text starts with #pragma schub: compiled for SCHUB }
+function CSchubPragma(n: longint): boolean;
+{$ENDIF}
 
 implementation
 
@@ -7367,5 +7376,10 @@ begin
   CopyMem(DataImg, RvData, DataSize);
   MemL[RvHeapVar] := (RvData + DataSize + 7) and not longint(7);
 end;
+
+{ ================================================================ C }
+{$IFDEF CCART}
+{$I ccomp.inc}
+{$ENDIF}
 
 end.

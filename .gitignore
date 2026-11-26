@@ -4,6 +4,8 @@ ide/config.json
 projects/
 # build output
 PASCAL.MOD
+C.MOD
+C.DSK
 *.lst
 *.mer
 node_modules/

@@ -189,6 +189,7 @@ export function genRV(prog, opts = {}) {
           break;
         }
         case 'lit': pushC(ins.v); break;
+        case 'faddr': { const r = pushR(); B(`la ${r}, ${ins.g}`); break; }
         case 'gaddr': {
           if (typeof ins.g === 'number') pushC(ins.g + ins.off);
           else { const r = pushR(); B(`la ${r}, ${ins.g}${ins.off ? '+' + ins.off : ''}`); }

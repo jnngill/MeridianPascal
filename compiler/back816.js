@@ -763,6 +763,14 @@ export function gen816(prog, opts = {}) {
           vs.push({ cls: 'W', k: 'const', v });
           break;
         }
+        case 'faddr': {
+          // a routine's address as 32 bits (C function pointers in the far code model)
+          free();
+          E(`ldx #(${ins.g}) >> 16`);
+          E(`lda #(${ins.g}) & $ffff`);
+          pushReg('L');
+          break;
+        }
         case 'laddr': {
           free();
           if (ins.hops === 0) {
@@ -1076,12 +1084,23 @@ export function gen816(prog, opts = {}) {
         }
         case 'calli': {
           // a procedural variable: the address is on top (the arguments are out)
-          if (J !== 'jsr') throw new Error('procedural calls are not supported in the far code model');
+          if (J !== 'jsr') {
+            // far code model: a 24-bit address (C function pointers, 32 bit)
+            if (top().cls !== 'L') throw new Error('procedural calls need 32-bit addresses in the far code model');
+            popA();
+            spill();
+            E('sta @w rt_t0');
+            E('stx @w rt_t0+2');
+            E('phk');
+            E('per *+5');
+            E('jml [rt_t0]');
+          } else {
           popA();
           spill();
           E('sta @w rt_t0');
           E('ldx #0');
           E('jsr (rt_t0,x)');
+          }
           const n = ins.args;
           if (n) {
             if (n <= 8) for (let k = 0; k < n; k += 2) E('ply');

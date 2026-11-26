@@ -1,0 +1,60 @@
+syntax error
+expected
+undeclared:
+too many macros
+wrong number of arguments for macro
+macros or files nested too deep
+file not found:
+includes nested too deep
+#if nested too deep
+#else or #elif without #if
+#endif without #if
+#endif missing
+#error
+unknown directive #
+string not closed
+bad character constant
+bad character
+bad number
+constant expected
+type expected
+conflicting type specifiers
+declaration expected
+declared twice:
+incomplete type
+no member
+struct or union expected
+bit-fields are not supported
+variable expected
+scalar value expected
+pointer expected
+not a function
+wrong number of arguments
+void value used
+incompatible types
+division by zero
+break outside a loop or switch
+continue outside a loop
+case outside a switch
+default twice
+too many cases
+undefined label:
+label defined twice:
+nested too deep
+define the function before taking its address:
+undefined function:
+the program has no main function
+bad initializer
+initializer is not constant
+too many initializers
+too many parameters
+a function must end in the file it starts in
+string too long (255 characters at most)
+unknown Pascal unit:
+not supported here:
+bad array size
+bad storage class
+too many labels
+bad #define
+too many tokens
+header not found (is the C disk C.DSK in a drive?):
