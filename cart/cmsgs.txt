@@ -57,3 +57,4 @@ bad storage class
 too many labels
 bad #define
 too many tokens
+header not found (is the C disk C.DSK in a drive?):

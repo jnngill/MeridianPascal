@@ -40,7 +40,8 @@ const
   ceDupLabel = 42; ceNested = 43; ceFuncAddr = 44; ceUndefFunc = 45; ceNoMain = 46; ceInit = 47;
   ceInitConst = 48; ceTooMany = 49; ceParams = 50; ceFrame = 51; ceStrLong = 52; ceUnit = 53;
   ceNotHere = 54; ceArrSize = 55; ceStorage = 56; ceLabels = 57; ceMacroDef = 58; ceTokens = 59;
-  ceLast = 59;        { then the tokens' spellings (101..147) }
+  ceNoHeader = 60;
+  ceLast = 60;        { then the tokens' spellings (101..147) }
 
   { symbol kinds of C (skConst, skVar, skType, skField as for Pascal) }
   skTag = 8;          { struct / union / enum tag: typ }
@@ -700,29 +701,42 @@ begin
   end;
 end;
 
+{ a file from drive d, loaded after the program and its other files }
+function CLoadFrom(d: integer; const n: string; var at, len: longint): boolean;
+var old: integer;
+begin
+  CLoadFrom := false;
+  if unitTop >= $2F0000 then CErr(ceInclude, n);
+  old := CurrentDrive;
+  SetDrive(d);
+  len := LoadFile(CUpName(n), unitTop, $300000 - unitTop);
+  SetDrive(old);
+  if len < 0 then exit;
+  at := unitTop;
+  unitTop := (unitTop + len + 255) and $FFFF00;
+  CLoadFrom := true;
+end;
+
 procedure CIncludeFile(const n: string; system: boolean);
 var at, len: longint;
-    i: integer;
+    i, d: integer;
     found: boolean;
     u: string[16];
     a: longint;
 begin
   if cFileDepth >= 8 then CErr0(ceIncNest);
-  found := false;
-  if system then found := CRomHeader(n, at, len);
-  if not found then begin
-    { a file on the current drive, loaded after the program and its other files }
-    if unitTop < $2F0000 then begin
-      len := LoadFile(CUpName(n), unitTop, $300000 - unitTop);
-      if len >= 0 then begin
-        found := true;
-        at := unitTop;
-        unitTop := (unitTop + len + 255) and $FFFF00;
-      end;
-    end;
+  { the cartridge's own (the predefined macros), then the current drive,
+    then the others: the headers are on the C disk (C.DSK) }
+  found := CRomHeader(n, at, len);
+  if not found then found := CLoadFrom(CurrentDrive, n, at, len);
+  d := 1;
+  while not found and (d <= 3) do begin
+    if d <> CurrentDrive then found := CLoadFrom(d, n, at, len);
+    d := d + 1;
   end;
-  if not found then found := CRomHeader(n, at, len);
-  if not found then CErr(ceInclude, n);
+  if not found then begin
+    if system then CErr(ceNoHeader, n) else CErr(ceInclude, n);
+  end;
   u := CUpName(n);
   a := CFileNames + longint(cFileDepth) * 16;
   Mem[a] := length(u);

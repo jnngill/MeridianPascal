@@ -22,11 +22,13 @@ export function cartLoader(dirs) {
   };
 }
 
-export function buildCart(file, extraDirs = []) {
+// c: the C cartridge (the C compiler and library)
+export function buildCart(file, extraDirs = [], c = false) {
   return buildCartridge(fs.readFileSync(file, 'latin1'), file, {
     loadUnit: cartLoader([path.dirname(file), ...extraDirs, path.join(root, 'lib')]),
     libUnits: LIB_UNITS,
     listing: true,
+    c,
   });
 }
 

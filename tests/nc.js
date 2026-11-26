@@ -6,21 +6,33 @@ import { fileURLToPath } from 'node:url';
 import { buildCart } from './cart.js';
 import { Meridian } from '../emu/meridian.js';
 import { roms, startPascal816 } from './harness.js';
+import { buildCDisk, readDisk } from '../compiler/mkcdisk.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-let cached = null;
-export function ncCart() {
-  if (cached) return cached;
-  const r = buildCart(path.join(here, 'nctest.pas'), [path.join(here, '..', 'cart')]);
+const cached = [null, null];
+// c: the test cartridge built as the C cartridge
+export function ncCart(c = false) {
+  if (cached[+c]) return cached[+c];
+  const r = buildCart(path.join(here, 'nctest.pas'), [path.join(here, '..', 'cart')], c);
   if (!r.ok) { console.log(r.errors); throw new Error('cartridge build failed'); }
-  cached = r;
+  cached[+c] = r;
   return r;
 }
 
+// the files of the C disk (C.DSK, compiler/mkcdisk.js), read back from its image
+let cdisk = null;
+export function cDiskOnDrive() {
+  if (!cdisk) cdisk = readDisk(buildCDisk());
+  return cdisk;
+}
+
+// a C text (name NAME.C): compiled by the C cartridge, the C disk in drive 1
 export function ncRun(src, { frames = 3000, keys = '', files = {}, name = '' } = {}) {
-  const r = ncCart();
+  const c = /\.C$/i.test(name);
+  const r = ncCart(c);
   const m = new Meridian(roms);
   m.insertCartridge(r.bytes);
+  if (c) for (const [n, b] of cDiskOnDrive()) m.drives[1].set(n, b);
   const b = Buffer.from(src.replace(/\r/g, ''), 'latin1');
   m.mem.set(b, 0x200000);
   const n = b.length;

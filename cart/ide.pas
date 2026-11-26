@@ -476,6 +476,7 @@ begin
   end;
 end;
 
+{$IFDEF CCART}
 function IsCKeyword(const s: string): boolean;
 begin
   case s[1] of
@@ -497,6 +498,7 @@ begin
     IsCKeyword := false;
   end;
 end;
+{$ENDIF}
 
 { colour of the characters in a state (low nibble: text, high: background) }
 function StateAttr(st: byte): byte;
@@ -555,7 +557,9 @@ begin
               if cMode then begin
                 { C keeps the case: only lower-case words are keywords }
                 for n := 1 to i do if Mem[TB + q + n - 1] <> ord(w[n]) then i := 0;
+{$IFDEF CCART}
                 if (i > 0) and IsCKeyword(w) then a := attrKw;
+{$ENDIF}
               end else if IsKeyword(w) then a := attrKw;
             end;
             while q < e do begin
@@ -903,15 +907,27 @@ begin
   IsAsm := IsAsmText(len, fileName);
 end;
 
+{ the text is C: in the C cartridge, every text that is not assembly }
+function IsC: boolean;
+begin
+{$IFDEF CCART}
+  IsC := not IsAsm;
+{$ELSE}
+  IsC := false;
+{$ENDIF}
+end;
+
 function TargetName: string;
 begin
   { what F5/F7 will make: Ctrl+T, or $SCHUB / .schub at the top of the text }
   if IsAsm then begin
     if WantSchub or IsAsmSchub(len) then TargetName := 'SCHUB assembly' else TargetName := '65C816 assembly';
   end
-  else if cMode then begin
+{$IFDEF CCART}
+  else if IsC then begin
     if WantSchub or CSchubPragma(len) then TargetName := 'C SCHUB' else TargetName := 'C 65C816';
   end
+{$ENDIF}
   else if WantSchub or SchubDirective(len) then TargetName := 'SCHUB' else TargetName := '65C816';
 end;
 
@@ -934,7 +950,11 @@ end;
 procedure DrawTitle;
 begin
   PutStr(1, 1, '', aTabs, 1);
+{$IFDEF CCART}
+  PutStr(2, 1, '   C    ', aTabOn, 8);
+{$ELSE}
   PutStr(2, 1, ' PASCAL ', aTabOn, 8);
+{$ENDIF}
   PutStr(10, 1, TabKeys, aTabs, 57);
   PutStr(67, 1, 'F10: to BASIC', aTabs, 14);
 end;
@@ -1148,7 +1168,7 @@ begin
   HidePointer;
   Track;
   if IsAsm <> asmMode then begin asmMode := not asmMode; redrawAll := true; TextChanged(0); end;
-  if IsCText(fileName) <> cMode then begin cMode := not cMode; redrawAll := true; TextChanged(0); end;
+  if IsC <> cMode then begin cMode := not cMode; redrawAll := true; TextChanged(0); end;
   { an edit on a row that is neither the old nor the new cursor row }
   if (editLine <> -1) and (editLine <> curLine) then redrawAll := true;
   if (scrollBy <> 0) and not redrawAll then begin
@@ -1355,7 +1375,11 @@ end;
 { ------------------------------------------------------------- files }
 function WithExt(const n: string): string;
 begin
+{$IFDEF CCART}
+  if Pos('.', n) = 0 then WithExt := UpperCase(n) + '.C' else WithExt := UpperCase(n);
+{$ELSE}
   if Pos('.', n) = 0 then WithExt := UpperCase(n) + '.PAS' else WithExt := UpperCase(n);
+{$ENDIF}
 end;
 
 procedure SaveText;
@@ -1479,12 +1503,21 @@ begin
 end;
 
 procedure NewText;
+{$IFDEF CCART}
+const T1 = '#include <stdio.h>';
+      T2 = '#include <crt.h>';
+      T3 = 'int main(void)';
+      T4 = '{';
+      T5 = '    ClrScr();';
+      T6 = '    printf("HELLO FROM THE MERIDIAN!\n");' + #10 + '    return 0;' + #10 + '}';
+{$ELSE}
 const T1 = 'program Hello;';
       T2 = 'uses Crt;';
       T3 = 'begin';
       T4 = '  ClrScr;';
       T5 = '  WriteLn(''HELLO FROM THE MERIDIAN!'');';
       T6 = 'end.';
+{$ENDIF}
 begin
   len := 0; cur := 0; TextChanged(0);
   InsertChars(T1 + #10 + T2 + #10 + #10 + T3 + #10 + T4 + #10 + T5 + #10 + T6 + #10);
@@ -1568,7 +1601,11 @@ begin
   end else begin
     msg := 'Compiling...';
     DrawStatus;
-    if IsCText(fileName) then ok := CompileC(len, fileName) else ok := CompileSource(len);
+{$IFDEF CCART}
+    ok := CompileC(len, fileName);
+{$ELSE}
+    ok := CompileSource(len);
+{$ENDIF}
     if ok then begin
       msg := 'Compiled: '; AddNum(LinesDone); Add(' lines, '); AddNum(CodeSize); Add(' bytes code, ');
       AddNum(DataSize); Add(' bytes data, '); AddNum((Frames - t) * 10 div 6); Add('0 ms');
@@ -1846,10 +1883,18 @@ var r, c: integer;
     o: word;
 begin
   for r := TT to Rows + TT - 1 do PutStr(1, r, '', aText, Cols);
+{$IFDEF CCART}
+{$IFDEF SCHUB}
+  PutStr(2, TT, 'MERIDIAN C - the editor on SCHUB.  Ctrl+F10: the 65C816 editor', aText, 78);
+{$ELSE}
+  PutStr(2, TT, 'MERIDIAN C - on the MERIDIAN 816. The C disk (C.DSK) has the headers.', aText, 78);
+{$ENDIF}
+{$ELSE}
 {$IFDEF SCHUB}
   PutStr(2, TT, 'MERIDIAN Pascal - the editor on SCHUB.  Ctrl+F10: the 65C816 editor', aText, 78);
 {$ELSE}
   PutStr(2, TT, 'MERIDIAN Pascal - on the MERIDIAN 816', aText, 78);
+{$ENDIF}
 {$ENDIF}
   a := HelpText;
   r := TT + 2;
@@ -2255,8 +2300,11 @@ begin
     if Pressed(scT) then begin
       WantSchub := not WantSchub;
       if WantSchub then msg := 'Target: SCHUB (the RISC-V co-processor)'
-      else if SchubDirective(len) or IsCText(fileName) and CSchubPragma(len) then
-        msg := 'Target: SCHUB (named at the top of the text)'
+{$IFDEF CCART}
+      else if CSchubPragma(len) then msg := 'Target: SCHUB (#pragma schub at the top of the text)'
+{$ELSE}
+      else if SchubDirective(len) then msg := 'Target: SCHUB ($SCHUB at the top of the text)'
+{$ENDIF}
       else msg := 'Target: 65C816';
     end;
     if Pressed(scB) then begin                                     { Ctrl+B: breakpoint }
@@ -2538,10 +2586,18 @@ begin
   selA := -1; dragAnchor := -1; clipChars := false;
   SetDrive(1);
   findText := '';
+{$IFDEF CCART}
+{$IFDEF SCHUB}
+  msg := 'Welcome to MERIDIAN C on SCHUB. F1 for help.';
+{$ELSE}
+  msg := 'Welcome to MERIDIAN C. F1 for help.';
+{$ENDIF}
+{$ELSE}
 {$IFDEF SCHUB}
   msg := 'Welcome to MERIDIAN Pascal on SCHUB. F1 for help.';
 {$ELSE}
   msg := 'Welcome to MERIDIAN Pascal. F1 for help.';
+{$ENDIF}
 {$ENDIF}
   if not CartPresent then msg := 'The cartridge directory is missing';
   DrawTitle;

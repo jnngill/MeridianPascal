@@ -222,7 +222,8 @@ rt_dbgsetvec:
 	.fill 56
 `;
 
-export function buildSchubIde() {
+// opts.c: the editor of the C cartridge (cart/ide.pas with CCART)
+export function buildSchubIde(opts = {}) {
   const dirs = [path.join(root, 'cart'), path.join(root, 'lib')];
   const loadUnit = (name) => {
     for (const d of dirs) {
@@ -232,7 +233,7 @@ export function buildSchubIde() {
     return null;
   };
   const tgt = TARGETS.schub;
-  const front = new Front(tgt, { loadSource: loadUnit, loadInclude: includeNextTo, defines: [...tgt.defines] });
+  const front = new Front(tgt, { loadSource: loadUnit, loadInclude: includeNextTo, defines: [...tgt.defines, ...(opts.c ? ['CCART'] : [])] });
   const main = path.join(root, 'cart', 'ide.pas');
   const prog = front.compileProgram(fs.readFileSync(main, 'latin1'), main);
   const L = IDE_LAYOUT;

@@ -63,13 +63,14 @@ all. See [Start](#start) for the PC side and
   SCHUB with `.schub`), with the same F9/F5/F7 and the syntax of the PC
   assemblers (examples/hello.asm, examples/hellorv.asm; both also show
   the mouse position until a click or Esc).
-  It also compiles C: a NAME.C text goes to the cartridge's own C compiler,
-  with the same F9/F5/F7, Ctrl+T and debugger ([C in the cartridge](#c-in-the-cartridge)).
   On a core with SCHUB the cartridge starts a SCHUB build of the same
   editor, compiler and assembler: it compiles about ten times faster and
   scrolls about three times faster, with the same results. The welcome line
   says "on SCHUB"; Ctrl+F10 switches to the 65C816 editor. On a core without
   SCHUB the cartridge starts the 65C816 editor.
+- **C.MOD and C.DSK**: the same editor as a C cartridge, with a C compiler
+  that runs on the MERIDIAN, and a disk with the C headers, the C library's
+  sources and the C examples ([C in the cartridge](#c-in-the-cartridge)).
 
 ## asm blocks
 
@@ -264,8 +265,8 @@ is 16 bit (`lh`/`sh`).
 (their order is unspecified in C; don't rely on it). There is no 64-bit
 integer type, no `setjmp`/`longjmp`, no variable-length arrays, and old
 (K&R) parameter lists are not accepted. A `__far` pointer cannot point at a
-function. The PASCAL cartridge has a C compiler of its own, for most of
-this ([C in the cartridge](#c-in-the-cartridge)).
+function. The C cartridge compiles most of this on the MERIDIAN itself
+([C in the cartridge](#c-in-the-cartridge)).
 
 Command line:
 
@@ -277,19 +278,41 @@ node compiler/mcc.js main.c util.c -I include -D DEBUG=1
 
 ### C in the cartridge
 
-The PASCAL cartridge compiles C on the MERIDIAN itself: open (F3) or save
-a text as `NAME.C` and F9 compiles it, F5 runs it, F7 saves a standalone
-`.MER`, Ctrl+T (or `#pragma schub` as the first line) makes SCHUB code;
-the status line shows `C 65C816` or `C SCHUB`, and the editor colours C's
-comments, strings and keywords. The compiler (`cart/ccomp.inc` and its
-parts, inside the on-device compiler `cart/ncomp.pas`) writes 65C816 or
-RV32IM code directly, with the data model and calling convention of the PC
-compiler. The C library in the cartridge is `clib/` compiled by the PC
-compiler into the cartridge's library block (for the far code model:
-function pointers are 32 bit there, code addresses being 24 bit), and the
-headers of `clib/include` are in the ROM too; `#include "x.h"` reads a file
-from the current drive. Pascal units work as on the PC, with `#pragma unit`
-(the headers have it).
+C has a cartridge of its own, **C.MOD**, with a disk to go with it,
+**C.DSK**:
+
+```sh
+node compiler/mkcart.js --c      # C.MOD   (or: npm run ccart)
+node compiler/mkcdisk.js         # C.DSK   (or: npm run cdisk)
+```
+
+Copy both to `/media/fat/games/MERIDIAN/`, insert `C.MOD` as the cartridge
+and `C.DSK` under *Drive 1* or *Drive 2* in the OSD. The MERIDIAN starts
+into the same editor as the PASCAL cartridge's (on a core with SCHUB its
+SCHUB build), but for C: every text that is not assembly is C, a new text
+is a C program, F9 compiles, F5 runs (with the debugger), F7 saves a
+standalone `.MER`, Ctrl+T (or `#pragma schub` as the first line) makes
+SCHUB code; the status line shows `C 65C816` or `C SCHUB`, and the editor
+colours C's comments, strings and keywords. NAME.ASM texts are assembly,
+as in the PASCAL cartridge.
+
+C.DSK is an 8 MB FAT16 image like the core's disks. It holds the headers
+of `clib/include`, the sources of the C library (`clib/src`, for reading:
+the library itself is in the cartridge) and the C examples
+(`examples/*.c`, open them with F3, `2:mandel.c` for drive 2). `#include`
+looks on the current drive first, then on drives 1, 2 and 3; without the
+disk the compiler says that a header is missing.
+
+The compiler (`cart/ccomp.inc` and its parts, inside the on-device
+compiler `cart/ncomp.pas` when it is built for the C cartridge) writes
+65C816 or RV32IM code directly, with the data model and calling convention
+of the PC compiler. The C library in the cartridge is `clib/` compiled by
+the PC compiler into the cartridge's library block (for the far code
+model: function pointers are 32 bit there, code addresses being 24 bit).
+Pascal units work as on the PC, with `#pragma unit` (the headers have it).
+A standalone `.MER` made with the C cartridge carries its library; with the
+PASCAL cartridge inserted it says another cartridge is there (and the
+other way round).
 
 It covers the language above except: bit-fields, compound literals, `asm`
 blocks, your own Pascal units, several `.c` files (`#pragma link` of your
@@ -398,7 +421,7 @@ node tests/ncrun.js --schub  # the same programs compiled on the MERIDIAN for SC
 node tests/standalone.js # standalone .MER files saved by the cartridge IDE (65C816 and SCHUB)
 node tests/schubide.js   # the editor on SCHUB: same output as on the 65C816, F5, F7, Ctrl+F10
 node tests/nccrun.js     # C compiled on the MERIDIAN (tests/ccases), --schub for SCHUB, --all for every case
-node tests/cartc.js      # C in the cartridge editor: F3, F5 on both CPUs, an error, F7
+node tests/cartc.js      # C.MOD and C.DSK: the editor, F5 on both CPUs, an error, F7, the SCHUB editor
 ```
 
 ## Layout
@@ -407,7 +430,7 @@ node tests/cartc.js      # C in the cartridge editor: F3, F5 on both CPUs, an er
 |---|---|
 | `compiler/` | lexer, front end (IR), 65C816 and RV32IM back ends, both assemblers, driver, `mpc.js` CLI, cartridge builder (`cart.js`, `mkcart.js`); the C preprocessor (`cpp.js`), C front end (`cfront.js`) and `mcc.js` CLI |
 | `clib/` | the C library: headers (`include/`), sources (`src/`); `mkheaders.js` makes the headers of the units |
-| `cart/` | the on-device IDE (`ide.pas`) and compiler (`ncomp.pas`) of PASCAL.MOD; its C compiler (`ccomp.inc`: `cpre.inc`, `ctype.inc`, `cexpr.inc`, `cstmt.inc`; messages in `cmsgs.txt`) |
+| `cart/` | the on-device IDE (`ide.pas`) and compiler (`ncomp.pas`) of PASCAL.MOD; built with `CCART` they make C.MOD, with the C compiler `ccomp.inc` (`cpre.inc`, `ctype.inc`, `cexpr.inc`, `cstmt.inc`; messages in `cmsgs.txt`) |
 | `lib/` | the units, in Pascal |
 | `emu/` | 65C816 and RV32IM emulators and the MERIDIAN machine model; `emu/rom/` holds the MERIDIAN kernel and system ROMs (GPL-3.0, from the MERIDIAN repository) |
 | `ide/` | `server.js` and the browser IDE in `public/` |

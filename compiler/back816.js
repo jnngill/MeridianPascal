@@ -18,7 +18,7 @@ import { runtime816, RT_VARS, RT_VARS_CART } from './rt816.js';
 import { CompileError } from './lexer.js';
 const hex = (v, n = 4) => '$' + ((v >>> 0) & (n === 2 ? 0xff : n === 4 ? 0xffff : n === 6 ? 0xffffff : 0xffffffff)).toString(16).padStart(n, '0');
 const isNum = (v) => typeof v === 'number';
-const lo16 = (v) => isNum(v) ? hex(v & 0xffff) : `(${v}) & $ffff`;
+const lo16 = (v) => isNum(v) ? hex(v & 0xffff) : `${v}`;
 const hi16 = (v) => isNum(v) ? hex((v >>> 16) & 0xffff) : `(${v})>>16`;
 
 export const M816 = {
@@ -765,9 +765,10 @@ export function gen816(prog, opts = {}) {
         }
         case 'faddr': {
           // a routine's address as 32 bits (C function pointers in the far code model)
-          const t = top();
-          if (t && t.k === 'const') spill();
-          vs.push({ cls: 'L', k: 'const', v: far ? ins.g : `(${ins.g}) & $ffff` });
+          free();
+          E(`ldx #(${ins.g}) >> 16`);
+          E(`lda #(${ins.g}) & $ffff`);
+          pushReg('L');
           break;
         }
         case 'laddr': {

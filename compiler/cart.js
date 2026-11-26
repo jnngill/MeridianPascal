@@ -86,15 +86,14 @@ function buildCLib(target, front, loadC) {
   return { procs, data: cf.data, bss: cf.bss, modules, exports };
 }
 
-// the C headers (clib/include) for the on-device compiler, without their
-// comments. The directory: the count (2 bytes), then 20 bytes an entry:
-// the name (length byte, 12 characters, upper case), the offset of the
-// text from the directory (4 bytes) and its length (3 bytes)
+// the C cartridge's own headers: only the predefined macros (_PREDEF.H);
+// those of clib/include are on the C disk (compiler/mkcdisk.js). The
+// directory: the count (2 bytes), then 20 bytes an entry: the name (length
+// byte, 12 characters, upper case), the offset of the text from the
+// directory (4 bytes) and its length (3 bytes)
 export function cHeaderBlob() {
-  const dir = path.join(CLIB_ROOT, 'include');
-  const files = fs.readdirSync(dir).filter(f => /\.h$/.test(f)).sort();
-  const texts = files.map(f => stripC(fs.readFileSync(path.join(dir, f), 'latin1')));
-  files.push('_predef.h'); texts.push(C_PREDEF);
+  const files = ['_predef.h'];
+  const texts = [C_PREDEF];
   const head = 2 + 20 * files.length;
   const total = head + texts.reduce((a, t) => a + t.length, 0);
   const b = new Uint8Array(total);
@@ -204,8 +203,8 @@ function buildRvLibrary(opts, libUnits) {
   const front = new Front(tgt, { loadSource: opts.loadUnit, loadInclude: opts.loadInclude, defines: [...tgt.defines] });
   const src = `program RVLIB;\nuses ${libUnits.join(', ')};\nbegin\nend.\n`;
   let prog = front.compileProgram(src, 'rvlib.pas');
-  const clib = buildCLib(tgt, front, opts.loadC);
-  prog = { ...prog, procs: [...prog.procs, ...clib.procs], data: [...prog.data, ...clib.data], bss: [...prog.bss, ...clib.bss], inits: [...prog.inits, 'CLIBINIT'] };
+  const clib = opts.c ? buildCLib(tgt, front, opts.loadC) : null;
+  if (clib) prog = { ...prog, procs: [...prog.procs, ...clib.procs], data: [...prog.data, ...clib.data], bss: [...prog.bss, ...clib.bss], inits: [...prog.inits, 'CLIBINIT'] };
   const { asm } = genRV(prog, { userEntry: RVC.CODE, heapVar: RVC.HEAPVAR, stackTop: RVC.STACK, debugHook: true });
   const a = assembleRV(asm, { org: RVC.LIB });
   const end = a.symbols.get('PAS_BSS');
@@ -647,18 +646,18 @@ export function buildCartridge(source, fileName, opts) {
   try {
     const front = new Front(target, {
       loadSource: opts.loadUnit, loadInclude: opts.loadInclude || includeNextTo,
-      defines: [...target.defines, 'CARTRIDGE'],
+      defines: [...target.defines, 'CARTRIDGE', ...(opts.c ? ['CCART'] : [])],
     });
     let prog = front.compileProgram(source, fileName);
     const libModules = new Set(['system', ...(opts.libUnits || [])]);
     for (const u of libModules) if (!front.units.has(u)) throw new CompileError(`the cartridge program must use unit '${u}'`);
     const unitOrder = [...libModules];
-    // the C library joins the library block
+    // the C cartridge (opts.c): the C library joins the library block
     if (!opts.loadC) opts = { ...opts, loadC: cLoaders().loadC };
-    const clib = buildCLib(target, front, opts.loadC);
-    prog = { ...prog, procs: [...prog.procs, ...clib.procs], data: [...prog.data, ...clib.data], bss: [...prog.bss, ...clib.bss] };
+    const clib = opts.c ? buildCLib(target, front, opts.loadC) : null;
+    if (clib) prog = { ...prog, procs: [...prog.procs, ...clib.procs], data: [...prog.data, ...clib.data], bss: [...prog.bss, ...clib.bss] };
     const codeModules = new Set(libModules);
-    for (const m of clib.modules) codeModules.add(m);
+    if (clib) for (const m of clib.modules) codeModules.add(m);
 
     // keep every library routine (programs compiled on the MERIDIAN may call
     // any of them) and what the main program reaches
@@ -678,15 +677,15 @@ export function buildCartridge(source, fileName, opts) {
 
     const libInits = prog.inits.filter(l => libModules.has(l.replace(/^U_|_init$/g, '')));
     const progInits = prog.inits.filter(l => !libInits.includes(l));
-    libInits.push('CLIBINIT');
-    const exp = buildExports(front, libModules, { unitOrder, cExports: clib.exports });
+    if (clib) libInits.push('CLIBINIT');
+    const exp = buildExports(front, libModules, { unitOrder, cExports: clib ? clib.exports : [] });
     const rv = buildRvLibrary(opts, [...libModules].filter(u => u !== 'system'));
     const rvExp = buildExports(rv.front, libModules, {
-      prefix: 'R', rt: RT_EXPORTS_RV, unitOrder, cExports: rv.clib.exports,
+      prefix: 'R', rt: RT_EXPORTS_RV, unitOrder, cExports: rv.clib ? rv.clib.exports : [],
       resolve: (l) => { const v = rv.symbols.get(l); if (v === undefined) throw new CompileError(`SCHUB library: no symbol ${l}`); return v; },
     });
-    const hdr = cHeaderBlob();
-    const rvAsm = `\t.bankfit\nCHEADERS\n${byteLines(hdr.bytes)}\n${cTablesAsm(unitOrder)}${rvExp.asm}\t.bankfit\nRVLIBIMG\n${byteLines(rv.bytes)}\nRVLIBIMG_END\nRVSTUBIMG\n${byteLines(rv.stub)}\nRVSTUBIMG_END\n`;
+    const cAsm = clib ? `\t.bankfit\nCHEADERS\n${byteLines(cHeaderBlob().bytes)}\n${cTablesAsm(unitOrder)}` : '';
+    const rvAsm = `${cAsm}${rvExp.asm}\t.bankfit\nRVLIBIMG\n${byteLines(rv.bytes)}\nRVLIBIMG_END\nRVSTUBIMG\n${byteLines(rv.stub)}\nRVSTUBIMG_END\n`;
     const name = (opts.name || 'PASCAL').toUpperCase().slice(0, 16);
 
     const header = `
@@ -723,11 +722,11 @@ LIBSTAMP
 	.long RVLIBIMG_END-RVLIBIMG
 	.long RVSTUBIMG
 	.word RVSTUBIMG_END-RVSTUBIMG
-; the C headers and tables for the on-device C compiler (cart/ccomp.inc)
+${clib ? `; the C cartridge: the tables of its C compiler (cart/ccomp.inc)
 	.long CHEADERS
 	.long CMSGS
 	.long CKEYWORDS
-	.long CUNITS
+	.long CUNITS` : ''}
 	.al
 	.xl
 ; the library block: $40:0000..LIBCODE_END, stamped from here on
