@@ -86,6 +86,7 @@ function activate(i) {
   const t = curTab();
   $('#welcome').classList.toggle('hidden', !!t);
   if (t) {
+    editor.lang = /\.[ch]$/i.test(t.path) ? 'c' : 'pascal';
     editor.setValue(t.text);
     editor.readOnly = !!t.readOnly;
     if (t.sel) editor.ta.setSelectionRange(t.sel[0], t.sel[1]);
@@ -158,12 +159,12 @@ function renderTree() {
       const d = document.createElement('div');
       d.className = 'item' + (cur && cur.path === n.path ? ' active' : '') + (/\.mer$/i.test(n.name) ? ' mer' : '');
       d.style.setProperty('--d', depth);
-      const ic = n.dir ? (n.open === false ? '&#9656;' : '&#9662;') : /\.pas$/i.test(n.name) ? 'P' : /\.mer$/i.test(n.name) ? 'M' : '&middot;';
+      const ic = n.dir ? (n.open === false ? '&#9656;' : '&#9662;') : /\.pas$/i.test(n.name) ? 'P' : /\.c$/i.test(n.name) ? 'C' : /\.h$/i.test(n.name) ? 'H' : /\.mer$/i.test(n.name) ? 'M' : '&middot;';
       d.innerHTML = `<span class="ic">${ic}</span><span class="nm">${esc(n.name)}</span>${n.dir ? '' : `<span class="sz">${fmtSize(n.size)}</span>`}<span class="x" title="Rename / delete">&#8943;</span>`;
       d.addEventListener('click', (e) => {
         if (e.target.classList.contains('x')) { fileMenu(n); return; }
         if (n.dir) { n.open = n.open === false; renderTree(); return; }
-        if (/\.(pas|pp|inc|txt|md|asm)$/i.test(n.name)) openFile(n.path);
+        if (/\.(pas|pp|inc|txt|md|asm|c|h)$/i.test(n.name)) openFile(n.path);
         else if (/\.mer$/i.test(n.name)) runMerFile(n.path);
       });
       el.appendChild(d);
@@ -195,14 +196,17 @@ async function fileMenu(n) {
 }
 
 async function newFile() {
-  const r = await ask('New file', 'Name of the new file (in the project folder):', 'myprog.pas', ['Program', 'Unit']);
+  const r = await ask('New file', 'Name of the new file (in the project folder):', 'myprog.pas', ['Program', 'Unit', 'C program']);
   if (r === null) return;
   let name = $('#prInput').value.trim();
   if (!name) return;
-  if (!/\.\w+$/.test(name)) name += '.pas';
+  if (r === 'C program') name = name.replace(/\.pas$/i, '.c');
+  if (!/\.\w+$/.test(name)) name += r === 'C program' ? '.c' : '.pas';
   const base = name.split('/').pop().replace(/\.pas$/i, '');
   const ident = base.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[0-9]/, '_$&');
-  const text = r === 'Unit'
+  const text = /\.c$/i.test(name)
+    ? `#include <stdio.h>\n#include <crt.h>\n\nint main(void)\n{\n    ClrScr();\n    printf("Hello, MERIDIAN!\\n");\n    return 0;\n}\n`
+    : r === 'Unit'
     ? `unit ${ident};\n\ninterface\n\nprocedure Hello;\n\nimplementation\n\nprocedure Hello;\nbegin\n  WriteLn('Hello from unit ${ident}');\nend;\n\nend.\n`
     : `program ${ident};\n\nuses Crt;\n\nbegin\n  ClrScr;\n  WriteLn('Hello, MERIDIAN!');\nend.\n`;
   if (state.tree.some(n => n.path === name)) { msg(`${name} already exists`, 'err'); return; }
@@ -269,10 +273,26 @@ async function build({ quiet } = {}) {
   for (const x of state.tabs) {
     if (!x.lib && /\.pas$/i.test(x.path) && dirOf(x.path) === dir) units[x.name.replace(/\.pas$/i, '').toLowerCase()] = { text: x.text, path: x.path };
   }
+  for (const x of state.tabs) {
+    if (!x.lib && /\.[ch]$/i.test(x.path) && dirOf(x.path) === dir) units[x.name.toLowerCase()] = { text: x.text, path: x.path };
+  }
+  const isC = /\.c$/i.test(t.path);
+  if (isC && !state.clib) state.clib = await api('/api/clib');
   const res = compile(t.text, t.path, {
     target,
     loadUnit: (name) => units[name] ? { text: units[name].text, name: units[name].path } : null,
     loadInclude: (fn) => { const u = units[fn.toLowerCase()]; return u ? { text: u.text, name: u.path } : null; },
+    // C: "x.h" and linked .c files from the project folder first, then clib/
+    loadC: (name, from, system) => {
+      const base = name.split('/').pop();
+      const isSrc = /\.c$/i.test(base);
+      const u = units[base.toLowerCase()];
+      if (u && (isSrc || !system)) return { text: u.text, name: u.path };
+      const lib = isSrc ? state.clib.src[base] : state.clib.include[base];
+      if (lib !== undefined) return { text: lib, name: `clib/${isSrc ? 'src' : 'include'}/${base}` };
+      if (u) return { text: u.text, name: u.path };
+      return null;
+    },
   });
   state.lastBuild = { ...res, path: t.path };
   if (!res.ok) {
@@ -285,7 +305,8 @@ async function build({ quiet } = {}) {
     if (e && e.file) gotoError(e);
     return null;
   }
-  const merPath = t.path.replace(/\.(pas|pp)$/i, '') + '.mer';
+  for (const w of res.warnings || []) msg(`${w.file ? `${w.file}(${w.line},${w.col})` : t.path}: warning: ${w.msg}`, 'warn', () => w.file && openFile(w.file, { line: w.line, col: w.col }));
+  const merPath = t.path.replace(/\.(pas|pp|c)$/i, '') + '.mer';
   await fetch(`/api/file?path=${encodeURIComponent(merPath)}`, { method: 'PUT', body: res.mer });
   res.merPath = merPath;
   msg(`OK  ${merPath}: ${res.bytes.length.toLocaleString()} bytes, load ${hex(res.load)}, start ${hex(res.start)}  ·  ${res.procCount.used} of ${res.procCount.total} routines used  ·  units: ${res.units.join(', ')}  ·  ${res.ms} ms`, 'ok');

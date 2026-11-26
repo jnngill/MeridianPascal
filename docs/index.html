@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MERIDIAN Pascal Reference</title>
+<title>MERIDIAN Pascal and C Reference</title>
 <style>
 :root { --bg:#0e1424; --bg2:#141c31; --line:#26324f; --fg:#d6def0; --dim:#8592b0; --accent:#5aa2ff; --mono: "Cascadia Mono", Consolas, monospace; }
 * { box-sizing: border-box; }
@@ -53,6 +53,13 @@ a { color: var(--accent); }
   <a href="#files">Files</a>
   <a href="#units">Units</a>
   <a href="#diff">Differences from Turbo Pascal</a>
+  <a class="h" href="#c">C</a>
+  <a href="#c-lang">The language</a>
+  <a href="#c-types">Types and memory</a>
+  <a href="#c-lib">The C library</a>
+  <a href="#c-units">Library units from C</a>
+  <a href="#c-asm">asm blocks in C</a>
+  <a href="#c-notes">Things to know</a>
   <a class="h" href="#targets">Targets</a>
   <a href="#t816">65C816</a>
   <a href="#tschub">SCHUB (RV32IM)</a>
@@ -329,6 +336,68 @@ end.</pre>
 <li><code>real</code> is IEEE single precision (Turbo Pascal's is 6 bytes).</li>
 <li>Range and overflow checks only with <code>{$R+}</code> and <code>{$Q+}</code> (<a href="#checks">above</a>); division by zero always stops the program with runtime error 200.</li>
 <li><code>Read</code>/<code>ReadLn</code> read from the keyboard only, with a small line editor (Backspace, Return; Esc ends the program).</li>
+</ul>
+
+<h2 id="c">C</h2>
+<p>The same toolchain compiles C. In the IDE, open a <code>.c</code> file (or <b>New</b> &rarr; <b>C program</b>) and press F5: it is built by the C front end and the same back ends as Pascal, for the 65C816 or SCHUB (the <b>Target</b> menu), and runs in the emulator; F8 sends it to the MiSTer. On the command line:</p>
+<pre>node compiler/mcc.js examples/mandel.c               # -&gt; examples/mandel.mer (65C816)
+node compiler/mcc.js examples/mandel.c -t schub -S   # SCHUB, and the assembly
+node compiler/mcc.js main.c util.c -I include -D DEBUG=1 -l</pre>
+<p>Examples: <code>hello.c</code>, <code>primes.c</code>, <code>guess.c</code>, <code>mandel.c</code> (Graph), <code>plasma.c</code> (the bitmap through a <code>__far</code> pointer), <code>balls.c</code> (Sprites and Input).</p>
+
+<h3 id="c-lang">The language</h3>
+<p>C89 with the common C99 parts: <code>//</code> comments, declarations anywhere and in <code>for (int i = 0; ...)</code>, <code>_Bool</code> and <code>&lt;stdbool.h&gt;</code>, designated initializers (<code>{ .x = 1, [3] = 5 }</code>), compound literals (<code>(int[]){ 1, 2 }</code>), <code>inline</code> (accepted, not used), variadic macros, <code>__func__</code>, <code>_Static_assert</code>, <code>typeof</code>, and GNU case ranges (<code>case 1 ... 5:</code>). Structs, unions, bit-fields, enums, <code>typedef</code>, function pointers, structs as arguments and results, <code>static</code> locals, <code>goto</code>, <code>switch</code>. The preprocessor has <code>#include</code>, <code>#define</code> (object and function-like, <code>#</code>, <code>##</code>, <code>__VA_ARGS__</code>), <code>#undef</code>, <code>#if</code>/<code>#ifdef</code>/<code>#ifndef</code>/<code>#elif</code>/<code>#else</code>/<code>#endif</code> with <code>defined</code>, <code>#error</code>, <code>#warning</code>, <code>#pragma once</code>, <code>__FILE__</code> and <code>__LINE__</code>. Predefined: <code>__MERIDIAN__</code>, <code>__M816__</code> and <code>__65C816__</code>, or <code>__SCHUB__</code> and <code>__riscv</code>; <code>__STDC_VERSION__</code> is <code>199901L</code>.</p>
+<p>A program can be several files. A header can say <code>#pragma link "util.c"</code>: the file (next to the one that says it, or in <code>clib/src</code>) is compiled into the program once. <code>mcc</code> also takes several files. Functions and variables that are not <code>static</code> are shared by name; a name used but defined nowhere is an error (<i>undefined reference</i>).</p>
+
+<h3 id="c-types">Types and memory</h3>
+<table>
+<tr><th>Type</th><th>Size</th><th></th></tr>
+<tr><td><code>char</code></td><td>1</td><td>unsigned (<code>signed char</code> for -128..127)</td></tr>
+<tr><td><code>short</code>, <code>int</code></td><td>2</td><td>-32768..32767 (<code>unsigned</code>: 0..65535)</td></tr>
+<tr><td><code>long</code>, <code>long long</code></td><td>4</td><td>32 bit</td></tr>
+<tr><td><code>float</code>, <code>double</code>, <code>long double</code></td><td>4</td><td>the IEEE single precision reals of the runtime (as Pascal's <code>real</code>)</td></tr>
+<tr><td>pointers</td><td>2 / 4</td><td>16 bit into bank 0 on the 65C816, 32 bit on SCHUB</td></tr>
+<tr><td><code>__far</code> pointers</td><td>4</td><td>any address, on both targets</td></tr>
+</table>
+<p>On SCHUB, struct members are aligned to their size (as the hardware needs); on the 65C816 they are packed. <code>size_t</code> is <code>unsigned int</code> on the 65C816 and <code>unsigned long</code> on SCHUB.</p>
+<p>A pointer declared <code>__far</code> (<code>unsigned char __far *p</code>) holds a 24-bit address and reaches all of memory: chip RAM, expansion RAM, the chips' registers. On SCHUB it goes through the uncached alias, as access to the chips must. A near pointer converts to a <code>__far</code> one (<code>FARPTR(p)</code>); pointer arithmetic and indexing work as usual. <code>&lt;meridian.h&gt;</code> has <code>PEEK(a)</code>, <code>POKE(a, v)</code> and the 16 and 32-bit <code>PEEKW POKEW PEEKL POKEL</code>, all lvalues on <code>__far</code> pointers:</p>
+<pre>#include &lt;meridian.h&gt;
+unsigned char __far *vram = (unsigned char __far *)0x020000L;   /* the Graph bitmap */
+vram[320 * y + x] = colour;
+POKE(0xC00B, 1);                                                /* frame interrupt on */</pre>
+
+<h3 id="c-lib">The C library</h3>
+<p>In <code>clib/</code>, compiled with the program (only what is used ends up in it):</p>
+<ul>
+<li><code>&lt;stdio.h&gt;</code>: <code>printf</code>, <code>sprintf</code>, <code>snprintf</code>, <code>fprintf</code> and the <code>v</code> forms with <code>%d %i %u %x %X %o %b %c %s %p %f %e %g %n %%</code>, flags <code>- + space 0 #</code>, width, precision, <code>*</code> and <code>l h z</code>; <code>scanf</code>, <code>sscanf</code>, <code>fscanf</code> (<code>%d %u %x %o %f %s %c %[...] %n</code>); <code>putchar puts getchar gets fgets fputs fgetc fputc ungetc</code>; <code>fopen fclose fread fwrite fseek ftell rewind feof ferror fflush remove rename perror</code>. <code>stdout</code> is the screen (through the kernel, like <code>Write</code>), <code>stdin</code> the keyboard a line at a time (like <code>ReadLn</code>). Files are those of the System unit (up to 64 KB, on the drive given by a name like <code>"1:DATA.TXT"</code>, the current drive otherwise); bytes are read and written as they are (<code>'\n'</code> is 10).</li>
+<li><code>&lt;stdlib.h&gt;</code>: <code>malloc calloc realloc free</code> (the System heap; <code>NULL</code> when it is full), <code>exit atexit abort</code>, <code>atoi atol atof strtol strtoul strtod</code>, <code>abs labs div ldiv</code>, <code>rand srand</code> (<code>RAND_MAX</code> 32767), <code>qsort bsearch</code>, <code>itoa ltoa</code>.</li>
+<li><code>&lt;string.h&gt;</code>, <code>&lt;ctype.h&gt;</code>, <code>&lt;math.h&gt;</code> (<code>sin cos tan asin acos atan atan2 sinh cosh tanh exp log log10 log2 pow sqrt cbrt hypot floor ceil trunc round fabs fmod modf frexp ldexp fmin fmax isnan isinf</code>, and the <code>f</code> names), <code>&lt;time.h&gt;</code> (<code>clock()</code> counts frames, <code>CLOCKS_PER_SEC</code> is 60; <code>time()</code> reads the real-time clock; <code>mktime gmtime localtime asctime ctime strftime</code>), <code>&lt;stdarg.h&gt;</code>, <code>&lt;stdint.h&gt;</code>, <code>&lt;stddef.h&gt;</code>, <code>&lt;limits.h&gt;</code>, <code>&lt;float.h&gt;</code>, <code>&lt;assert.h&gt;</code>, <code>&lt;errno.h&gt;</code>, <code>&lt;stdbool.h&gt;</code>.</li>
+</ul>
+<p><code>main</code> may be <code>int main(void)</code> or <code>int main(int argc, char **argv)</code> (<code>argc</code> is 1). Its result becomes <code>ExitCode</code>. As in Pascal, Esc while the program reads the keyboard (<code>getchar</code>, <code>scanf</code>, <code>ReadKey</code> with <code>CheckBreak</code>) ends it; a long loop can test <code>EscPressed()</code>.</p>
+
+<h3 id="c-units">Library units from C</h3>
+<p><code>&lt;crt.h&gt;</code>, <code>&lt;graph.h&gt;</code>, <code>&lt;sprites.h&gt;</code>, <code>&lt;input.h&gt;</code>, <code>&lt;audio.h&gt;</code>, <code>&lt;dos.h&gt;</code>, <code>&lt;blitter.h&gt;</code>, <code>&lt;copper.h&gt;</code>, <code>&lt;schub.h&gt;</code>, <code>&lt;basic.h&gt;</code> and <code>&lt;workshop.h&gt;</code> make a unit's routines, constants, variables and types visible under their Pascal names, in any case: <code>ClrScr()</code> or <code>clrscr()</code>, <code>TextColor(Yellow)</code>, <code>if (KeyDown(scEsc))</code>. Each header quotes the unit's interface. The System unit is always visible (<code>EscPressed()</code>, <code>Random(10)</code>, <code>KernelMode(80)</code>, <code>IntToStr(n)</code>, <code>MemAvail()</code>, ...). A routine without parameters is called with <code>()</code>. Your own units work the same way: <code>#pragma unit myunit</code> makes <code>myunit.pas</code> next to the program visible.</p>
+<table>
+<tr><th>Pascal</th><th>C</th></tr>
+<tr><td><code>integer</code>, <code>word</code>, <code>byte</code>, <code>shortint</code>, <code>longint</code></td><td><code>int</code>, <code>unsigned</code>, <code>unsigned char</code>, <code>signed char</code>, <code>long</code></td></tr>
+<tr><td><code>real</code>, <code>char</code>, <code>boolean</code></td><td><code>float</code>, <code>char</code>, an <code>int</code> that is 0 or 1</td></tr>
+<tr><td><code>string</code> parameter (value or <code>const</code>)</td><td>a C string: <code>OutTextXY(4, 4, "SCORE", 1)</code></td></tr>
+<tr><td>function result <code>string</code></td><td><code>char *</code>, valid until the calling function returns</td></tr>
+<tr><td><code>var</code> parameter, untyped parameter</td><td>an address: <code>GetTime(&amp;h, &amp;m, &amp;s)</code>, <code>FillChar(buf, 10, 0)</code></td></tr>
+<tr><td>array or record parameter</td><td>the array, or the address of the struct</td></tr>
+<tr><td>record type</td><td>a struct with the same members</td></tr>
+</table>
+<p>Open array parameters cannot be passed from C, and <code>var string</code> parameters take the address of a Pascal string (a length byte, then the characters).</p>
+
+<h3 id="c-asm">asm blocks in C</h3>
+<p><code>asm { ... }</code> is a statement of assembly for the target, exactly as in Pascal (one instruction a line, <code>;</code> comments, labels as <code>name:</code>), with C names: the function's locals and parameters stand for their places in the frame, globals for their addresses, enum constants for their values. On the 65C816, D is the frame (<code>lda n</code>); on SCHUB a local is an offset from <code>s0</code> (<code>lh t1, n(s0)</code>) and every parameter takes 4 bytes. Use <code>#ifdef __SCHUB__</code> to write both (see <code>tests/ccases/15_asm.c</code>). <code>asm("...")</code> with a string works too.</p>
+
+<h3 id="c-notes">Things to know</h3>
+<ul>
+<li>Arguments are evaluated from the last to the first (C leaves the order open): <code>printf("%d %d", f(), f())</code> calls the second <code>f</code> first.</li>
+<li>No 64-bit integers, no <code>setjmp</code>/<code>longjmp</code>, no variable-length arrays, no K&amp;R parameter lists, no wide characters. <code>const</code> and <code>volatile</code> are accepted (every access goes to memory anyway).</li>
+<li>Calling a function that was not declared declares it as <code>int f()</code>, with a warning.</li>
+<li>The C compiler runs on the PC (in the IDE and in <code>mcc</code>); the PASCAL cartridge compiles Pascal.</li>
 </ul>
 
 <h2 id="targets">Targets</h2>

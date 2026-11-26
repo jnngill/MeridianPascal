@@ -23,6 +23,8 @@ all. See [Start](#start) for the PC side and
 
 ## What's in it
 
+- **C compiler**: C89 with the common C99 parts, for the same two targets,
+  with a standard library and access to every library unit ([C](#c)).
 - **Compiler**: a Turbo Pascal-style language (units, nested procedures,
   records, sets, pointers, strings, software reals, files, objects with
   virtual methods, procedural types, open arrays, `goto`, [`asm` blocks](#asm-blocks))
@@ -176,6 +178,101 @@ begin
 - SCHUB has no interrupts of its own: IntProc and IntStatus are for 65C816
   programs; ExitProc works for both.
 
+## C
+
+The same toolchain also compiles **C**: open or create a `.c` file in the IDE
+(*New* → *C program*) and press F5, or use `node compiler/mcc.js`. C programs
+are made by the same back ends as Pascal ones, so they run on the 65C816 or
+on SCHUB, and they can use every library unit.
+
+```c
+#include <stdio.h>
+#include <crt.h>
+#include <graph.h>
+
+int main(void)
+{
+    int i;
+    InitGraph();
+    for (i = 0; i < 200; i++) Line(160, 120, i + 60, 20, i);
+    ReadKey();
+    CloseGraph();
+    printf("%d lines, %.2f seconds\n", i, Frames() / 60.0);
+    return 0;
+}
+```
+
+**The language** is C89 with the common C99 parts: `//` comments,
+declarations anywhere and in `for`, `_Bool`/`<stdbool.h>`, designated
+initializers (`.x = 1`, `[3] = 5`), compound literals, `inline` (ignored),
+variadic macros, `__func__`, `_Static_assert`, and GNU `case 1 ... 5`.
+Structs, unions, bit-fields, enums, typedef, function pointers, struct
+arguments and results, `static` locals, `goto`, `switch`, and the full
+preprocessor (`#include`, `#define` with `#` and `##`, `#if`/`#elif`,
+`#error`, `#pragma once`). Programs can be several files: a header can
+say `#pragma link "other.c"` to bring the file in, or give them all to
+`mcc` (`mcc main.c util.c`).
+
+**Types:** `char` is 8 bit and unsigned, `short` and `int` 16 bit, `long`
+32 bit (`long long` too); `float`, `double` and `long double` are the
+32-bit reals of the runtime. Pointers are 16 bit into bank 0 on the 65C816
+and 32 bit on SCHUB; on SCHUB structs are laid out with natural alignment.
+A pointer declared `__far` is 32 bit on both and reaches all memory (chip
+RAM, expansion RAM, the chips' registers; on SCHUB through the uncached
+alias):
+
+```c
+#include <meridian.h>
+unsigned char __far *vram = (unsigned char __far *)0x020000L;   /* the Graph bitmap */
+vram[320 * y + x] = colour;
+POKE(0xC00B, 1);                 /* PEEK/POKE/PEEKW/POKEW/PEEKL/POKEL: any address */
+```
+
+**The standard library** (`clib/`): `stdio.h` (`printf` and friends with
+`%d %u %x %o %c %s %p %f %e %g`, widths, flags and `*`; `scanf`, `sscanf`;
+files with `fopen`, `fgets`, `fread`, `fseek` ... on the drives, names like
+`"1:DATA.TXT"`), `stdlib.h` (`malloc`/`free` on the System heap, `qsort`,
+`bsearch`, `strtol`, `atof`, `rand`, `exit`, `atexit`), `string.h`,
+`ctype.h`, `math.h`, `time.h` (`clock()` counts frames; `time()` reads the
+real-time clock), `stdarg.h`, `stdint.h`, `stddef.h`, `limits.h`,
+`float.h`, `assert.h`, `errno.h`, `stdbool.h`. `stdout` is the screen,
+`stdin` the keyboard a line at a time.
+
+**The library units from C:** `<crt.h>`, `<graph.h>`, `<sprites.h>`,
+`<input.h>`, `<audio.h>`, `<dos.h>`, `<blitter.h>`, `<copper.h>`,
+`<schub.h>`, `<basic.h>` and `<workshop.h>` make a unit's routines,
+constants, variables and types visible under their Pascal names, in any
+case (`ClrScr()`, `clrscr()`). The System unit is always there
+(`EscPressed()`, `Random(10)`, `KernelMode(80)`, `IntToStr(n)`, ...), and
+`<meridian.h>` adds PEEK/POKE. The types match up: `integer` is `int`,
+`word` `unsigned`, `byte` `unsigned char`, `longint` `long`, `real`
+`float`, `boolean` an int that is 0 or 1. A Pascal `string` parameter takes
+a C string; a function that returns a `string` gives a `char *` (valid
+until the calling function returns); a `var` parameter takes an address
+(`GetTime(&h, &m, &s)`). Your own Pascal units work the same way:
+`#pragma unit myunit` makes `myunit.pas` next to the program visible.
+
+**asm blocks** work as in Pascal, with braces: `asm { ... }` holds one
+instruction a line, and names of the function's locals and parameters,
+globals and enum constants stand for their places and values (see
+`tests/ccases/15_asm.c`). On SCHUB every parameter takes 4 bytes; `int`
+is 16 bit (`lh`/`sh`).
+
+**Things to know:** arguments are evaluated from the last to the first
+(their order is unspecified in C; don't rely on it). There is no 64-bit
+integer type, no `setjmp`/`longjmp`, no variable-length arrays, and old
+(K&R) parameter lists are not accepted. A `__far` pointer cannot point at a
+function. The C compiler runs on the PC (in the IDE and in `mcc`); the
+PASCAL cartridge compiles Pascal only.
+
+Command line:
+
+```sh
+node compiler/mcc.js examples/mandel.c               # -> examples/mandel.mer (65C816)
+node compiler/mcc.js examples/mandel.c -t schub -S   # SCHUB, and the assembly
+node compiler/mcc.js main.c util.c -I include -D DEBUG=1
+```
+
 ## Start
 
 ```sh
@@ -265,6 +362,8 @@ again to save it with the new library.
 
 ```sh
 node tests/run.js        # language and library tests on both targets, in the emulator
+node tests/crun.js       # the same for C (tests/ccases), both targets
+node tests/cerrors.js    # C compile errors: message and line
 node tests/examples.js   # every example, both targets
 node tests/ncrun.js      # the on-device compiler (inside the cartridge, in the emulator)
 node tests/cartide.js    # the cartridge IDE, driven through the keyboard
@@ -277,7 +376,8 @@ node tests/schubide.js   # the editor on SCHUB: same output as on the 65C816, F5
 
 | | |
 |---|---|
-| `compiler/` | lexer, front end (IR), 65C816 and RV32IM back ends, both assemblers, driver, `mpc.js` CLI, cartridge builder (`cart.js`, `mkcart.js`) |
+| `compiler/` | lexer, front end (IR), 65C816 and RV32IM back ends, both assemblers, driver, `mpc.js` CLI, cartridge builder (`cart.js`, `mkcart.js`); the C preprocessor (`cpp.js`), C front end (`cfront.js`) and `mcc.js` CLI |
+| `clib/` | the C library: headers (`include/`), sources (`src/`); `mkheaders.js` makes the headers of the units |
 | `cart/` | the on-device IDE (`ide.pas`) and compiler (`ncomp.pas`) of PASCAL.MOD |
 | `lib/` | the units, in Pascal |
 | `emu/` | 65C816 and RV32IM emulators and the MERIDIAN machine model; `emu/rom/` holds the MERIDIAN kernel and system ROMs (GPL-3.0, from the MERIDIAN repository) |

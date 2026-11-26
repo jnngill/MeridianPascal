@@ -55,6 +55,29 @@ function highlightAsm(s) {
   return out;
 }
 
+// C: keywords, types, preprocessor lines, comments, strings, numbers
+const CKW = new Set(('auto break case const continue default do else enum extern for goto if inline register ' +
+  'restrict return sizeof static struct switch typedef union volatile while asm __asm __far _Static_assert').split(' '));
+const CTYPES = new Set(('void char short int long float double signed unsigned _Bool bool size_t FILE ' +
+  'int8_t uint8_t int16_t uint16_t int32_t uint32_t va_list NULL true false').split(' '));
+export function highlightC(src) {
+  const re = /(^[ \t]*#(?:[^\n\\]|\\[\s\S])*)|(\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*)|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?)|(\b(?:0[xX][0-9A-Fa-f]+|\d+\.?\d*(?:[eE][+-]?\d+)?)[uUlLfF]*)|([A-Za-z_][A-Za-z0-9_]*)|([\s\S])/gm;
+  let out = '';
+  let m;
+  while ((m = re.exec(src))) {
+    if (m[1]) out += `<span class="t-dir">${esc(m[1])}</span>`;
+    else if (m[2]) out += `<span class="t-com">${esc(m[2])}</span>`;
+    else if (m[3]) out += `<span class="t-str">${esc(m[3])}</span>`;
+    else if (m[4]) out += `<span class="t-num">${esc(m[4])}</span>`;
+    else if (m[5]) {
+      if (CKW.has(m[5])) out += `<span class="t-kw">${m[5]}</span>`;
+      else if (CTYPES.has(m[5])) out += `<span class="t-type">${m[5]}</span>`;
+      else out += m[5];
+    } else out += esc(m[0]);
+  }
+  return out;
+}
+
 export function highlight(src) {
   const re = /(\{\$[^}]*\}|\(\*\$[\s\S]*?\*\))|(\{[^}]*\}?|\(\*[\s\S]*?(?:\*\)|$)|\/\/[^\n]*)|((?:'(?:[^'\n]|'')*'?|#\$?[0-9A-Fa-f]+)+)|(\$[0-9A-Fa-f]+|%[01]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([A-Za-z_][A-Za-z0-9_]*)|([^A-Za-z0-9_\s{('#$%/]+|[\s\S])/g;
   let out = '';
@@ -124,7 +147,7 @@ export class Editor {
   }
   render() {
     const v = this.ta.value;
-    this.hl.innerHTML = highlight(v) + '\n';
+    this.hl.innerHTML = (this.lang === 'c' ? highlightC(v) : highlight(v)) + '\n';
     const n = v.split('\n').length;
     if (n !== this.lineCount) {
       this.lineCount = n;
