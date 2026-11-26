@@ -26,6 +26,91 @@ export const M816 = {
   STACK_TOP: 0xb7ff,
 };
 
+// ---- peephole: the expression stack pushes the left operand and adds it
+// back from the stack; with a simple operand that is one instruction.
+// Works on the lines of one procedure; never across labels, comments
+// ("; line N" is the debugger's line map) or asm blocks ("; asm ...").
+const SIMPLE = /^(#[^,;\s]+|@w [A-Za-z_][\w]*(\+\d+)?|\$[0-9a-f]{2})$/i;
+const ins = (l) => {
+  if (typeof l !== 'string' || !l.startsWith('	') || l.includes(';')) return null;
+  const m = /^	([a-z]{3})(?: (.+))?$/.exec(l);
+  return m ? { op: m[1], arg: m[2] || '' } : null;
+};
+// instructions that only use A and flags and leave the stack alone
+const SAFE = new Set(['lda', 'adc', 'sbc', 'and', 'ora', 'eor', 'clc', 'sec', 'inc', 'dec', 'asl', 'lsr', 'rol', 'ror', 'xba']);
+const safeIns = (x) => x && SAFE.has(x.op) && (x.arg === '' || x.arg === 'a' || SIMPLE.test(x.arg));
+export function peephole(lines) {
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const a = ins(lines[i]), b = ins(lines[i + 1]);
+      if (!a || !b) continue;
+      // lda X / pha / <safe A code> / [clc] OP 1,s / ply  ->  <safe A code> / [clc] OP X
+      // pea C / <safe A code> / [clc] OP 1,s / ply       ->  <safe A code> / [clc] OP #C
+      let X = null;
+      if (a.op === 'lda' && SIMPLE.test(a.arg) && b.op === 'pha') X = a.arg;
+      if (a.op === 'pea' && /^[A-Za-z_$][\w$]*$/.test(a.arg)) X = '#' + a.arg;
+      if (!X) continue;
+      const start = a.op === 'pea' ? i + 1 : i + 2;
+      let j = start;
+      while (j < lines.length && j - start < 8 && safeIns(ins(lines[j]))) j++;
+      if (j === start) continue;
+      const op = ins(lines[j]), pl = ins(lines[j + 1]);
+      if (!op || !pl || pl.op !== 'ply' || op.arg !== '1,s' || !['adc', 'and', 'ora', 'eor'].includes(op.op)) continue;
+      if (op.op === 'adc') {
+        // the add must be a plain clc / adc 1,s (not the sec of a subtraction)
+        const prev = ins(lines[j - 1]);
+        if (!prev || prev.op !== 'clc' || j - 1 < start) continue;
+      }
+      const body = lines.slice(start, j);
+      lines.splice(i, j + 2 - i, ...body, `	${op.op} ${X}`);
+      changed = true;
+    }
+    for (let i = 0; i < lines.length; i++) {
+      // 32 bit: ldx @w V+2 / lda @w V / phx / pha / <code without the stack> /
+      //   clc / adc 1,s / sta 1,s / txa / adc 3,s / tax / pla / ply
+      //   ->  <code> / clc / adc @w V / tay / txa / adc @w V+2 / tax / tya
+      const a = ins(lines[i]), b = ins(lines[i + 1]);
+      if (!a || !b || a.op !== 'ldx' || b.op !== 'lda' || !/^@w [A-Za-z_]\w*(\+\d+)?$/.test(b.arg) || a.arg !== b.arg + '+2') continue;
+      const c = ins(lines[i + 2]), d = ins(lines[i + 3]);
+      if (!c || !d || c.op !== 'phx' || d.op !== 'pha') continue;
+      const V = b.arg, name = V.slice(3).replace(/\+.*$/, '');
+      let j = i + 4;
+      const noStack = (x) => x && !/^(ph|pl|pe|rt|ts|tc|jsl|jmp|br|b[a-z]{2})/.test(x.op) && !x.arg.includes(',s')
+        && !(x.op === 'jsr' && !/^rt_/.test(x.arg)) && !(/^st/.test(x.op) && x.arg.includes(name));
+      while (j < lines.length && j - i < 40 && noStack(ins(lines[j]))) j++;
+      if (j === i + 4) continue;
+      const tail = ['clc', 'adc 1,s', 'sta 1,s', 'txa', 'adc 3,s', 'tax', 'pla', 'ply'];
+      if (!tail.every((t, k) => { const x = ins(lines[j + k]); return x && (x.op + (x.arg ? ' ' + x.arg : '')) === t; })) continue;
+      const body = lines.slice(i + 4, j);
+      lines.splice(i, j + tail.length - i, ...body, '\tclc', `\tadc ${V}`, '\ttay', '\ttxa', `\tadc ${V}+2`, '\ttax', '\ttya');
+      changed = true;
+    }
+    for (let i = 0; i < lines.length; i++) {
+      // pha / lda Y / [clc] OP 1,s / ply  ->  [clc] OP Y   (A op Y, OP commutative)
+      const w = [0, 1, 2, 3, 4].map(k => ins(lines[i + k]));
+      if (!w[0] || w[0].op !== 'pha' || !w[1] || w[1].op !== 'lda' || !SIMPLE.test(w[1].arg)) continue;
+      if (w[2] && w[2].op === 'clc' && w[3] && w[3].op === 'adc' && w[3].arg === '1,s' && w[4] && w[4].op === 'ply') {
+        lines.splice(i, 5, '\tclc', `\tadc ${w[1].arg}`); changed = true; continue;
+      }
+      if (w[2] && ['and', 'ora', 'eor'].includes(w[2].op) && w[2].arg === '1,s' && w[3] && w[3].op === 'ply') {
+        lines.splice(i, 4, `\t${w[2].op} ${w[1].arg}`); changed = true;
+      }
+    }
+    for (let i = 0; i < lines.length; i++) {
+      // lda X / pha / lda Y / sta @w rt_t0 / pla / cmp @w rt_t0  ->  lda X / cmp Y
+      const w = [0, 1, 2, 3, 4, 5].map(k => ins(lines[i + k]));
+      if (w.some(x => !x)) continue;
+      if (w[0].op === 'lda' && w[1].op === 'pha' && w[2].op === 'lda' && SIMPLE.test(w[2].arg)
+        && w[3].op === 'sta' && w[3].arg === '@w rt_t0' && w[4].op === 'pla' && w[5].op === 'cmp' && w[5].arg === '@w rt_t0') {
+        lines.splice(i, 6, lines[i], `	cmp ${w[2].arg}`);
+        changed = true;
+      }
+    }
+  }
+  return lines;
+}
+
 export function gen816(prog, opts = {}) {
   const out = [];
   const E = (s) => out.push('\t' + s);
@@ -206,6 +291,11 @@ export function gen816(prog, opts = {}) {
 
   // =================================================================
   function genProc(p) {
+    const at = out.length;
+    genProc1(p);
+    if (opts.peephole !== false) out.push(...peephole(out.splice(at)));
+  }
+  function genProc1(p) {
     const FS = p.locSize;
     const fsName = `FS_${p.label}`;
     out.push('');
@@ -338,11 +428,44 @@ export function gen816(prog, opts = {}) {
     // compare: operands NOS (a) and TOS (b) -> branch to target if (a c b)
     const cmpBranch = (c, cls, unsigned, target) => {
       if (cls === 'L') {
-        const b = vs.pop(), a = vs[vs.length - 1];
-        vs.push(b);
-        toAB();
-        E(`${J} ${unsigned ? 'rt_cmp32u' : 'rt_cmp32s'}`);
-        branchOnSign(c, target);
+        // inline: a - b over both words; signed: N xor V gives "less"
+        const lessBranch = (cc) => {
+          if (unsigned) { E(`${cc === 'lt' ? 'bcc' : 'bcs'} ${target}`); return; }
+          const s = u('v'); E(`bvc ${s}`); E('eor #$8000'); LBL(s);
+          E(`${cc === 'lt' ? 'bmi' : 'bpl'} ${target}`);
+        };
+        const bt = top();
+        if (bt.k === 'const' && isNum(bt.v)) {
+          vs.pop();
+          popA();                         // a in A (low) / X (high)
+          let v = bt.v >>> 0, cc = c;
+          if (cc === 'eq' || cc === 'ne') {
+            if (cc === 'eq') { const s = u('s'); E(`cmp #${lo16(v)}`); E(`bne ${s}`); E(`cpx #${hi16(v)}`); E(`beq ${target}`); LBL(s); }
+            else { E(`cmp #${lo16(v)}`); E(`bne ${target}`); E(`cpx #${hi16(v)}`); E(`bne ${target}`); }
+            return;
+          }
+          if (cc === 'gt' || cc === 'le') {
+            // a > v  <=>  a >= v+1;  a <= v  <=>  a < v+1
+            const max = unsigned ? 0xffffffff : 0x7fffffff;
+            if (v === max) { if (cc === 'le') E(`jmp ${target}`); return; }
+            v = (v + 1) >>> 0; cc = cc === 'gt' ? 'ge' : 'lt';
+          }
+          E(`cmp #${lo16(v)}`); E('txa'); E(`sbc #${hi16(v)}`);
+          lessBranch(cc);
+          return;
+        }
+        toAB();                           // a in rt_a, b in rt_b
+        if (c === 'eq' || c === 'ne') {
+          const s = u('s');
+          E('lda @w rt_a'); E('cmp @w rt_b'); E(`bne ${c === 'eq' ? s : target}`);
+          E('lda @w rt_a+2'); E('cmp @w rt_b+2'); E(`${c === 'eq' ? 'beq' : 'bne'} ${target}`);
+          if (c === 'eq') LBL(s);
+          return;
+        }
+        // gt/le: b - a instead
+        const [x, y, cc] = c === 'gt' ? ['rt_b', 'rt_a', 'lt'] : c === 'le' ? ['rt_b', 'rt_a', 'ge'] : ['rt_a', 'rt_b', c];
+        E(`lda @w ${x}`); E(`cmp @w ${y}`); E(`lda @w ${x}+2`); E(`sbc @w ${y}+2`);
+        lessBranch(cc);
         return;
       }
       const b = vs.pop();
@@ -464,6 +587,33 @@ export function gen816(prog, opts = {}) {
         pushReg('W');
         return;
       }
+      // multiply by a constant: shifts and adds when it has few bits
+      if (op === 'mul' && b.k === 'const' && isNum(b.v)) {
+        const k = b.v & 0xffff;
+        const bits = [];
+        for (let i = 0; i < 16; i++) if (k & (1 << i)) bits.push(i);
+        if (bits.length <= 3) {
+          vs.pop();
+          const a = top();
+          if (a && a.k === 'const' && isNum(a.v)) { vs.pop(); vs.push({ cls: 'W', k: 'const', v: Math.imul(a.v, k) & 0xffff }); return; }
+          popA();
+          if (!bits.length) E('lda #0');
+          let cur = 0;
+          const shiftA = (n) => {
+            if (n >= 8) { E('xba'); E('and #$ff00'); n -= 8; }
+            for (let i = 0; i < n; i++) E('asl a');
+          };
+          bits.forEach((bit, j) => {
+            shiftA(bit - cur); cur = bit;
+            if (bits.length === 1) return;
+            if (j === 0) E('sta @w rt_t0+2');
+            else if (j < bits.length - 1) { E('tay'); E('clc'); E('adc @w rt_t0+2'); E('sta @w rt_t0+2'); E('tya'); }
+            else { E('clc'); E('adc @w rt_t0+2'); }
+          });
+          pushReg('W');
+          return;
+        }
+      }
       // mul, div, mod
       toAX16();
       const r = { mul: 'rt_mul16', div: unsigned ? 'rt_div16u' : 'rt_div16s', mod: unsigned ? 'rt_mod16u' : 'rt_mod16s' }[op];
@@ -505,6 +655,64 @@ export function gen816(prog, opts = {}) {
         } else {
           if (op === 'add') E('clc');
           E(`${asmOp} 1,s`); E('sta 1,s'); E('txa'); E(`${asmOp} 3,s`); E('tax'); E('pla'); E('ply');
+        }
+        pushReg('L');
+        return;
+      }
+      // a multiply by 2^n is a shift
+      if (op === 'mul' && b.k === 'const' && isNum(b.v) && b.v > 0 && ((b.v >>> 0) & ((b.v >>> 0) - 1)) === 0) {
+        b.v = 31 - Math.clz32(b.v >>> 0);
+        op = 'shl';
+      }
+      // a multiply by a constant with 2 or 3 bits: shifts and adds (value in rt_a, sum in rt_b)
+      if (op === 'mul' && b.k === 'const' && isNum(b.v)) {
+        const k = b.v >>> 0;
+        const bits = [];
+        for (let i = 0; i < 32; i++) if (k & (2 ** i)) bits.push(i);
+        if (bits.length >= 2 && bits.length <= 3 && bits[bits.length - 1] <= 12) {
+          vs.pop();
+          const a = top();
+          if (a && a.k === 'const' && isNum(a.v)) { vs.pop(); vs.push({ cls: 'L', k: 'const', v: Math.imul(a.v, k) >>> 0 }); return; }
+          popA();
+          E('sta @w rt_a'); E('stx @w rt_a+2');
+          let cur = 0;
+          bits.forEach((bit, j) => {
+            for (; cur < bit; cur++) { E('asl @w rt_a'); E('rol @w rt_a+2'); }
+            if (j === 0) { E('lda @w rt_a'); E('sta @w rt_b'); E('lda @w rt_a+2'); E('sta @w rt_b+2'); }
+            else {
+              E('clc'); E('lda @w rt_a'); E('adc @w rt_b');
+              if (j < bits.length - 1) { E('sta @w rt_b'); E('lda @w rt_a+2'); E('adc @w rt_b+2'); E('sta @w rt_b+2'); }
+              else { E('tay'); E('lda @w rt_a+2'); E('adc @w rt_b+2'); E('tax'); E('tya'); }
+            }
+          });
+          pushReg('L');
+          return;
+        }
+      }
+      if ((op === 'shl' || op === 'shr') && b.k === 'const' && isNum(b.v)) {
+        vs.pop();
+        const a = top();
+        const n = b.v & 31;
+        if (a && a.k === 'const' && isNum(a.v)) { vs.pop(); vs.push({ cls: 'L', k: 'const', v: (op === 'shl' ? a.v << n : a.v >>> n) >>> 0 }); return; }
+        popA();                       // A low, X high
+        let m = n;
+        if (m >= 16) {
+          if (op === 'shl') { E('tax'); E('lda #0'); } else { E('txa'); E('ldx #0'); }
+          m -= 16;
+        }
+        if (m) {
+          E('sta @w rt_t0'); E('stx @w rt_t0+2');
+          if (m >= 8) {
+            // a byte at a time: through the high byte of the other word
+            if (op === 'shl') { E('lda @w rt_t0+1'); E('sta @w rt_t0+2'); E('lda @w rt_t0'); E('xba'); E('and #$ff00'); E('sta @w rt_t0'); }
+            else { E('lda @w rt_t0+1'); E('sta @w rt_t0'); E('lda @w rt_t0+2'); E('xba'); E('and #$00ff'); E('sta @w rt_t0+2'); }
+            m -= 8;
+          }
+          for (let i = 0; i < m; i++) {
+            if (op === 'shl') { E('asl @w rt_t0'); E('rol @w rt_t0+2'); }
+            else { E('lsr @w rt_t0+2'); E('ror @w rt_t0'); }
+          }
+          E('lda @w rt_t0'); E('ldx @w rt_t0+2');
         }
         pushReg('L');
         return;

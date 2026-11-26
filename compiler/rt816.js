@@ -216,18 +216,24 @@ rt_errtext
 
 ; ---- 16-bit multiply: A = A * X
 rt_mul16
-	sta @w rt_t0
+	; A * X -> A (low 16 bits). The smaller factor (unsigned) is the
+	; multiplier, shifted right until it is 0.
 	stx @w rt_t0+2
+	cmp @w rt_t0+2
+	bcs +
+	sta @w rt_t0+2
+	txa
++	sta @w rt_t0
 	lda #0
-	ldx #16
--	asl a
-	asl @w rt_t0
+-	ldx @w rt_t0+2
+	beq ++
+	lsr @w rt_t0+2
 	bcc +
 	clc
-	adc @w rt_t0+2
-+	dex
-	bne -
-	${R}
+	adc @w rt_t0
++	asl @w rt_t0
+	bra -
++	${R}
 
 ; ---- 16-bit unsigned divide: A = A div X, rt_t0+2 = remainder
 rt_div16u
@@ -312,25 +318,39 @@ rt_shr16
 
 ; ---- 32 bit: operands in rt_a, rt_b; result in A (low) / X (high)
 rt_mul32
-	lda #0
-	sta @w rt_q
-	sta @w rt_q+2
-	ldy #32
--	asl @w rt_q
-	rol @w rt_q+2
-	asl @w rt_a
-	rol @w rt_a+2
+	; low 32 bits of rt_a * rt_b (the same for signed and unsigned). The
+	; multiplier is shifted right until it is 0, so small factors are quick;
+	; when only rt_a fits in 16 bits, it becomes the multiplier.
+	lda @w rt_b+2
+	beq +
+	lda @w rt_a+2
+	bne +
+	lda @w rt_a
+	ldx @w rt_b
+	sta @w rt_b
+	stx @w rt_a
+	lda @w rt_b+2
+	stz @w rt_b+2
+	sta @w rt_a+2
++	stz @w rt_q
+	stz @w rt_q+2
+-	lda @w rt_b
+	ora @w rt_b+2
+	beq ++
+	lsr @w rt_b+2
+	ror @w rt_b
 	bcc +
 	clc
 	lda @w rt_q
-	adc @w rt_b
+	adc @w rt_a
 	sta @w rt_q
 	lda @w rt_q+2
-	adc @w rt_b+2
+	adc @w rt_a+2
 	sta @w rt_q+2
-+	dey
-	bne -
-	ldx @w rt_q+2
++	asl @w rt_a
+	rol @w rt_a+2
+	bra -
++	ldx @w rt_q+2
 	lda @w rt_q
 	${R}
 

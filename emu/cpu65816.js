@@ -69,8 +69,9 @@ export class CPU65816 {
 
   // ---- effective addresses (24 bit)
   aDp() { return (this.d + this.fetch()) & 0xffff; }
-  aDpX() { return (this.d + this.fetch() + this.x) & 0xffff; }
-  aDpY() { return (this.d + this.fetch() + this.y) & 0xffff; }
+  // emulation mode with DL = 0: indexed direct page wraps within the page, as on a 6502
+  aDpX() { const n = this.fetch(); return this.e && !(this.d & 0xff) ? this.d | ((n + this.x) & 0xff) : (this.d + n + this.x) & 0xffff; }
+  aDpY() { const n = this.fetch(); return this.e && !(this.d & 0xff) ? this.d | ((n + this.y) & 0xff) : (this.d + n + this.y) & 0xffff; }
   aAbs() { return (this.dbr << 16) | this.fetch16(); }
   aAbsX() { return (((this.dbr << 16) | this.fetch16()) + this.x) & 0xffffff; }
   aAbsY() { return (((this.dbr << 16) | this.fetch16()) + this.y) & 0xffffff; }

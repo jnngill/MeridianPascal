@@ -175,6 +175,7 @@ var
   aT0, aA, aB, aFp, aV, aStp, aHeapbase, aSavesp: word;
   { code }
   pc: longint;
+  pushAt: longint;       { pc just after the pha of Push (65C816), to take it back }
   dataTop: longint;
   { procedure contexts }
   curLev: integer;
@@ -3076,6 +3077,82 @@ begin
   else ResultType := syms[s].typ;
 end;
 
+{ 65C816: A := A * k (16 bit). With up to 3 bits in k: shifts and adds,
+  the sum in rt_t0+2; otherwise rt_mul16 }
+procedure MulConstA(k: longint);
+var bits: array[0..15] of integer;
+    n, i, j, cur, d: integer;
+begin
+  k := k and $FFFF;
+  n := 0;
+  for i := 0 to 15 do if (k shr i) and 1 <> 0 then begin bits[n] := i; n := n + 1; end;
+  if n > 3 then begin LdxImm(k); Jsl(aMul16); exit; end;
+  if n = 0 then begin LdaImm(0); exit; end;
+  cur := 0;
+  for j := 0 to n - 1 do begin
+    d := bits[j] - cur; cur := bits[j];
+    if d >= 8 then begin Gen($EB); Op16($29, $FF00); d := d - 8; end;     { xba / and #$ff00 }
+    while d > 0 do begin Gen($0A); d := d - 1; end;                        { asl a }
+    if n > 1 then begin
+      if j = 0 then StaAbs(aT0 + 2)
+      else if j < n - 1 then begin Gen($A8); Gen($18); Op16($6D, aT0 + 2); StaAbs(aT0 + 2); Gen($98); end
+      else begin Gen($18); Op16($6D, aT0 + 2); end;                       { clc / adc }
+    end;
+  end;
+end;
+
+{ 65C816: rt_a shifted by n (0..31) in place, then A/X = rt_a }
+procedure ShiftConstAB(left: boolean; n: integer);
+begin
+  n := n and 31;
+  if n >= 16 then begin
+    if left then begin LdaAbs(aA); StaAbs(aA + 2); Op16($9C, aA); end          { stz }
+    else begin LdaAbs(aA + 2); StaAbs(aA); Op16($9C, aA + 2); end;
+    n := n - 16;
+  end;
+  if n >= 8 then begin
+    if left then begin LdaAbs(aA + 1); StaAbs(aA + 2); LdaAbs(aA); Gen($EB); Op16($29, $FF00); StaAbs(aA); end
+    else begin LdaAbs(aA + 1); StaAbs(aA); LdaAbs(aA + 2); Gen($EB); Op16($29, $00FF); StaAbs(aA + 2); end;
+    n := n - 8;
+  end;
+  while n > 0 do begin
+    if left then begin Op16($0E, aA); Op16($2E, aA + 2); end                    { asl / rol }
+    else begin Op16($4E, aA + 2); Op16($6E, aA); end;                          { lsr / ror }
+    n := n - 1;
+  end;
+  LdaAbs(aA); Op16($AE, aA + 2);                                               { lda / ldx }
+end;
+
+{ k has 2 or 3 bits, the highest below 13: rt_a * k by shifts and adds }
+function MulConstOk(k: longint): boolean;
+var n, i: integer;
+begin
+  MulConstOk := false;
+  if (k < 0) or (k >= 8192) then exit;
+  n := 0;
+  for i := 0 to 12 do if (k shr i) and 1 <> 0 then n := n + 1;
+  MulConstOk := (n >= 2) and (n <= 3);
+end;
+
+{ 65C816: A/X = rt_a * k (MulConstOk(k)); rt_b holds the sum }
+procedure MulConstAB(k: longint);
+var bits: array[0..2] of integer;
+    n, i, j, cur: integer;
+begin
+  n := 0;
+  for i := 0 to 12 do if (k shr i) and 1 <> 0 then begin bits[n] := i; n := n + 1; end;
+  cur := 0;
+  for j := 0 to n - 1 do begin
+    while cur < bits[j] do begin Op16($0E, aA); Op16($2E, aA + 2); cur := cur + 1; end;
+    if j = 0 then begin LdaAbs(aA); StaAbs(aB); LdaAbs(aA + 2); StaAbs(aB + 2); end
+    else begin
+      Gen($18); LdaAbs(aA); Op16($6D, aB);
+      if j < n - 1 then begin StaAbs(aB); LdaAbs(aA + 2); Op16($6D, aB + 2); StaAbs(aB + 2); end
+      else begin Gen($A8); LdaAbs(aA + 2); Op16($6D, aB + 2); Gen($AA); Gen($98); end;
+    end;
+  end;
+end;
+
 procedure Selector(var x: TItem);
 var y: TItem;
     t, f, esz, k, oh: integer;
@@ -3142,10 +3219,7 @@ begin
           if swR then RangeCheck(y.typ, k, khi, 201);
           if swR and (khi < k) and (oh <> 0) then OpenCheck(oh);
           if k <> 0 then begin Gen($38); Op16($E9, k); end;
-          if esz = 2 then Gen($0A)
-          else if esz = 4 then begin Gen($0A); Gen($0A); end
-          else if esz = 8 then begin Gen($0A); Gen($0A); Gen($0A); end
-          else if esz <> 1 then begin LdxImm(esz); Jsl(aMul16); end;
+          if esz <> 1 then MulConstA(esz);
           case x.mode of
             mGlob: begin Gen($18); Op16($69, x.a); x.a := 0; end;
             mLoc: begin StaAbs(aT0); Gen($7B); Gen($18); Op16($69, x.a); Gen($18); Op16($6D, aT0); x.a := 0; end;
@@ -3806,7 +3880,34 @@ begin
   if x.mode = mConst then exit;
   LoadBool(x);
   PushA(types[x.typ].size);
+  if not rv and (types[x.typ].size <= 2) then pushAt := pc;
   x.mode := mStk;
+end;
+
+{ 65C816: nothing was emitted since Push(x) (the right side is a constant
+  or a variable): take the pha back, x is still in A }
+function UnPush: boolean;
+begin
+  UnPush := false;
+  if rv or (pc <> pushAt) then exit;
+  pc := pc - 1; pushAt := -1;
+  UnPush := true;
+end;
+
+{ the right side y as a plain 16-bit operand: a variable or a constant }
+function PlainY(var y: TItem): boolean;
+begin
+  PlainY := (y.mode = mConst) or (y.mode in [mGlob, mLoc]) and (types[y.typ].size = 2) and not IsStruct(y.typ);
+end;
+
+{ op A, y: opImm #, opAbs abs, opDp dp }
+procedure OpY(opImm, opAbs, opDp: integer; var y: TItem);
+begin
+  case y.mode of
+    mConst: Op16(opImm, y.a);
+    mGlob: Op16(opAbs, y.a);
+    mLoc: Op8(opDp, y.a);
+  end;
 end;
 
 procedure PushStr(var x: TItem);
@@ -3936,7 +4037,17 @@ begin
         if swQ and ((op = sPlus) or (op = sMinus)) then begin Op8($50, 9); ErrJump(215); end;   { bvc ok }
         Gen($AA); Gen($98);
       end;
-      sTimes: if not swQ then Jsl(aMul32)
+      sTimes: if not swQ then begin
+          if (y.mode = mConst) and (y.a > 0) and (y.a and (y.a - 1) = 0) then begin
+            at := 0; while (y.a shr at) and 1 = 0 do at := at + 1;
+            ShiftConstAB(true, at);
+          end else if (y.mode = mConst) and MulConstOk(y.a) then MulConstAB(y.a)
+          else if (x.mode = mConst) and MulConstOk(x.a) then begin
+            { the constant is in rt_a: the variable from rt_b first }
+            LdaAbs(aB); StaAbs(aA); LdaAbs(aB + 2); StaAbs(aA + 2);
+            MulConstAB(x.a);
+          end else Jsl(aMul32);
+        end
         else begin
           { a * b, then (when a <> 0) r div a must give b again: a, b, r in rt_spare }
           LdaAbs(aA); StaAbs(aSpare); LdaAbs(aA + 2); StaAbs(aSpare + 2);
@@ -3961,8 +4072,8 @@ begin
         end;
       sDiv: Jsl(aDiv32s);
       sMod: Jsl(aMod32s);
-      sShl: Jsl(aShl32);
-      sShr: Jsl(aShr32);
+      sShl: if y.mode = mConst then ShiftConstAB(true, y.a) else Jsl(aShl32);
+      sShr: if y.mode = mConst then ShiftConstAB(false, y.a) else Jsl(aShr32);
     end;
     x.mode := mReg; x.typ := tLong;
     if ovfMul then x.typ := resT;
@@ -3976,7 +4087,7 @@ begin
       sAnd: Op16($29, x.a);
       sOr: Op16($09, x.a);
       sXor: Op16($49, x.a);
-      sTimes: begin LdxImm(x.a); Jsl(aMul16); end;
+      sTimes: MulConstA(x.a);
       sDiv, sMod, sShl, sShr: begin
         Gen($AA); LdaImm(x.a);
         case op of
@@ -3988,19 +4099,27 @@ begin
       end;
     end;
   end else if y.mode = mConst then begin
-    Gen($68);   { pla: x }
+    if not UnPush then Gen($68);   { pla: x }
     case op of
       sPlus: if (y.a = 1) and not swQ then Gen($1A) else begin Gen($18); Op16($69, y.a); end;
       sMinus: if (y.a = 1) and not swQ then Gen($3A) else begin Gen($38); Op16($E9, y.a); end;
       sAnd: Op16($29, y.a);
       sOr: Op16($09, y.a);
       sXor: Op16($49, y.a);
-      sTimes: if y.a = 2 then Gen($0A) else if y.a = 4 then begin Gen($0A); Gen($0A); end
-              else begin LdxImm(y.a); Jsl(aMul16); end;
+      sTimes: MulConstA(y.a);
       sDiv: begin LdxImm(y.a); if sg then Jsl(aDiv16s) else Jsl(aDiv16u); end;
       sMod: begin LdxImm(y.a); if sg then Jsl(aMod16s) else Jsl(aMod16u); end;
       sShl: begin LdxImm(y.a); Jsl(aShl16); end;
       sShr: begin LdxImm(y.a); Jsl(aShr16); end;
+    end;
+  end else if (op in [sPlus, sMinus, sAnd, sOr, sXor]) and PlainY(y) and UnPush then begin
+    { x in A, y from memory }
+    case op of
+      sPlus: begin Gen($18); OpY($69, $6D, $65, y); end;
+      sMinus: begin Gen($38); OpY($E9, $ED, $E5, y); end;
+      sAnd: OpY($29, $2D, $25, y);
+      sOr: OpY($09, $0D, $05, y);
+      sXor: OpY($49, $4D, $45, y);
     end;
   end else begin
     Load(y);
@@ -4112,8 +4231,25 @@ begin
   end;
   if IsInt(x.typ) and IsInt(y.typ) and (IsLong(x.typ) or IsLong(y.typ)) then begin
     ToAB(x, y);
-    Jsl(aCmp32s);
-    CondResult(x, c + 10);
+    { inline: = and <> by Z; the others by N = "less" (signed), from a - b
+      or, for > and <=, from b - a }
+    case c of
+      cEq, cNe: begin
+        LdaAbs(aA); Op16($CD, aB); Op8($D0, 6);                  { lda / cmp / bne +6 }
+        LdaAbs(aA + 2); Op16($CD, aB + 2);
+        CondResult(x, c);
+      end;
+      cLt, cGe: begin
+        LdaAbs(aA); Op16($CD, aB); LdaAbs(aA + 2); Op16($ED, aB + 2);   { cmp / sbc }
+        Op8($50, 3); Op16($49, $8000);                            { bvc +3 / eor #$8000 }
+        CondResult(x, c + 10);
+      end;
+      cGt, cLe: begin
+        LdaAbs(aB); Op16($CD, aA); LdaAbs(aB + 2); Op16($ED, aA + 2);
+        Op8($50, 3); Op16($49, $8000);
+        if c = cGt then CondResult(x, cLt + 10) else CondResult(x, cGe + 10);
+      end;
+    end;
     exit;
   end;
   if IsInt(x.typ) <> IsInt(y.typ) then ErrorN(63, '');
@@ -4127,9 +4263,11 @@ begin
       cLt: c := cGt; cGt: c := cLt; cLe: c := cGe; cGe: c := cLe;
     end;
   end else if y.mode = mConst then begin
-    Gen($68);
+    if not UnPush then Gen($68);
     if sg then begin Op16($49, $8000); Op16($C9, (y.a xor $8000) and $FFFF); end
     else Op16($C9, y.a and $FFFF);
+  end else if not sg and PlainY(y) and UnPush then begin
+    OpY($C9, $CD, $C5, y);                                       { cmp y }
   end else begin
     LoadBool(y);
     if sg then Op16($49, $8000);
@@ -6629,7 +6767,7 @@ end;
 function BuiltinUnit(const n: TName): boolean;
 begin
   BuiltinUnit := (n = 'system') or (n = 'crt') or (n = 'graph') or (n = 'sprites') or (n = 'audio') or
-    (n = 'input') or (n = 'dos') or (n = 'blitter') or (n = 'copper') or (n = 'schub') or (n = 'basic');
+    (n = 'input') or (n = 'dos') or (n = 'blitter') or (n = 'copper') or (n = 'schub') or (n = 'basic') or (n = 'workshop');
 end;
 
 procedure CompileUnit(const n: TName); forward;
@@ -6918,7 +7056,7 @@ begin
   else begin cBase := CodeBase; RunEntry := CodeBase; end;
   curBase := SrcBase; srcPos := 0; srcEnd := srcLen; line := 1; col := 0;
   tokLine := 1; tokCol := 1;
-  pc := 0; dataTop := 0; nLoop := 0; nTmp := 0; nPend := 0; nWith := 0;
+  pc := 0; pushAt := -1; dataTop := 0; nLoop := 0; nTmp := 0; nPend := 0; nWith := 0;
   lastDbg := -1; curUnit := 0;
   nLab := 0; labStart := 0; nFix := 0; stkSlots := 0; preLabels := 0;
   wantProc := 0; procAny := 0; nObj := 0;

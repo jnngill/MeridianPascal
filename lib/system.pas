@@ -91,16 +91,16 @@ function  _abslong(l: longint): longint;
 procedure RunError(code: integer);
 
 { software floating point (IEEE single precision) }
-function  _addreal(a, b: real): real;
+function  _addreal(ra, rb: real): real;
 function  _subreal(a, b: real): real;
-function  _mulreal(a, b: real): real;
-function  _divreal(a, b: real): real;
+function  _mulreal(ra, rb: real): real;
+function  _divreal(ra, rb: real): real;
 function  _negreal(a: real): real;
 function  _cmpreal(a, b: real): integer;
 function  _absreal(a: real): real;
 function  _inttoreal(l: longint): real;
 function  _cardtoreal(l: longword): real;
-function  _truncreal(r: real): longint;
+function  _truncreal(rr: real): longint;
 function  _roundreal(r: real): longint;
 function  _intreal(r: real): real;
 function  _fracreal(r: real): real;
@@ -1179,15 +1179,16 @@ begin
   else m := (u.l and $7FFFFF) or $800000;
 end;
 
-function _addreal(a, b: real): real;
+{$IFDEF SCHUB}
+function _addreal(ra, rb: real): real;
 var na, nb: boolean;
     ea, eb, d: integer;
     ma, mb: longint;
 begin
-  Unpack(a, na, ea, ma);
-  Unpack(b, nb, eb, mb);
-  if mb = 0 then begin _addreal := a; exit; end;
-  if ma = 0 then begin _addreal := b; exit; end;
+  Unpack(ra, na, ea, ma);
+  Unpack(rb, nb, eb, mb);
+  if mb = 0 then begin _addreal := ra; exit; end;
+  if ma = 0 then begin _addreal := rb; exit; end;
   { 3 guard bits }
   ma := ma shl 3; mb := mb shl 3;
   if ea < eb then begin
@@ -1224,13 +1225,13 @@ begin
   _subreal := _addreal(a, _negreal(b));
 end;
 
-function _mulreal(a, b: real): real;
+function _mulreal(ra, rb: real): real;
 var na, nb: boolean;
     ea, eb: integer;
     ma, mb, a1, a0, b1, b0, mid, low, m: longint;
 begin
-  Unpack(a, na, ea, ma);
-  Unpack(b, nb, eb, mb);
+  Unpack(ra, na, ea, ma);
+  Unpack(rb, nb, eb, mb);
   if (ma = 0) or (mb = 0) then begin _mulreal := 0.0; exit; end;
   a1 := ma shr 12; a0 := ma and $FFF;
   b1 := mb shr 12; b0 := mb and $FFF;
@@ -1243,13 +1244,13 @@ begin
   _mulreal := MkReal(na <> nb, ea, m);
 end;
 
-function _divreal(a, b: real): real;
+function _divreal(ra, rb: real): real;
 var na, nb: boolean;
     ea, eb, i: integer;
     ma, mb, q: longint;
 begin
-  Unpack(a, na, ea, ma);
-  Unpack(b, nb, eb, mb);
+  Unpack(ra, na, ea, ma);
+  Unpack(rb, nb, eb, mb);
   if mb = 0 then RunError(200);
   if ma = 0 then begin _divreal := 0.0; exit; end;
   q := 0;
@@ -1307,12 +1308,12 @@ begin
   else _inttoreal := _cardtoreal(longword(l));
 end;
 
-function _truncreal(r: real): longint;
+function _truncreal(rr: real): longint;
 var n: boolean;
     e: integer;
     m: longint;
 begin
-  Unpack(r, n, e, m);
+  Unpack(rr, n, e, m);
   if (m = 0) or (e < 127) then begin _truncreal := 0; exit; end;
   e := e - 150;
   if e > 7 then RunError(207);
@@ -1320,6 +1321,866 @@ begin
   if n then m := -m;
   _truncreal := m;
 end;
+
+{$ELSE}
+{ ---- 65C816: the same arithmetic in assembly, bit for bit the results of
+  the Pascal versions above (those stay for SCHUB). A mantissa is a longint
+  with the hidden bit at bit 23; a sign word has the sign in bit 15. }
+
+function _addreal(ra, rb: real): real;
+var ma, mb: longint;
+    ea, eb, sa, sb, er, t: integer;
+begin
+  er := 0;
+  asm
+    lda rb+2
+    sta sb
+    asl a
+    xba
+    and #$00FF
+    sta eb
+    bne adb1
+    lda ra
+    sta Result
+    lda ra+2
+    sta Result+2
+    jmp addone
+  adb1:
+    lda rb+2
+    and #$007F
+    ora #$0080
+    sta mb+2
+    lda rb
+    sta mb
+    lda ra+2
+    sta sa
+    asl a
+    xba
+    and #$00FF
+    sta ea
+    bne ada1
+    lda rb
+    sta Result
+    lda rb+2
+    sta Result+2
+    jmp addone
+  ada1:
+    lda ra+2
+    and #$007F
+    ora #$0080
+    sta ma+2
+    lda ra
+    sta ma
+    ldx #3
+  adsh3:
+    asl ma
+    rol ma+2
+    asl mb
+    rol mb+2
+    dex
+    bne adsh3
+    lda ea
+    sec
+    sbc eb
+    beq adal
+    bcs adabig
+    eor #$FFFF
+    inc a
+    tax
+    lda eb
+    sta ea
+    cpx #31
+    bcc adsha
+    stz ma
+    stz ma+2
+    bra adal
+  adsha:
+    lsr ma+2
+    ror ma
+    dex
+    bne adsha
+    bra adal
+  adabig:
+    tax
+    cpx #31
+    bcc adshb
+    stz mb
+    stz mb+2
+    bra adal
+  adshb:
+    lsr mb+2
+    ror mb
+    dex
+    bne adshb
+  adal:
+    lda sa
+    eor sb
+    bmi addiff
+    clc
+    lda ma
+    adc mb
+    sta ma
+    lda ma+2
+    adc mb+2
+    sta ma+2
+    bra adnorm
+  addiff:
+    sec
+    lda ma
+    sbc mb
+    sta ma
+    lda ma+2
+    sbc mb+2
+    sta ma+2
+    bpl adnorm
+    lda #0
+    sec
+    sbc ma
+    sta ma
+    lda #0
+    sbc ma+2
+    sta ma+2
+    lda sb
+    sta sa
+  adnorm:
+    lda ma
+    ora ma+2
+    bne adnz
+    stz Result
+    stz Result+2
+    jmp addone
+  adnz:
+    lda ma+2
+    cmp #$0800
+    bcc adnl
+    lsr ma+2
+    ror ma
+    inc ea
+    bra adnz
+  adnl:
+    lda ma+2
+    cmp #$0400
+    bcs adrnd
+    asl ma
+    rol ma+2
+    dec ea
+    bra adnl
+  adrnd:
+    clc
+    lda ma
+    adc #4
+    sta ma
+    lda ma+2
+    adc #0
+    sta ma+2
+    ldx #3
+  adr3:
+    lsr ma+2
+    ror ma
+    dex
+    bne adr3
+    lda ma+2
+    cmp #$0100
+    bcc adpack
+    lsr ma+2
+    ror ma
+    inc ea
+  adpack:
+    lda ea
+    bmi adzero
+    beq adzero
+    cmp #255
+    bcs adovf
+    xba
+    lsr a
+    sta t
+    lda ma+2
+    and #$007F
+    ora t
+    sta t
+    lda sa
+    and #$8000
+    ora t
+    sta Result+2
+    lda ma
+    sta Result
+    bra addone
+  adzero:
+    stz Result
+    stz Result+2
+    bra addone
+  adovf:
+    lda #1
+    sta er
+  addone:
+  end;
+  if er <> 0 then RunError(205);
+end;
+
+function _negreal(a: real): real;
+var u: TRealBits;
+begin
+  u.r := a;
+  if u.l <> 0 then u.l := u.l xor longint($80000000);
+  _negreal := u.r;
+end;
+
+function _subreal(a, b: real): real;
+var u: TRealBits;
+begin
+  u.r := b;
+  if u.l <> 0 then u.l := u.l xor longint($80000000);
+  _subreal := _addreal(a, u.r);
+end;
+
+var
+  SqTab: array[0..511] of word;      { n*n div 4: a*b = SqTab[a+b] - SqTab[|a-b|] }
+  SqReady: boolean;
+
+function _mulreal(ra, rb: real): real;
+{ the 24 x 24 bit product of the mantissas from 9 byte products, taken from
+  a table of squares (filled at the first multiply) }
+var ma0, ma1, ma2, mb0, mb1, mb2: integer;
+    acc: array[0..3] of word;
+    ea, sa, er, t, mh, ml: integer;
+    i: integer;
+begin
+  if not SqReady then begin
+    for i := 0 to 511 do SqTab[i] := word((longint(i) * i) shr 2);
+    SqReady := true;
+  end;
+  er := 0;
+  asm
+    lda ra+2
+    eor rb+2
+    sta sa
+    lda ra+2
+    asl a
+    xba
+    and #$00FF
+    bne mlnz1
+    jmp mlzero
+  mlnz1:
+    sta ea
+    lda rb+2
+    asl a
+    xba
+    and #$00FF
+    bne mlnz2
+    jmp mlzero
+  mlnz2:
+    clc
+    adc ea
+    sec
+    sbc #127
+    sta ea
+    lda ra
+    and #$00FF
+    sta ma0
+    lda ra+1
+    and #$00FF
+    sta ma1
+    lda ra+2
+    and #$007F
+    ora #$0080
+    sta ma2
+    lda rb
+    and #$00FF
+    sta mb0
+    lda rb+1
+    and #$00FF
+    sta mb1
+    lda rb+2
+    and #$007F
+    ora #$0080
+    sta mb2
+    stz acc+2
+    stz acc+4
+    stz acc+6
+    lda ma0
+    clc
+    adc mb0
+    asl a
+    tax
+    lda ma0
+    sec
+    sbc mb0
+    bcs mq1p
+    eor #$FFFF
+    inc a
+  mq1p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    sta acc
+  mq1c:
+    lda ma0
+    clc
+    adc mb1
+    asl a
+    tax
+    lda ma0
+    sec
+    sbc mb1
+    bcs mq2p
+    eor #$FFFF
+    inc a
+  mq2p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+1
+    sta acc+1
+    bcc mq2c
+    inc acc+3
+    bne mq2c
+    inc acc+5
+  mq2c:
+    lda ma1
+    clc
+    adc mb0
+    asl a
+    tax
+    lda ma1
+    sec
+    sbc mb0
+    bcs mq3p
+    eor #$FFFF
+    inc a
+  mq3p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+1
+    sta acc+1
+    bcc mq3c
+    inc acc+3
+    bne mq3c
+    inc acc+5
+  mq3c:
+    lda ma0
+    clc
+    adc mb2
+    asl a
+    tax
+    lda ma0
+    sec
+    sbc mb2
+    bcs mq4p
+    eor #$FFFF
+    inc a
+  mq4p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+2
+    sta acc+2
+    bcc mq4c
+    inc acc+4
+    bne mq4c
+    inc acc+6
+  mq4c:
+    lda ma1
+    clc
+    adc mb1
+    asl a
+    tax
+    lda ma1
+    sec
+    sbc mb1
+    bcs mq5p
+    eor #$FFFF
+    inc a
+  mq5p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+2
+    sta acc+2
+    bcc mq5c
+    inc acc+4
+    bne mq5c
+    inc acc+6
+  mq5c:
+    lda ma2
+    clc
+    adc mb0
+    asl a
+    tax
+    lda ma2
+    sec
+    sbc mb0
+    bcs mq6p
+    eor #$FFFF
+    inc a
+  mq6p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+2
+    sta acc+2
+    bcc mq6c
+    inc acc+4
+    bne mq6c
+    inc acc+6
+  mq6c:
+    lda ma1
+    clc
+    adc mb2
+    asl a
+    tax
+    lda ma1
+    sec
+    sbc mb2
+    bcs mq7p
+    eor #$FFFF
+    inc a
+  mq7p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+3
+    sta acc+3
+    bcc mq7c
+    inc acc+5
+    bne mq7c
+    inc acc+7
+  mq7c:
+    lda ma2
+    clc
+    adc mb1
+    asl a
+    tax
+    lda ma2
+    sec
+    sbc mb1
+    bcs mq8p
+    eor #$FFFF
+    inc a
+  mq8p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+3
+    sta acc+3
+    bcc mq8c
+    inc acc+5
+    bne mq8c
+    inc acc+7
+  mq8c:
+    lda ma2
+    clc
+    adc mb2
+    asl a
+    tax
+    lda ma2
+    sec
+    sbc mb2
+    bcs mq9p
+    eor #$FFFF
+    inc a
+  mq9p:
+    asl a
+    tay
+    lda SqTab,x
+    sec
+    sbc SqTab,y
+    clc
+    adc acc+4
+    sta acc+4
+    bcc mq9c
+    inc acc+6
+  mq9c:
+    asl acc+2
+    rol acc+4
+    rol acc+6
+    lda acc+3
+    sta ml
+    lda acc+5
+    and #$01FF
+    sta mh
+    cmp #$0100
+    bcc mlpack
+    inc ml
+    bne mlinc
+    inc mh
+  mlinc:
+    lsr mh
+    ror ml
+    inc ea
+  mlpack:
+    lda ea
+    bmi mlzero
+    beq mlzero
+    cmp #255
+    bcs mlovf
+    xba
+    lsr a
+    sta t
+    lda mh
+    and #$007F
+    ora t
+    sta t
+    lda sa
+    and #$8000
+    ora t
+    sta Result+2
+    lda ml
+    sta Result
+    bra mlend
+  mlzero:
+    stz Result
+    stz Result+2
+    bra mlend
+  mlovf:
+    lda #1
+    sta er
+  mlend:
+  end;
+  if er <> 0 then RunError(205);
+end;
+
+function _divreal(ra, rb: real): real;
+var ma, mb, q: longint;
+    ea, sa, er, t: integer;
+begin
+  er := 0;
+  asm
+    lda rb+2
+    asl a
+    xba
+    and #$00FF
+    bne dv1
+    lda #2
+    sta er
+    jmp dvend
+  dv1:
+    sta t
+    lda ra+2
+    asl a
+    xba
+    and #$00FF
+    bne dv2
+    jmp dvzero
+  dv2:
+    sec
+    sbc t
+    clc
+    adc #127
+    sta ea
+    lda ra+2
+    eor rb+2
+    sta sa
+    lda ra+2
+    and #$007F
+    ora #$0080
+    sta ma+2
+    lda ra
+    sta ma
+    lda rb+2
+    and #$007F
+    ora #$0080
+    sta mb+2
+    lda rb
+    sta mb
+    stz q
+    stz q+2
+    ldy #25
+  dvloop:
+    asl q
+    rol q+2
+    lda ma+2
+    cmp mb+2
+    bcc dvnext
+    bne dvsub
+    lda ma
+    cmp mb
+    bcc dvnext
+  dvsub:
+    sec
+    lda ma
+    sbc mb
+    sta ma
+    lda ma+2
+    sbc mb+2
+    sta ma+2
+    inc q
+  dvnext:
+    asl ma
+    rol ma+2
+    dey
+    bne dvloop
+    lda q+2
+    cmp #$0100
+    bcc dvlow
+    inc q
+    bne dvhalf
+    inc q+2
+  dvhalf:
+    lsr q+2
+    ror q
+    bra dvchk
+  dvlow:
+    dec ea
+  dvchk:
+    lda q+2
+    cmp #$0100
+    bcc dvpack
+    lsr q+2
+    ror q
+    inc ea
+  dvpack:
+    lda ea
+    bmi dvzero
+    beq dvzero
+    cmp #255
+    bcs dvovf
+    xba
+    lsr a
+    sta t
+    lda q+2
+    and #$007F
+    ora t
+    sta t
+    lda sa
+    and #$8000
+    ora t
+    sta Result+2
+    lda q
+    sta Result
+    bra dvend
+  dvzero:
+    stz Result
+    stz Result+2
+    bra dvend
+  dvovf:
+    lda #1
+    sta er
+  dvend:
+  end;
+  if er = 1 then RunError(205);
+  if er = 2 then RunError(200);
+end;
+
+function _cmpreal(a, b: real): integer;
+var ua, ub: TRealBits;
+    ka, kb: longint;
+    r: integer;
+begin
+  ua.r := a; ub.r := b;
+  ka := ua.l; kb := ub.l;
+  asm
+    lda ka+2
+    bpl cpa
+    and #$7FFF
+    sta ka+2
+    lda #0
+    sec
+    sbc ka
+    sta ka
+    lda #0
+    sbc ka+2
+    sta ka+2
+  cpa:
+    lda kb+2
+    bpl cpb
+    and #$7FFF
+    sta kb+2
+    lda #0
+    sec
+    sbc kb
+    sta kb
+    lda #0
+    sbc kb+2
+    sta kb+2
+  cpb:
+    lda ka+2
+    cmp kb+2
+    beq cplow
+    sec
+    sbc kb+2
+    bvs cpov
+    bmi cpless
+    bra cpgt
+  cpov:
+    bmi cpgt
+    bra cpless
+  cplow:
+    lda ka
+    cmp kb
+    beq cpeq
+    bcc cpless
+  cpgt:
+    lda #1
+    bra cpset
+  cpless:
+    lda #$FFFF
+    bra cpset
+  cpeq:
+    lda #0
+  cpset:
+    sta r
+  end;
+  _cmpreal := r;
+end;
+
+function _absreal(a: real): real;
+var u: TRealBits;
+begin
+  u.r := a;
+  u.l := u.l and $7FFFFFFF;
+  _absreal := u.r;
+end;
+
+{ m (not 0) as a real with sign word s: the rounding of the Pascal version,
+  one bit at a time }
+function _ltoreal(m: longint; s: integer): real;
+var e, t: integer;
+begin
+  asm
+    lda #150
+    sta e
+  ltr1:
+    lda m+2
+    cmp #$0100
+    bcc ltr2
+    lsr m+2
+    ror m
+    bcc ltr1i
+    inc m
+    bne ltr1i
+    inc m+2
+  ltr1i:
+    inc e
+    bra ltr1
+  ltr2:
+    lda m+2
+    cmp #$0080
+    bcs ltr3
+    asl m
+    rol m+2
+    dec e
+    bra ltr2
+  ltr3:
+    lda e
+    xba
+    lsr a
+    sta t
+    lda m+2
+    and #$007F
+    ora t
+    sta t
+    lda s
+    and #$8000
+    ora t
+    sta Result+2
+    lda m
+    sta Result
+  end;
+end;
+
+function _cardtoreal(l: longword): real;
+begin
+  if l = 0 then _cardtoreal := 0.0
+  else _cardtoreal := _ltoreal(longint(l), 0);
+end;
+
+function _inttoreal(l: longint): real;
+begin
+  if l = 0 then _inttoreal := 0.0
+  else if l < 0 then _inttoreal := _ltoreal(-l, -1)
+  else _inttoreal := _ltoreal(l, 0);
+end;
+
+function _truncreal(rr: real): longint;
+var m: longint;
+    e, er: integer;
+begin
+  er := 0;
+  asm
+    lda rr+2
+    asl a
+    xba
+    and #$00FF
+    cmp #127
+    bcs tr1
+    stz Result
+    stz Result+2
+    jmp trend
+  tr1:
+    sec
+    sbc #150
+    sta e
+    bmi tr2
+    cmp #8
+    bcc tr2
+    lda #1
+    sta er
+    jmp trend
+  tr2:
+    lda rr+2
+    and #$007F
+    ora #$0080
+    sta m+2
+    lda rr
+    sta m
+    ldx e
+    bmi trright
+    beq trsign
+  trleft:
+    asl m
+    rol m+2
+    dex
+    bne trleft
+    bra trsign
+  trright:
+    lsr m+2
+    ror m
+    inx
+    bne trright
+  trsign:
+    lda rr+2
+    bpl trpos
+    lda #0
+    sec
+    sbc m
+    sta m
+    lda #0
+    sbc m+2
+    sta m+2
+  trpos:
+    lda m
+    sta Result
+    lda m+2
+    sta Result+2
+  trend:
+  end;
+  if er <> 0 then RunError(207);
+end;
+{$ENDIF}
 
 function _roundreal(r: real): longint;
 begin
@@ -1366,17 +2227,16 @@ begin
 end;
 
 function Exp(x: real): real;
-var k, i: integer;
-    t, s: real;
+var k: integer;
+    s: real;
 begin
-  { e^x = 2^k * e^r with r = x - k*ln2 }
-  k := integer(_roundreal(_divreal(x, 0.6931471805599453)));
+  { e^x = 2^k * e^r with r = x - k*ln2, |r| <= ln2/2: Taylor to r^8 }
+  k := integer(_roundreal(_mulreal(x, 1.4426950408889634)));
   x := _subreal(x, _mulreal(_inttoreal(k), 0.6931471805599453));
-  s := 1.0; t := 1.0;
-  for i := 1 to 10 do begin
-    t := _divreal(_mulreal(t, x), _inttoreal(i));
-    s := _addreal(s, t);
-  end;
+  s := _addreal(1.0, _mulreal(x, _addreal(1.0, _mulreal(x, _addreal(0.5, _mulreal(x,
+       _addreal(0.16666666666666666, _mulreal(x, _addreal(0.041666666666666664, _mulreal(x,
+       _addreal(0.008333333333333333, _mulreal(x, _addreal(0.001388888888888889, _mulreal(x,
+       _addreal(1.984126984126984E-4, _mulreal(x, 2.48015873015873E-5))))))))))))))));
   while k > 0 do begin s := _mulreal(s, 2.0); k := k - 1; end;
   while k < 0 do begin s := _mulreal(s, 0.5); k := k + 1; end;
   Exp := s;
@@ -1384,24 +2244,21 @@ end;
 
 function Ln(x: real): real;
 var n: boolean;
-    e, i: integer;
+    e: integer;
     m: longint;
-    y, y2, t, s: real;
+    y, y2, s: real;
 begin
   if _cmpreal(x, 0.0) <= 0 then RunError(207);
   Unpack(x, n, e, m);
   { x = 2^(e-127) * f, f in [1,2) }
   x := MkReal(false, 127, m);
-  { ln f = 2 atanh((f-1)/(f+1)) }
+  { ln f = 2 atanh((f-1)/(f+1)) = 2 (y + y^3/3 + ... + y^13/13) }
   y := _divreal(_subreal(x, 1.0), _addreal(x, 1.0));
   y2 := _mulreal(y, y);
-  s := 0.0; t := y;
-  i := 1;
-  while i <= 13 do begin
-    s := _addreal(s, _divreal(t, _inttoreal(i)));
-    t := _mulreal(t, y2);
-    i := i + 2;
-  end;
+  s := _mulreal(y, _addreal(1.0, _mulreal(y2, _addreal(0.3333333333333333, _mulreal(y2,
+       _addreal(0.2, _mulreal(y2, _addreal(0.14285714285714285, _mulreal(y2,
+       _addreal(0.1111111111111111, _mulreal(y2, _addreal(0.09090909090909091, _mulreal(y2,
+       0.07692307692307693)))))))))))));
   Ln := _addreal(_mulreal(s, 2.0), _mulreal(_inttoreal(e - 127), 0.6931471805599453));
 end;
 
@@ -1412,21 +2269,18 @@ begin
 end;
 
 function Sin(x: real): real;
-var k, i: integer;
-    t, s, x2: real;
+var k: integer;
+    x2: real;
 begin
-  { reduce to [-pi, pi] }
-  k := integer(_roundreal(_divreal(x, 6.283185307179586)));
+  { reduce to [-pi, pi], then to [-pi/2, pi/2]: Taylor to x^11 }
+  k := integer(_roundreal(_mulreal(x, 0.15915494309189535)));
   x := _subreal(x, _mulreal(_inttoreal(k), 6.283185307179586));
+  if _cmpreal(x, 1.5707963267948966) > 0 then x := _subreal(3.141592653589793, x)
+  else if _cmpreal(x, -1.5707963267948966) < 0 then x := _subreal(-3.141592653589793, x);
   x2 := _mulreal(x, x);
-  s := x; t := x;
-  i := 1;
-  while i <= 8 do begin
-    t := _negreal(_divreal(_mulreal(t, x2), _inttoreal((2 * i) * (2 * i + 1))));
-    s := _addreal(s, t);
-    i := i + 1;
-  end;
-  Sin := s;
+  Sin := _mulreal(x, _addreal(1.0, _mulreal(x2, _addreal(-0.16666666666666666, _mulreal(x2,
+         _addreal(0.008333333333333333, _mulreal(x2, _addreal(-1.984126984126984E-4, _mulreal(x2,
+         _addreal(2.755731922398589E-6, _mulreal(x2, -2.505210838544172E-8)))))))))));
 end;
 
 function Cos(x: real): real;
@@ -1436,8 +2290,7 @@ end;
 
 function ArcTan(x: real): real;
 var neg, inv: boolean;
-    t, s, x2: real;
-    i: integer;
+    s, x2: real;
 begin
   neg := _cmpreal(x, 0.0) < 0;
   if neg then x := _negreal(x);
@@ -1446,13 +2299,10 @@ begin
   { reduce once more: atan x = 2 atan(x / (1 + sqrt(1+x^2))) }
   x := _divreal(x, _addreal(1.0, _sqrtreal(_addreal(1.0, _mulreal(x, x)))));
   x2 := _mulreal(x, x);
-  s := x; t := x;
-  i := 1;
-  while i <= 7 do begin
-    t := _negreal(_mulreal(t, x2));
-    s := _addreal(s, _divreal(t, _inttoreal(2 * i + 1)));
-    i := i + 1;
-  end;
+  s := _mulreal(x, _addreal(1.0, _mulreal(x2, _addreal(-0.3333333333333333, _mulreal(x2,
+       _addreal(0.2, _mulreal(x2, _addreal(-0.14285714285714285, _mulreal(x2,
+       _addreal(0.1111111111111111, _mulreal(x2, _addreal(-0.09090909090909091, _mulreal(x2,
+       _addreal(0.07692307692307693, _mulreal(x2, -0.06666666666666667)))))))))))))));
   s := _mulreal(s, 2.0);
   if inv then s := _subreal(1.5707963267948966, s);
   if neg then s := _negreal(s);
