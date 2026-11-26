@@ -106,6 +106,7 @@ var
   lastCur: longint;
   colours: boolean;                  { syntax colours on (Ctrl+K) }
   asmMode: boolean;                  { the text is assembly: its own colours }
+  cMode: boolean;                    { the text is C (NAME.C): its comments, strings, keywords }
   ckValid: longint;                  { checkpoints up to here are valid }
   rowSt, rowEnd: array[0..31] of byte;   { state at the start / after each screen row }
   rowsValid: boolean;                { rowPos still holds (no edit since) }
@@ -441,6 +442,8 @@ const
   stOpening = 6; stClosing = 7;
   { in an asm block: its text, a ; comment, a brace comment, a "string" }
   stAsm = 8; stAsmLine = 9; stAsmBrace = 10; stAsmStr = 11;
+  { C: a comment, a "string" or 'c', a # line }
+  stCCom = 12; stCStr = 13; stCChr = 14; stCDir = 15;
   CkStep = 256;
   colKeyword = 1; colComment = 13; colString = 7; colNumber = 3; colDirective = 8;
   cLetter = 1; cDigit = 2; cHex = 4;
@@ -473,11 +476,35 @@ begin
   end;
 end;
 
+function IsCKeyword(const s: string): boolean;
+begin
+  case s[1] of
+    'b': IsCKeyword := s = 'break';
+    'c': IsCKeyword := (s = 'case') or (s = 'char') or (s = 'const') or (s = 'continue');
+    'd': IsCKeyword := (s = 'default') or (s = 'do') or (s = 'double');
+    'e': IsCKeyword := (s = 'else') or (s = 'enum') or (s = 'extern');
+    'f': IsCKeyword := (s = 'float') or (s = 'for');
+    'g': IsCKeyword := s = 'goto';
+    'i': IsCKeyword := (s = 'if') or (s = 'int') or (s = 'inline');
+    'l': IsCKeyword := s = 'long';
+    'r': IsCKeyword := (s = 'register') or (s = 'return');
+    's': IsCKeyword := (s = 'short') or (s = 'signed') or (s = 'sizeof') or (s = 'static') or (s = 'struct') or (s = 'switch');
+    't': IsCKeyword := s = 'typedef';
+    'u': IsCKeyword := (s = 'union') or (s = 'unsigned');
+    'v': IsCKeyword := (s = 'void') or (s = 'volatile');
+    'w': IsCKeyword := s = 'while';
+  else
+    IsCKeyword := false;
+  end;
+end;
+
 { colour of the characters in a state (low nibble: text, high: background) }
 function StateAttr(st: byte): byte;
 begin
   case st of
-    stBrace, stParen, stLine, stOpening, stClosing, stAsmLine, stAsmBrace: StateAttr := (aText and $F0) or colComment;
+    stBrace, stParen, stLine, stOpening, stClosing, stAsmLine, stAsmBrace, stCCom: StateAttr := (aText and $F0) or colComment;
+    stCStr, stCChr: StateAttr := (aText and $F0) or colString;
+    stCDir: StateAttr := (aText and $F0) or colDirective;
     stAsmStr: StateAttr := (aText and $F0) or colString;
     stDirective: StateAttr := (aText and $F0) or colDirective;
     stString: StateAttr := (aText and $F0) or colString;
@@ -520,11 +547,17 @@ begin
             if i < 15 then begin i := i + 1; w[i] := chr(Mem[TB + e] or 32); end;
             e := e + 1;
           end;
-          if (c or 32 = 97) and WordAt(q, 'asm') then st := stAsm;
+          if (c or 32 = 97) and not cMode and WordAt(q, 'asm') then st := stAsm;
           if paint then begin
             w[0] := chr(i);
             a := aText;
-            if (i >= 2) and (i <= 14) then if IsKeyword(w) then a := attrKw;
+            if (i >= 2) and (i <= 14) then begin
+              if cMode then begin
+                { C keeps the case: only lower-case words are keywords }
+                for n := 1 to i do if Mem[TB + q + n - 1] <> ord(w[n]) then i := 0;
+                if (i > 0) and IsCKeyword(w) then a := attrKw;
+              end else if IsKeyword(w) then a := attrKw;
+            end;
             while q < e do begin
               if col < 512 then lineAttr[col] := a;
               col := col + 1; q := q + 1;
@@ -534,11 +567,18 @@ begin
         else begin
           if q + 1 < len then n := Mem[TB + q + 1] else n := 0;
           a := aText;
-          if c = 123 then begin                                   { brace }
+          if cMode and ((c = 123) or (c = 39) or (c = 34) or (c = 35) or ((c = 47) and (n = 42))) then begin
+            { C: braces are blocks; /* comments, "strings", 'c', # lines }
+            if (c = 47) and (n = 42) then begin st := stOpening; a := attrComment; end
+            else if c = 34 then begin st := stCStr; a := attrString; end
+            else if c = 39 then begin st := stCChr; a := attrString; end
+            else if c = 35 then begin st := stCDir; a := StateAttr(stCDir); end;
+          end
+          else if c = 123 then begin                                   { brace }
             if n = 36 then st := stDirective else st := stBrace;
             a := StateAttr(st);
           end
-          else if (c = 40) and (n = 42) then begin st := stOpening; a := attrComment; end
+          else if (c = 40) and (n = 42) and not cMode then begin st := stOpening; a := attrComment; end
           else if (c = 47) and (n = 47) then begin st := stLine; a := attrComment; end
           else if c = 39 then begin st := stString; a := attrString; end
           else if paint and (((cls[c] and cDigit) <> 0) or ((c = 36) and ((cls[n] and cHex) <> 0))
@@ -575,7 +615,40 @@ begin
         { the second character of a paren-star bracket }
         if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
         q := q + 1;
-        if st = stOpening then st := stParen else st := stNormal;
+        if st = stClosing then st := stNormal
+        else if cMode then st := stCCom
+        else st := stParen;
+      end;
+      stCCom: begin
+        { a C comment: to the star-slash }
+        while (q < upto) and not ((Mem[TB + q] = 42) and (q + 1 < len) and (Mem[TB + q + 1] = 47)) do begin
+          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin
+          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          q := q + 1; st := stClosing;
+        end;
+      end;
+      stCStr, stCChr, stCDir: begin
+        { a C string or character (a backslash takes the next character with
+          it), a # line: to the end of the line }
+        a := StateAttr(st);
+        if st = stCStr then n := 34 else if st = stCChr then n := 39 else n := 10;
+        while (q < upto) and (Mem[TB + q] <> n) and (Mem[TB + q] <> 10) do begin
+          if (Mem[TB + q] = 92) and (st <> stCDir) and (q + 1 < upto) and (Mem[TB + q + 1] <> 10) then begin
+            if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+            q := q + 1;
+          end;
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1;
+        end;
+        if q < upto then begin
+          if Mem[TB + q] <> 10 then begin
+            if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          end;
+          q := q + 1; st := stNormal;
+        end;
       end;
       stParen: begin
         { to the closing star-paren }
@@ -805,8 +878,8 @@ begin
   else if colours then begin
     q := p; col := 0;
     Scan(q, e, st, true, col);
-    { a line ends strings and // comments }
-    if (st = stString) or (st = stLine) then st := stNormal;
+    { a line ends strings and // comments (C: also "strings", 'c' and # lines) }
+    if (st = stString) or (st = stLine) or (st = stCStr) or (st = stCChr) or (st = stCDir) then st := stNormal;
     if (st = stAsmLine) or (st = stAsmStr) then st := stAsm;
   end;
   { the visible part: from column left, at most 80 characters }
@@ -835,6 +908,9 @@ begin
   { what F5/F7 will make: Ctrl+T, or $SCHUB / .schub at the top of the text }
   if IsAsm then begin
     if WantSchub or IsAsmSchub(len) then TargetName := 'SCHUB assembly' else TargetName := '65C816 assembly';
+  end
+  else if cMode then begin
+    if WantSchub or CSchubPragma(len) then TargetName := 'C SCHUB' else TargetName := 'C 65C816';
   end
   else if WantSchub or SchubDirective(len) then TargetName := 'SCHUB' else TargetName := '65C816';
 end;
@@ -1072,6 +1148,7 @@ begin
   HidePointer;
   Track;
   if IsAsm <> asmMode then begin asmMode := not asmMode; redrawAll := true; TextChanged(0); end;
+  if IsCText(fileName) <> cMode then begin cMode := not cMode; redrawAll := true; TextChanged(0); end;
   { an edit on a row that is neither the old nor the new cursor row }
   if (editLine <> -1) and (editLine <> curLine) then redrawAll := true;
   if (scrollBy <> 0) and not redrawAll then begin
@@ -1491,7 +1568,7 @@ begin
   end else begin
     msg := 'Compiling...';
     DrawStatus;
-    ok := CompileSource(len);
+    if IsCText(fileName) then ok := CompileC(len, fileName) else ok := CompileSource(len);
     if ok then begin
       msg := 'Compiled: '; AddNum(LinesDone); Add(' lines, '); AddNum(CodeSize); Add(' bytes code, ');
       AddNum(DataSize); Add(' bytes data, '); AddNum((Frames - t) * 10 div 6); Add('0 ms');
@@ -2178,7 +2255,8 @@ begin
     if Pressed(scT) then begin
       WantSchub := not WantSchub;
       if WantSchub then msg := 'Target: SCHUB (the RISC-V co-processor)'
-      else if SchubDirective(len) then msg := 'Target: SCHUB ($SCHUB at the top of the text)'
+      else if SchubDirective(len) or IsCText(fileName) and CSchubPragma(len) then
+        msg := 'Target: SCHUB (named at the top of the text)'
       else msg := 'Target: 65C816';
     end;
     if Pressed(scB) then begin                                     { Ctrl+B: breakpoint }
@@ -2432,6 +2510,7 @@ begin
   aText := $6E;        { light blue on blue, like BASIC }
   colours := true;
   asmMode := false;
+  cMode := false;
   AsmWorkPtr := PAsmWork(@lineAttr);
   scrollBy := 0; startLine := 1; editLine := -1;
   ckValid := 0; Mem[CkState] := stNormal; rowsValid := false;

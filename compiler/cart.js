@@ -33,6 +33,157 @@ import { assemble816, formatListing, AsmError } from './asm816.js';
 import { helpAsm816 } from './helptext.js';
 import { genRV, buildStub, RVLAYOUT } from './backrv.js';
 import { assembleRV } from './asmrv.js';
+import { CFront } from './cfront.js';
+import { cLoaders } from './mcc.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// {$I file}: next to the file that includes it (cart/ncomp.pas includes ccomp.inc)
+export function includeNextTo(fn, from) {
+  const p = path.resolve(from ? path.dirname(from) : '.', fn);
+  return fs.existsSync(p) ? { text: fs.readFileSync(p, 'latin1'), name: p } : null;
+}
+
+const CLIB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'clib');
+
+// The C library (clib/src), compiled with the PC C compiler into the
+// cartridge's library block, so C programs compiled on the MERIDIAN
+// (cart/ccomp.pas) link against it like Pascal programs against the units.
+// Its routines and variables are exported as ".name" (a name no Pascal
+// identifier can have); its address constants in data are stored by the
+// routine CLIBINIT, which runs with the units' initialisation.
+const CLIB_FILES = ['crt0.c', 'stdio.c', 'stdlib.c', 'string.c', 'ctype.c', 'math.c', 'time.c'];
+function buildCLib(target, front, loadC) {
+  const cf = new CFront(target, front, { loadC, farFnPtr: true });
+  for (const f of CLIB_FILES) {
+    const s = loadC(f, null, true);
+    if (!s) throw new CompileError(`C library: ${f} not found`);
+    cf.compileTU(s.text, s.name);
+  }
+  for (const g of cf.pendingGlobals) if (!g.emitted) cf.emitGlobal(g, null, null);
+  const defined = new Set(cf.procs.map(p => p.label));
+  for (const [, e] of cf.ext) if (e.kind === 'var' && e.emitted) defined.add(e.label);
+  for (const u of cf.uses) if (!defined.has(u.label)) throw new CompileError(`C library: undefined reference to '${u.name}'`);
+  const P = target.ptrSize;
+  const code = [];
+  for (const r of cf.relocs) {
+    if (r.fn) { code.push({ o: 'faddr', g: r.target }, { o: 'stg', g: r.g, off: r.off, mt: '32' }); continue; }
+    code.push({ o: 'gaddr', g: r.target, off: r.toff });
+    if (r.far && P === 2) code.push({ o: 'ext', u: true });
+    code.push({ o: 'stg', g: r.g, off: r.off, mt: r.far || P === 4 ? '32' : 'u16' });
+  }
+  const init = { label: 'CLIBINIT', name: 'C library init', level: 1, locSize: 0, parBytes: 0, hasSL: false, retCls: null, resultLoc: null, parent: null, code, module: 'c' };
+  const procs = [...cf.procs, init];
+  const modules = new Set(['c']);
+  for (const x of [...procs, ...cf.data, ...cf.bss]) modules.add(x.module);
+  const exports = [];
+  for (const [name, e] of cf.ext) {
+    if (e.isStatic || name.length > 14) continue;
+    if (e.kind === 'func' && defined.has(e.label)) exports.push({ name: '.' + name, kind: 7, label: e.label });
+    else if (e.kind === 'var' && e.emitted) exports.push({ name: '.' + name, kind: 8, label: e.label });
+  }
+  return { procs, data: cf.data, bss: cf.bss, modules, exports };
+}
+
+// the C headers (clib/include) for the on-device compiler, without their
+// comments. The directory: the count (2 bytes), then 20 bytes an entry:
+// the name (length byte, 12 characters, upper case), the offset of the
+// text from the directory (4 bytes) and its length (3 bytes)
+export function cHeaderBlob() {
+  const dir = path.join(CLIB_ROOT, 'include');
+  const files = fs.readdirSync(dir).filter(f => /\.h$/.test(f)).sort();
+  const texts = files.map(f => stripC(fs.readFileSync(path.join(dir, f), 'latin1')));
+  files.push('_predef.h'); texts.push(C_PREDEF);
+  const head = 2 + 20 * files.length;
+  const total = head + texts.reduce((a, t) => a + t.length, 0);
+  const b = new Uint8Array(total);
+  b[0] = files.length & 255; b[1] = files.length >> 8;
+  let off = head;
+  files.forEach((f, i) => {
+    const e = 2 + 20 * i;
+    const n = f.toUpperCase().slice(0, 12);
+    b[e] = n.length;
+    for (let k = 0; k < n.length; k++) b[e + 1 + k] = n.charCodeAt(k);
+    for (let k = 0; k < 4; k++) b[e + 13 + k] = (off >>> (8 * k)) & 255;
+    for (let k = 0; k < 3; k++) b[e + 17 + k] = (texts[i].length >>> (8 * k)) & 255;
+    for (let k = 0; k < texts[i].length; k++) b[off + k] = texts[i].charCodeAt(k) & 255;
+    off += texts[i].length;
+  });
+  return { bytes: b, count: files.length };
+}
+// The on-device C compiler's other tables (cart/cpre.inc reads them):
+// CMSGS its error messages (cart/cmsgs.txt, numbered from 1 as the ce...
+// constants), then the spellings of the tokens 101..147; CKEYWORDS an index
+// by the first letter (a..z, _: 27 words, offsets from CKEYWORDS) and the
+// keywords (length, the characters, the token); CUNITS the units' names in
+// the order of the export table's unit numbers.
+const C_TOKENS = ['+', '-', '*', '/', '%', '++', '--', '==', '!=', '<', '<=', '>', '>=', '&&', '||', '!', '~', '&',
+  '|', '^', '<<', '>>', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '?', ':', ';', ',', '.', '->',
+  '(', ')', '[', ']', '{', '}', '...', 'end of line'];
+export const C_KEYWORDS = [['auto', 160], ['break', 161], ['case', 162], ['char', 163], ['const', 164], ['continue', 165],
+  ['default', 166], ['do', 167], ['double', 168], ['else', 169], ['enum', 170], ['extern', 171], ['float', 172],
+  ['for', 173], ['goto', 174], ['if', 175], ['int', 176], ['long', 177], ['register', 178], ['return', 179],
+  ['short', 180], ['signed', 181], ['sizeof', 182], ['static', 183], ['struct', 184], ['switch', 185],
+  ['typedef', 186], ['union', 187], ['unsigned', 188], ['void', 189], ['volatile', 190], ['while', 191],
+  ['_Bool', 192], ['__far', 193], ['_far', 193], ['inline', 194], ['__inline', 194], ['__inline__', 194],
+  ['restrict', 195], ['__restrict', 195], ['__builtin_va_arg', 196], ['_Noreturn', 197], ['__attribute__', 198],
+  ['__signed__', 181], ['__const', 164], ['__volatile__', 190]];
+// the macros the PC compiler defines (cfront.js compileTU), for the on-device one
+const C_PREDEF = [
+  '#define __STDC__ 1', '#define __STDC_VERSION__ 199901L', '#define __MERIDIAN__ 1', '#define __MERIDIAN_C__ 1',
+  '#define __CHAR_UNSIGNED__ 1', '#define __SIZEOF_INT__ 2', '#define __SIZEOF_LONG__ 4', '#define __SIZEOF_FLOAT__ 4',
+  '#define __SIZEOF_DOUBLE__ 4', '#ifdef __SCHUB__', '#define __SIZEOF_POINTER__ 4', '#define __riscv 1', '#else',
+  '#define __SIZEOF_POINTER__ 2', '#define __M816__ 1', '#define __65C816__ 1', '#endif', ''].join('\n');
+
+export function cTablesAsm(unitOrder) {
+  const cartDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cart');
+  const msgs = fs.readFileSync(path.join(cartDir, 'cmsgs.txt'), 'latin1').replace(/\r/g, '').split('\n');
+  while (msgs.length && msgs[msgs.length - 1] === '') msgs.pop();
+  const last = /ceLast = (\d+);/.exec(fs.readFileSync(path.join(cartDir, 'cpre.inc'), 'latin1'));
+  if (!last || +last[1] !== msgs.length) throw new CompileError(`cart/cmsgs.txt has ${msgs.length} messages, cart/cpre.inc ceLast says ${last && last[1]}`);
+  const all = [...msgs, ...C_TOKENS];
+  const bytes = [all.length & 255, all.length >> 8];
+  for (const m of all) { bytes.push(m.length); for (const c of m) bytes.push(c.charCodeAt(0)); }
+  const kw = [];
+  const index = [];
+  const buckets = 'abcdefghijklmnopqrstuvwxyz_';
+  for (const b of buckets) {
+    index.push(2 * buckets.length + kw.length);
+    for (const [n, code] of C_KEYWORDS.filter(([n]) => n[0] === b)) { kw.push(n.length); for (const c of n) kw.push(c.charCodeAt(0)); kw.push(code); }
+    kw.push(0);
+  }
+  const kwBytes = [];
+  for (const o of index) kwBytes.push(o & 255, o >> 8);
+  kwBytes.push(...kw);
+  const units = [unitOrder.length];
+  for (const u of unitOrder) { units.push(u.length); for (const c of u) units.push(c.charCodeAt(0)); }
+  const lines = (b) => byteLines(Uint8Array.from(b));
+  return `\t.bankfit\nCMSGS\n${lines(bytes)}\nCKEYWORDS\n${lines(kwBytes)}\nCUNITS\n${lines(units)}\n`;
+}
+
+// C text without its comments (strings and characters kept); the lines stay
+// where they were (the directives need them)
+export function stripC(t) {
+  let o = '';
+  const NL = '\n', BS = String.fromCharCode(92);
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < t.length && t[j] !== c && t[j] !== NL) { if (t[j] === BS) j++; j++; }
+      o += t.slice(i, j + 1); i = j;
+    } else if (c === '/' && t[i + 1] === '*') {
+      let j = t.indexOf('*/', i + 2);
+      if (j < 0) j = t.length;
+      o += ' ' + NL.repeat(t.slice(i, j).split(NL).length - 1);
+      i = j + 1;
+    } else if (c === '/' && t[i + 1] === '/') {
+      while (i + 1 < t.length && t[i + 1] !== NL) i++;
+    } else if (c !== '\r') o += c;
+  }
+  return o.split(NL).map(l => l.replace(/\s+$/, '')).join(NL);
+}
 
 // SCHUB programs compiled on the MERIDIAN (RISC-V addresses = MERIDIAN addresses)
 export const RVC = {
@@ -52,13 +203,15 @@ function buildRvLibrary(opts, libUnits) {
   const tgt = TARGETS.schub;
   const front = new Front(tgt, { loadSource: opts.loadUnit, loadInclude: opts.loadInclude, defines: [...tgt.defines] });
   const src = `program RVLIB;\nuses ${libUnits.join(', ')};\nbegin\nend.\n`;
-  const prog = front.compileProgram(src, 'rvlib.pas');
+  let prog = front.compileProgram(src, 'rvlib.pas');
+  const clib = buildCLib(tgt, front, opts.loadC);
+  prog = { ...prog, procs: [...prog.procs, ...clib.procs], data: [...prog.data, ...clib.data], bss: [...prog.bss, ...clib.bss], inits: [...prog.inits, 'CLIBINIT'] };
   const { asm } = genRV(prog, { userEntry: RVC.CODE, heapVar: RVC.HEAPVAR, stackTop: RVC.STACK, debugHook: true });
   const a = assembleRV(asm, { org: RVC.LIB });
   const end = a.symbols.get('PAS_BSS');
   if (a.symbols.get('PAS_HEAP') > RVC.LIBMAX) throw new CompileError('SCHUB library too large');
   const stub = buildStub();
-  return { front, symbols: a.symbols, bytes: a.bytes.slice(0, end - RVC.LIB), stub: stub.bytes };
+  return { front, clib, symbols: a.symbols, bytes: a.bytes.slice(0, end - RVC.LIB), stub: stub.bytes };
 }
 const byteLines = (b) => { const o = []; for (let i = 0; i < b.length; i += 32) o.push('\t.byte ' + Array.from(b.subarray(i, i + 32)).join(',')); return o.join('\n'); };
 
@@ -493,38 +646,47 @@ export function buildCartridge(source, fileName, opts) {
   const res = { ok: false, errors: [] };
   try {
     const front = new Front(target, {
-      loadSource: opts.loadUnit, loadInclude: opts.loadInclude,
+      loadSource: opts.loadUnit, loadInclude: opts.loadInclude || includeNextTo,
       defines: [...target.defines, 'CARTRIDGE'],
     });
     let prog = front.compileProgram(source, fileName);
     const libModules = new Set(['system', ...(opts.libUnits || [])]);
     for (const u of libModules) if (!front.units.has(u)) throw new CompileError(`the cartridge program must use unit '${u}'`);
+    const unitOrder = [...libModules];
+    // the C library joins the library block
+    if (!opts.loadC) opts = { ...opts, loadC: cLoaders().loadC };
+    const clib = buildCLib(target, front, opts.loadC);
+    prog = { ...prog, procs: [...prog.procs, ...clib.procs], data: [...prog.data, ...clib.data], bss: [...prog.bss, ...clib.bss] };
+    const codeModules = new Set(libModules);
+    for (const m of clib.modules) codeModules.add(m);
 
     // keep every library routine (programs compiled on the MERIDIAN may call
     // any of them) and what the main program reaches
     const procs = new Map(prog.procs.map(p => [p.label, p]));
     const live = new Set();
-    const work = [prog.main, ...prog.inits, ...prog.procs.filter(p => libModules.has(p.module)).map(p => p.label)];
+    const work = [prog.main, ...prog.inits, ...prog.procs.filter(p => codeModules.has(p.module)).map(p => p.label)];
     while (work.length) {
       const l = work.pop();
       if (live.has(l)) continue;
       const p = procs.get(l);
       if (!p) continue;
       live.add(l);
-      for (const ins of p.code) { if (ins.o === 'call') work.push(ins.l); if (ins.o === 'gaddr' && typeof ins.g === 'string') work.push(ins.g); }
+      for (const ins of p.code) { if (ins.o === 'call') work.push(ins.l); if ((ins.o === 'gaddr' || ins.o === 'faddr') && typeof ins.g === 'string') work.push(ins.g); }
       if (p.parent) work.push(p.parent);
     }
     prog = { ...prog, procs: prog.procs.filter(p => live.has(p.label)) };
 
     const libInits = prog.inits.filter(l => libModules.has(l.replace(/^U_|_init$/g, '')));
     const progInits = prog.inits.filter(l => !libInits.includes(l));
-    const exp = buildExports(front, libModules);
+    libInits.push('CLIBINIT');
+    const exp = buildExports(front, libModules, { unitOrder, cExports: clib.exports });
     const rv = buildRvLibrary(opts, [...libModules].filter(u => u !== 'system'));
     const rvExp = buildExports(rv.front, libModules, {
-      prefix: 'R', rt: RT_EXPORTS_RV,
+      prefix: 'R', rt: RT_EXPORTS_RV, unitOrder, cExports: rv.clib.exports,
       resolve: (l) => { const v = rv.symbols.get(l); if (v === undefined) throw new CompileError(`SCHUB library: no symbol ${l}`); return v; },
     });
-    const rvAsm = `${rvExp.asm}\t.bankfit\nRVLIBIMG\n${byteLines(rv.bytes)}\nRVLIBIMG_END\nRVSTUBIMG\n${byteLines(rv.stub)}\nRVSTUBIMG_END\n`;
+    const hdr = cHeaderBlob();
+    const rvAsm = `\t.bankfit\nCHEADERS\n${byteLines(hdr.bytes)}\n${cTablesAsm(unitOrder)}${rvExp.asm}\t.bankfit\nRVLIBIMG\n${byteLines(rv.bytes)}\nRVLIBIMG_END\nRVSTUBIMG\n${byteLines(rv.stub)}\nRVSTUBIMG_END\n`;
     const name = (opts.name || 'PASCAL').toUpperCase().slice(0, 16);
 
     const header = `
@@ -561,6 +723,11 @@ LIBSTAMP
 	.long RVLIBIMG_END-RVLIBIMG
 	.long RVSTUBIMG
 	.word RVSTUBIMG_END-RVSTUBIMG
+; the C headers and tables for the on-device C compiler (cart/ccomp.inc)
+	.long CHEADERS
+	.long CMSGS
+	.long CKEYWORDS
+	.long CUNITS
 	.al
 	.xl
 ; the library block: $40:0000..LIBCODE_END, stamped from here on
@@ -624,7 +791,7 @@ ${progInits.map(l => `\tjsl ${l}`).join('\n')}
 	jsl ${prog.main}
 	jml rt_exit
 `;
-    const asm = gen816(prog, { far: true, cart: { header, libModules, tailAsm: boot + EDIT_ASM + helpAsm816() + DEBUG_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
+    const asm = gen816(prog, { far: true, cart: { header, libModules: codeModules, tailAsm: boot + EDIT_ASM + helpAsm816() + DEBUG_ASM + exp.asm + rvAsm + MER_STUB + se.image } });
     res.asm = asm;
     const a = assemble816(asm, { listing: !!opts.listing });
     res.symbols = a.symbols;
@@ -764,6 +931,10 @@ function buildExports(front, libModules, o = {}) {
   const add = (name, e) => { if (!entries.has(name)) entries.set(name, e); };
   for (const [uname, u] of front.units) {
     if (!libModules.has(uname)) continue;
+    // the unit's number (0 System, then as the cartridge lists them): C sees
+    // the units it names with #pragma unit
+    const unit = o.unitOrder ? o.unitOrder.indexOf(uname) : 0;
+    const add = (name, e) => { if (!entries.has(name)) entries.set(name, { ...e, unit }); };
     for (const [name, s] of u.iface.syms) {
       if (name.length > 19) continue;
       if (s.kind === 'const') {
@@ -797,12 +968,14 @@ function buildExports(front, libModules, o = {}) {
       }
     }
   }
-  for (const r of (o.rt || RT_EXPORTS)) add(r, { kind: 6, code: 0, ref: 0, value: val(r) });
+  for (const r of (o.rt || RT_EXPORTS)) add(r, { kind: 6, code: 0, ref: 0, value: val(r), unit: 255 });
+  // the C library: kind 7 a function, 8 a variable (the headers give the types)
+  for (const c of o.cExports || []) add(c.name, { kind: c.kind, code: 0, ref: 0, value: val(c.label), unit: 254 });
   const names = [...entries.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const lines = ['\t.bankfit', '; ---- export table for the on-device compiler', `${P}EXPORTS`];
   for (const n of names) {
     const e = entries.get(n);
-    lines.push(`\t.byte ${n.length}\n\t.text "${n}"\n\t.fill ${19 - n.length}\n\t.byte ${e.kind}, ${e.code}\n\t.dword ${e.value}\n\t.word ${e.ref}\n\t.byte ${e.npar || 0}, ${e.flags || 0}\n\t.word ${e.pidx || 0}\n\t.fill 8`);
+    lines.push(`\t.byte ${n.length}\n\t.text "${n}"\n\t.fill ${19 - n.length}\n\t.byte ${e.kind}, ${e.code}\n\t.dword ${e.value}\n\t.word ${e.ref}\n\t.byte ${e.npar || 0}, ${e.flags || 0}\n\t.word ${e.pidx || 0}\n\t.byte ${e.unit || 0}\n\t.fill 7`);
   }
   lines.push(`${P}EXPPARAMS`);
   for (const p of params) lines.push(`\t.byte ${p.join(', ')}`);

@@ -6,7 +6,7 @@
   "bin": { "mpc": "compiler/mpc.js", "mcc": "compiler/mcc.js" },
   "scripts": {
     "start": "node ide/server.js",
-    "test": "node tests/run.js && node tests/crun.js && node tests/cerrors.js && node tests/examples.js && node tests/ncrun.js && node tests/ncrun.js --schub && node tests/cartide.js && node tests/colours.js && node tests/mouse.js && node tests/asm.js && node tests/realfuzz.js && node tests/codegen.js && node tests/workshop.js && node tests/asmblock.js && node tests/exitint.js && node tests/schubide.js && node tests/debug.js && node tests/standalone.js && node tests/brun.js && node tests/undo.js && node tests/select.js && node tests/recover.js",
+    "test": "node tests/run.js && node tests/crun.js && node tests/cerrors.js && node tests/examples.js && node tests/ncrun.js && node tests/ncrun.js --schub && node tests/nccrun.js && node tests/nccrun.js --schub && node tests/cartc.js && node tests/cartide.js && node tests/colours.js && node tests/mouse.js && node tests/asm.js && node tests/realfuzz.js && node tests/codegen.js && node tests/workshop.js && node tests/asmblock.js && node tests/exitint.js && node tests/schubide.js && node tests/debug.js && node tests/standalone.js && node tests/brun.js && node tests/undo.js && node tests/select.js && node tests/recover.js",
     "cart": "node compiler/mkcart.js"
   },
   "license": "GPL-3.0-or-later"

@@ -17,7 +17,7 @@ export function ncCart() {
   return r;
 }
 
-export function ncRun(src, { frames = 3000, keys = '', files = {} } = {}) {
+export function ncRun(src, { frames = 3000, keys = '', files = {}, name = '' } = {}) {
   const r = ncCart();
   const m = new Meridian(roms);
   m.insertCartridge(r.bytes);
@@ -25,6 +25,9 @@ export function ncRun(src, { frames = 3000, keys = '', files = {} } = {}) {
   m.mem.set(b, 0x200000);
   const n = b.length;
   for (let i = 0; i < 4; i++) m.mem[0x21fffc + i] = (n >>> (8 * i)) & 255;
+  // the file's name (a C text: NAME.C)
+  m.mem[0x21ff00] = name.length;
+  for (let i = 0; i < name.length; i++) m.mem[0x21ff01 + i] = name.charCodeAt(i);
   for (const [name, text] of Object.entries(files)) {
     for (const d of m.drives) d.set(name, new Uint8Array(Buffer.from(text, 'latin1')));
   }

@@ -106,6 +106,7 @@ export class CFront {
     this.pf = pf;
     this.loadC = opts.loadC || (() => null);      // (name, fromFile, system) -> {text, name}
     this.defines = opts.defines || [];
+    this.fn4 = !!opts.farFnPtr && target.ptrSize === 2;
     this.procs = [];
     this.data = [];
     this.bss = [];
@@ -129,7 +130,8 @@ export class CFront {
   newLabel(p = 'CL') { return `${p}${++this.lbl}`; }
 
   // ---------------------------------------------------------- types
-  ptr(to, far = false) { return { k: 'ptr', to, far: !!far, size: far ? 4 : this.target.ptrSize }; }
+  // (opts.farFnPtr, the far code model: a function's address is 24 bit, its pointers 32)
+  ptr(to, far = false) { return { k: 'ptr', to, far: !!far, size: far || (this.fn4 && isFunc(to)) ? 4 : this.target.ptrSize }; }
   arr(of, n) { return { k: 'array', of, n, size: n === null ? 0 : n * of.size }; }
   alignOf(t) {
     if (!this.target.align) return 1;
@@ -341,6 +343,7 @@ export class CFront {
     const ctx = new FnCtx('PMAIN', 'C start');
     this.ctx = ctx;
     for (const r of this.relocs) {
+      if (r.fn) { this.emit({ o: 'faddr', g: r.target }); this.emit({ o: 'stg', g: r.g, off: r.off, mt: '32' }); continue; }
       this.emit({ o: 'gaddr', g: r.target, off: r.toff });
       if (r.far && this.target.ptrSize === 2) this.emit({ o: 'ext', u: true });
       this.emit({ o: 'stg', g: r.g, off: r.off, mt: r.far || this.target.ptrSize === 4 ? '32' : 'u16' });
@@ -976,7 +979,7 @@ export class CFront {
     const v = this.staticValue(this.conv(it.expr, it.type), it.pos);
     if (v.label) {
       if (!isPtr(it.type) && !(isInt(it.type) && it.type.size >= this.target.ptrSize)) this.err('an address does not fit here', it.pos);
-      this.relocs.push({ g: label, off: it.off, target: v.label, toff: v.off, far: it.type.size === 4 && this.target.ptrSize === 2 });
+      this.relocs.push({ g: label, off: it.off, target: v.label, toff: v.off, far: it.type.size === 4 && this.target.ptrSize === 2, fn: !!(v.fn && this.fn4) });
       return;
     }
     let n = v.v;
@@ -1001,7 +1004,7 @@ export class CFront {
     switch (e.n) {
       case 'const': return { v: e.v };
       case 'str': return { label: this.strLabel(e.bytes), off: 0 };
-      case 'fnaddr': return { label: e.sym.label, off: 0 };
+      case 'fnaddr': return { label: e.sym.label, off: 0, fn: true };
       case 'addr': case 'decay': return this.lvConst(e.e);
       case 'cvt': {
         const r = this.addrConst(e.e);
@@ -2390,7 +2393,7 @@ export class CFront {
         this.emit({ o: 'lit', s: this.cls(t), v: e.v });
         return;
       case 'str': this.emit({ o: 'gaddr', g: this.strLabel(e.bytes), off: 0 }); return;
-      case 'fnaddr': this.noteFn(e.sym, e.pos); this.emit({ o: 'gaddr', g: e.sym.label, off: 0 }); return;
+      case 'fnaddr': this.noteFn(e.sym, e.pos); this.emit(this.fn4 ? { o: 'faddr', g: e.sym.label } : { o: 'gaddr', g: e.sym.label, off: 0 }); return;
       case 'decay': case 'addr': {
         this.genAddr(e.e);
         // an address in bank 0 that is wanted as a __far pointer

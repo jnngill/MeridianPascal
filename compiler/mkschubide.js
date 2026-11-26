@@ -24,6 +24,7 @@ import { TARGETS, makeMer } from './compile.js';
 import { genRV } from './backrv.js';
 import { assembleRV } from './asmrv.js';
 import { helpAsmRV } from './helptext.js';
+import { includeNextTo } from './cart.js';
 
 // RUN: its host stub can run programs while the editor waits (request 8)
 export const IDE_LAYOUT = { LOAD: 0xa00000, MBOX: 0xa003f0, CODE: 0xa00400, STACK_TOP: 0xaffff0, RUN: true };
@@ -231,7 +232,7 @@ export function buildSchubIde() {
     return null;
   };
   const tgt = TARGETS.schub;
-  const front = new Front(tgt, { loadSource: loadUnit, defines: [...tgt.defines] });
+  const front = new Front(tgt, { loadSource: loadUnit, loadInclude: includeNextTo, defines: [...tgt.defines] });
   const main = path.join(root, 'cart', 'ide.pas');
   const prog = front.compileProgram(fs.readFileSync(main, 'latin1'), main);
   const L = IDE_LAYOUT;

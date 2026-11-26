@@ -33,6 +33,9 @@ const jobs = [
   ['SASMB.PAS', '{$SCHUB}\n' + fs.readFileSync(new URL('cases/23_asm.pas', import.meta.url), 'latin1')],
   ['HELLO.ASM', ex('hello.asm')],
   ['HELLORV.ASM', ex('hellorv.asm')],
+  // C: the on-device C compiler (cart/ccomp.inc) in both editors
+  ['TRICKY.C', fs.readFileSync(new URL('ccases/17_tricky.c', import.meta.url), 'latin1')],
+  ['SFLOAT.C', '#pragma schub\n' + fs.readFileSync(new URL('ccases/07_float.c', import.meta.url), 'latin1')],
 ];
 
 // load each text (F3), compile it (F9); the output it leaves in memory
@@ -59,7 +62,7 @@ function session(onSchub) {
     while (!/^ *(Compiled|Assembled|Error)/.test(line(29)) && k < 4000 && m.state === 'running') { frames(1); k++; }
     const t1 = n; frames(10);                                                        // the whole message drawn
     // code and data of a 65C816 program, of a SCHUB program, of assembly
-    const area = /\.ASM$/.test(name) ? [0x330000, 1024] : text.startsWith('{$SCHUB}') ? [0x080000, 8192] : [0x300000, 4096];
+    const area = /\.ASM$/.test(name) ? [0x330000, 1024] : /^(\{\$SCHUB\}|#pragma schub)/.test(text) ? [0x080000, 8192] : [0x300000, 4096];
     out.jobs.push({
       name, msg: line(29).trim().replace(/, \d+ ms$/, ''), frames: t1 - t0,
       bytes: Buffer.from(m.mem.subarray(area[0], area[0] + area[1])).toString('hex'),
@@ -119,6 +122,10 @@ for (let i = 0; i < jobs.length; i++) {
   let r = f5(/65C816 LINE 21/);
   check('F5 runs a 65C816 program from the SCHUB editor and comes back', r.ran && r.ended && r.back && ok(), r.scr + '\n' + m.screenText() + (m.schubFault || ''));
   check('the editor still has its text', /65C816 LINE/.test(m.screenText()) && /R816\.PAS/.test(line(1)), m.screenText());
+
+  load('RC.C', '#include <stdio.h>\nint main(void)\n{\n    int i;\n    for (i = 1; i <= 3; i++) printf("C LINE %d\\n", i * 7);\n    return 0;\n}\n');
+  r = f5(/C LINE 21/);
+  check('F5 runs a C program from the SCHUB editor', r.ran && r.ended && r.back && ok(), r.scr + '\n' + m.screenText() + (m.schubFault || ''));
 
   load('RRV.PAS', '{$SCHUB}\n' + prog('SCHUB'));
   r = f5(/SCHUB LINE 21/);
