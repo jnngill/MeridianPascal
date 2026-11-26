@@ -113,12 +113,15 @@ function machine(onSchub, withDisk = true) {
     check('FACT.MER runs without the cartridge', OUT.test(x.output.replace(/\r/g, '\n')), x.output);
   }
 
-  // an example from the C disk, opened there
+  // an example from the C disk: F6 picks drive 2, F3 opens it there
+  hold(0x0b); frames(10);
+  check('F6: drive 2', /drive 2/.test(line(1)), line(1));
   hold(0x04); frames(5);
   if (/Open another anyway|not saved/.test(screen())) { m.pushKey(89); frames(20); }
-  type('2:primes.c\n'); frames(30);
+  type('primes.c\n'); frames(30);
+  check('F3 opens PRIMES.C from the C disk', /Opened PRIMES\.C/.test(line(29)) && /PRIMES\.C +drive 2/.test(line(1)), screen());
   hold(0x01); frames(400);
-  check('PRIMES.C from the C disk compiles', /Compiled: \d+ lines/.test(line(29)), screen());
+  check('PRIMES.C compiles', /Compiled: \d+ lines/.test(line(29)), screen());
 }
 
 // ---- no C disk: the header is missing, the message says where it is

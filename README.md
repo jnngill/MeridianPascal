@@ -299,7 +299,7 @@ as in the PASCAL cartridge.
 C.DSK is an 8 MB FAT16 image like the core's disks. It holds the headers
 of `clib/include`, the sources of the C library (`clib/src`, for reading:
 the library itself is in the cartridge) and the C examples
-(`examples/*.c`, open them with F3, `2:mandel.c` for drive 2). `#include`
+(`examples/*.c`: F6 picks the drive, F3 opens one). `#include`
 looks on the current drive first, then on drives 1, 2 and 3; without the
 disk the compiler says that a header is missing.
 
