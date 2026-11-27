@@ -35,7 +35,8 @@ end;
 
 function SchubRunning: boolean;
 begin
-  SchubRunning := (Mem[$CD09] and 2) <> 0;
+  { on a core without SCHUB $CD09 reads $FF, so ask SchubPresent first }
+  SchubRunning := SchubPresent and ((Mem[$CD09] and 2) <> 0);
 end;
 
 function SchubCycles: longint;
@@ -54,6 +55,7 @@ end;
 {$IFNDEF SCHUB}
 procedure SchubStop;
 begin
+  if not SchubPresent then exit;
   Mem[$CD08] := 0;
   while (Mem[$CD09] and 6) <> 0 do ;
 end;
@@ -61,6 +63,7 @@ end;
 procedure SchubStart(addr: longint);
 var i: integer;
 begin
+  if not SchubPresent then exit;
   SchubStop;
   Mem[$CD0C] := addr and 255;
   Mem[$CD0D] := (addr shr 8) and 255;
