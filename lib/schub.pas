@@ -82,7 +82,8 @@ begin
   MemL[MBOX] := 1;
   while (MemL[MBOX] <> 2) and SchubRunning do
     if EscPressed then begin MemL[MBOX] := 0; SchubCall := -1; exit; end;
-  SchubCall := MemL[MBOX + 20];
+  { no answer (no SCHUB, or it stopped): 0, not what the last call left }
+  if MemL[MBOX] = 2 then SchubCall := MemL[MBOX + 20] else SchubCall := 0;
   MemL[MBOX] := 0;
 end;
 {$ENDIF}
