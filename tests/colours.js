@@ -50,6 +50,7 @@ load('COL.PAS', [
   '  { a brace comment }',
   '  (* a comment',
   '     over two lines *)',
+  '  (*$R+*) (* plain *)',
   '  WriteLn(s); // to the end of the line',
   'end.', ''].join('\n'));
 
@@ -62,6 +63,8 @@ check('character codes like strings (#13)', colourOf('#13') === STRING);
 check("strings in yellow, with '' and { } inside", colourOf("'it''s { not a comment }'") === STRING);
 check('brace comment in green', colourOf('{ a brace comment }') === COMMENT);
 check('(* *) comment over two lines in green', colourOf('(* a comment') === COMMENT && colourOf('over two lines *)') === COMMENT);
+check('(*$R+*) directive in orange, the comment after it in green', colourOf('(*$R+*)') === DIRECTIVE
+  && colourOf('(* plain *)') === COMMENT, rowCol(rowOf('(*$R+*)')).slice(0, 22).join(','));
 check('// comment to the end of the line', colourOf('// to the end of the line') === COMMENT && colourOf('WriteLn(s); //', 'WriteLn') === NAME);
 check('after the comments: normal again', colourOf('end.', 'end') === K);
 

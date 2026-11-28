@@ -444,6 +444,8 @@ const
   stAsm = 8; stAsmLine = 9; stAsmBrace = 10; stAsmStr = 11;
   { C: a comment, a "string" or 'c', a # line }
   stCCom = 12; stCStr = 13; stCChr = 14; stCDir = 15;
+  { a paren-star directive: its opening star, its text, its closing paren }
+  stPDOpen = 16; stPDir = 17; stPDClose = 18;
   CkStep = 256;
   colKeyword = 1; colComment = 13; colString = 7; colNumber = 3; colDirective = 8;
   cLetter = 1; cDigit = 2; cHex = 4;
@@ -508,7 +510,7 @@ begin
     stCStr, stCChr: StateAttr := (aText and $F0) or colString;
     stCDir: StateAttr := (aText and $F0) or colDirective;
     stAsmStr: StateAttr := (aText and $F0) or colString;
-    stDirective: StateAttr := (aText and $F0) or colDirective;
+    stDirective, stPDOpen, stPDir, stPDClose: StateAttr := (aText and $F0) or colDirective;
     stString: StateAttr := (aText and $F0) or colString;
   else
     StateAttr := aText;
@@ -582,7 +584,10 @@ begin
             if n = 36 then st := stDirective else st := stBrace;
             a := StateAttr(st);
           end
-          else if (c = 40) and (n = 42) and not cMode then begin st := stOpening; a := attrComment; end
+          else if (c = 40) and (n = 42) and not cMode then begin
+            if (q + 2 < len) and (Mem[TB + q + 2] = 36) then st := stPDOpen else st := stOpening;
+            a := StateAttr(st);
+          end
           else if (c = 47) and (n = 47) then begin st := stLine; a := attrComment; end
           else if c = 39 then begin st := stString; a := attrString; end
           else if paint and (((cls[c] and cDigit) <> 0) or ((c = 36) and ((cls[n] and cHex) <> 0))
@@ -615,11 +620,12 @@ begin
           q := q + 1; st := stNormal;
         end;
       end;
-      stOpening, stClosing: begin
+      stOpening, stClosing, stPDOpen, stPDClose: begin
         { the second character of a paren-star bracket }
-        if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+        if paint then begin if col < 512 then lineAttr[col] := StateAttr(st); col := col + 1; end;
         q := q + 1;
-        if st = stClosing then st := stNormal
+        if (st = stClosing) or (st = stPDClose) then st := stNormal
+        else if st = stPDOpen then st := stPDir
         else if cMode then st := stCCom
         else st := stParen;
       end;
@@ -654,15 +660,17 @@ begin
           q := q + 1; st := stNormal;
         end;
       end;
-      stParen: begin
+      stParen, stPDir: begin
         { to the closing star-paren }
+        a := StateAttr(st);
         while (q < upto) and not ((Mem[TB + q] = 42) and (q + 1 < len) and (Mem[TB + q + 1] = 41)) do begin
-          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
           q := q + 1;
         end;
         if q < upto then begin
-          if paint then begin if col < 512 then lineAttr[col] := attrComment; col := col + 1; end;
-          q := q + 1; st := stClosing;
+          if paint then begin if col < 512 then lineAttr[col] := a; col := col + 1; end;
+          q := q + 1;
+          if st = stPDir then st := stPDClose else st := stClosing;
         end;
       end;
       stString: begin

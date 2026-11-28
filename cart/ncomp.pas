@@ -159,6 +159,7 @@ type
 var
   { scanner }
   ch: char;
+  dirClose: char;            { the closing bracket of the directive being read: a brace or a paren }
   srcPos, srcEnd, curBase: longint;
   line, col, tokLine, tokCol: integer;
   sym: integer;
@@ -1473,33 +1474,35 @@ end;
 procedure SkipBranch(elseOk: boolean);
 var nest: integer;
     d: TName;
+    cl: char;
 begin
   nest := 0;
   while ch <> #0 do begin
-    if ch = '{' then begin
+    cl := #0;                       { in a comment: the bracket that ends it }
+    if ch = '{' then begin NextCh; cl := '}'; end
+    else if ch = '(' then begin
       NextCh;
-      if ch = '$' then begin
-        NextCh;
-        DirWord(d);
-        if (d = 'IFDEF') or (d = 'IFNDEF') or (d = 'IFOPT') then nest := nest + 1
-        else if d = 'ENDIF' then begin
-          if nest = 0 then begin SkipComment('}'); condDepth := condDepth - 1; exit; end;
-          nest := nest - 1;
-        end
-        else if (d = 'ELSE') and (nest = 0) and elseOk then begin SkipComment('}'); exit; end;
-      end;
-      SkipComment('}');
+      if ch = '*' then begin NextCh; cl := ')'; end;
     end
     else if ch = '''' then begin
       NextCh;
       while (ch <> '''') and (ch <> #10) and (ch <> #0) do NextCh;
       NextCh;
     end
-    else if ch = '(' then begin
-      NextCh;
-      if ch = '*' then begin NextCh; SkipComment(')'); end;
-    end
     else NextCh;
+    if cl <> #0 then begin
+      if ch = '$' then begin
+        NextCh;
+        DirWord(d);
+        if (d = 'IFDEF') or (d = 'IFNDEF') or (d = 'IFOPT') then nest := nest + 1
+        else if d = 'ENDIF' then begin
+          if nest = 0 then begin SkipComment(cl); condDepth := condDepth - 1; exit; end;
+          nest := nest - 1;
+        end
+        else if (d = 'ELSE') and (nest = 0) and elseOk then begin SkipComment(cl); exit; end;
+      end;
+      SkipComment(cl);
+    end;
   end;
   ErrorN(2, '');
 end;
@@ -1547,7 +1550,7 @@ begin
       NextCh;
       while ch = ' ' do NextCh;
     until false;
-    SkipComment('}');
+    SkipComment(dirClose);
     exit;
   end;
   DirWord(d);
@@ -1560,22 +1563,22 @@ begin
     condDepth := condDepth + 1;
     yes := DefIndex(a) <> 0;
     if d = 'IFNDEF' then yes := not yes;
-    if not yes then begin SkipComment('}'); SkipBranch(true); exit; end;
+    if not yes then begin SkipComment(dirClose); SkipBranch(true); exit; end;
   end
   else if d = 'ELSE' then begin
     if condDepth = 0 then ErrorN(6, '');
-    SkipComment('}'); SkipBranch(false); exit;
+    SkipComment(dirClose); SkipBranch(false); exit;
   end
   else if d = 'ENDIF' then begin
     if condDepth = 0 then ErrorN(7, '');
     condDepth := condDepth - 1;
   end
   else if d = 'INCLUDE' then begin
-    SkipComment('}');
+    SkipComment(dirClose);
     IncludeFile(a);
     exit;
   end;
-  SkipComment('}');
+  SkipComment(dirClose);
 end;
 
 { IEEE single bits of a real written as text }
@@ -1612,7 +1615,7 @@ begin
     while (ch = ' ') or (ch = #10) do NextCh;
     if ch = '{' then begin
       NextCh;
-      if ch = '$' then begin NextCh; Directive; end else SkipComment('}');
+      if ch = '$' then begin NextCh; dirClose := '}'; Directive; end else SkipComment('}');
       done := false;
     end;
   until done;
@@ -1712,7 +1715,11 @@ begin
     end;
     '(': begin
       NextCh;
-      if ch = '*' then begin NextCh; SkipComment(')'); Next; exit; end;
+      if ch = '*' then begin
+        NextCh;
+        if ch = '$' then begin NextCh; dirClose := ')'; Directive; end else SkipComment(')');
+        Next; exit;
+      end;
       sym := sLparen;
     end;
     ')': begin sym := sRparen; NextCh; end;
@@ -6744,6 +6751,9 @@ begin
     { an include file may hold a WITH: room for it, to be safe }
     if (c = ord('{') or $20) and (Mem[base + p + 1] = ord('$')) and ((Mem[base + p + 2] or $20) = ord('i')) and
        ((Mem[base + p + 3] = 32) or ((Mem[base + p + 3] or $20) = ord('n'))) then begin ScanWith := true; exit; end;
+    if (c = ord('(')) and (p + 4 < n) and (Mem[base + p + 1] = ord('*')) and (Mem[base + p + 2] = ord('$')) and
+       ((Mem[base + p + 3] or $20) = ord('i')) and
+       ((Mem[base + p + 4] = 32) or ((Mem[base + p + 4] or $20) = ord('n'))) then begin ScanWith := true; exit; end;
     prevId := ((c >= ord('a')) and (c <= ord('z'))) or ((c >= ord('0')) and (c <= ord('9'))) or (c = ord('_'));
     p := p + 1;
   end;
@@ -6874,19 +6884,22 @@ begin
   unitDone[u] := true;
 end;
 
-{ the text starts with $SCHUB: compile for the SCHUB co-processor }
+(* the text starts with $SCHUB, in braces or in paren-star brackets:
+   compile for the SCHUB co-processor *)
 function SchubDirective(n: longint): boolean;
 var p: longint;
-    i: integer;
-    t: string[8];
+    i, k: integer;
+    t: string[10];
 begin
   SchubDirective := false;
   p := 0;
   while (p < n) and (Mem[SrcBase + p] <= 32) do p := p + 1;
-  if p + 8 > n then exit;
-  for i := 1 to 8 do t[i] := chr(Mem[SrcBase + p + i - 1]);
-  t[0] := chr(8);
-  SchubDirective := UpperCase(t) = '{$SCHUB}';
+  if (p < n) and (Mem[SrcBase + p] = ord('(')) then k := 10 else k := 8;
+  if p + k > n then exit;
+  for i := 1 to k do t[i] := chr(Mem[SrcBase + p + i - 1]);
+  t[0] := chr(k);
+  t := UpperCase(t);
+  SchubDirective := (t = '{$SCHUB}') or (t = '(*$SCHUB*)');
 end;
 
 { the VMTs in the data image: the size, then the methods' code. Byte by

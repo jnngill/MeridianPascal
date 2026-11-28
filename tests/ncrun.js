@@ -16,7 +16,9 @@ for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.pas')).sort()) {
   const src = fs.readFileSync(path.join(dir, f), 'latin1');
   const m = /\(\*\s*EXPECT\r?\n([\s\S]*?)\*\)/.exec(src);
   const keys = ((/\(\*\s*KEYS:(.*)\*\)/.exec(src) || [])[1] || '').trim().replace(/\\r/g, '\r');
-  const body = src.slice(0, src.indexOf('(* EXPECT') >= 0 ? src.indexOf('(*') : src.length);
+  // the program ends where the EXPECT / FILE / KEYS blocks start (it may use (* *) itself)
+  const blk = src.search(/\(\*\s*(EXPECT|FILE\s|KEYS:)/);
+  const body = blk >= 0 ? src.slice(0, blk) : src;
   const files = {};
   for (const fm of src.matchAll(/\(\*\s*FILE\s+(\S+)\r?\n([\s\S]*?)\*\)/g)) files[fm[1].toUpperCase()] = fm[2];
   const o = ncRun((schub ? '{$SCHUB}\n' : '') + body, { frames: 6000, keys, files });
@@ -35,6 +37,18 @@ for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.pas')).sort()) {
     for (let i = 0; i < Math.max(g.length, x.length); i++) {
       if (g[i] !== x[i]) console.log(`   line ${i + 1}: expected ${JSON.stringify(x[i])}\n           got      ${JSON.stringify(g[i])}`);
     }
+  }
+}
+// $SCHUB at the top switches the target, in braces or in paren-star brackets
+// (any case, after blanks), and only as the directive itself
+if (!schub && (!only || 'schubtop'.includes(only))) {
+  const prog = "program T;\nbegin\n(*$IFDEF SCHUB*) WriteLn('SCHUB'); (*$ELSE*) WriteLn('M816'); (*$ENDIF*)\nend.\n";
+  for (const [top, want] of [['{$SCHUB}\n', 'SCHUB'], ['  (*$schub*)\n', 'SCHUB'], ['(*$SCHUB*)', 'SCHUB'],
+                             ['(* $SCHUB *)\n', 'M816'], ['', 'M816']]) {
+    const lines = ncRun(top + prog, { frames: 6000 }).output.split('\n');
+    const ok = lines[0].startsWith('COMPILED') && lines[1] === want;
+    if (ok) pass++; else fail++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} top ${JSON.stringify(top)} -> ${want}${ok ? '' : ': got ' + JSON.stringify(lines.slice(0, 2))}`);
   }
 }
 console.log(`\n${pass} passed, ${fail} failed`);
